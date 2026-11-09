@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <mutex>
@@ -10,6 +11,11 @@
 
 namespace callgraph {
 
+enum class TimestampMode {
+    BootSeconds,  // seconds since boot, CLOCK_MONOTONIC
+    WallClock,    // local wall clock, ISO 8601
+};
+
 // Serializes complete event lines onto one output stream.
 //
 // A dedicated writer thread decouples the ring-buffer consumer from stdout
@@ -17,7 +23,8 @@ namespace callgraph {
 // counted rather than blocking the collector.
 class Output {
 public:
-    explicit Output(const std::string& path);
+    explicit Output(const std::string& path,
+                    TimestampMode mode = TimestampMode::BootSeconds);
     ~Output();
 
     Output(const Output&) = delete;
@@ -31,9 +38,13 @@ public:
 
 private:
     void worker();
+    std::string format_timestamp(uint64_t ts_ns) const;
 
     FILE* fp_ = nullptr;
     bool own_fp_ = false;
+
+    TimestampMode mode_;
+    int64_t wall_offset_ns_ = 0;
 
     std::mutex mu_;
     std::condition_variable cv_;

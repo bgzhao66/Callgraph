@@ -49,13 +49,18 @@ echo "== trace simple =="
 "$BIN" run -o "$TMP/simple.trace" --regex \
     --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/simple.err"
-grep -q ' : 0 -> main' "$TMP/simple.trace"
+grep -Eq '^[0-9]+\.[0-9]{9} [0-9]+ : 0 -> main' "$TMP/simple.trace"
 grep -q ' : 1 -> C(int)' "$TMP/simple.trace"
 grep -q ' : 2 -> B(int)' "$TMP/simple.trace"
 grep -q ' : 3 -> A(int)' "$TMP/simple.trace"
 grep -q ' : 3 <- A(int)' "$TMP/simple.trace"
 grep -q ' : 0 <- main' "$TMP/simple.trace"
 grep -q '0 lost' "$TMP/simple.err"
+
+echo "== wall-clock timestamps =="
+"$BIN" run -T -o "$TMP/wall.trace" --regex \
+    --include '^(main|C[(]int[)])$' -- "$TMP/simple" >/dev/null 2>/dev/null
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}[+-][0-9]{2}:[0-9]{2} [0-9]+ : 0 -> main' "$TMP/wall.trace"
 
 echo "== trace recursive =="
 "$BIN" run -o "$TMP/rec.trace" --regex \

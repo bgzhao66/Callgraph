@@ -46,6 +46,7 @@ struct Options {
     std::string return_mode = "uretprobe";
     bool all_modules = false;
     std::vector<std::string> modules;
+    bool wall_clock = false;
     int max_depth = -1;
     size_t batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
@@ -71,6 +72,7 @@ void usage(FILE* out)
             "      --return-mode M   uretprobe (default) or ret (exception-safe)\n"
             "      --all-modules     trace every mapped ELF module\n"
             "      --module GLOB     also trace mapped modules matching GLOB\n"
+            "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
             "      --batch-size N    functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
@@ -202,6 +204,8 @@ Options parse_args(int argc, char** argv)
             options.all_modules = true;
         } else if (arg == "--module") {
             options.modules.push_back(value());
+        } else if (arg == "-T" || arg == "--wall-clock") {
+            options.wall_clock = true;
         } else if (arg == "--max-depth") {
             options.max_depth = static_cast<int>(parse_long(value(), arg));
         } else if (arg == "--batch-size") {
@@ -536,7 +540,9 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        Output output(options.output);
+        Output output(options.output, options.wall_clock
+                                          ? TimestampMode::WallClock
+                                          : TimestampMode::BootSeconds);
         ProbeManager probes(target, options.ringbuf_size, options.batch_size,
                             options.verbose);
         probes.load();

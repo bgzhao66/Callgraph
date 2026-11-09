@@ -2,14 +2,30 @@
 
 #include <cerrno>
 #include <cstring>
+#include <ctime>
+#include <time.h>
 #include <unistd.h>
 
 #include "callgraph/common.h"
 
 namespace callgraph {
 
-Output::Output(const std::string& path)
+Output::Output(const std::string& path, TimestampMode mode) : mode_(mode)
 {
+    if (mode_ == TimestampMode::WallClock) {
+        struct timespec monotonic = {};
+        struct timespec realtime = {};
+        if (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 ||
+            clock_gettime(CLOCK_REALTIME, &realtime) != 0) {
+            fail("cannot read the system clock: %s",
+                 errno_string(errno).c_str());
+        }
+        wall_offset_ns_ =
+            (static_cast<int64_t>(realtime.tv_sec - monotonic.tv_sec) *
+                 1000000000LL) +
+            (realtime.tv_nsec - monotonic.tv_nsec);
+    }
+
     if (path.empty() || path == "-") {
         fp_ = stdout;
         own_fp_ = false;
@@ -33,16 +49,59 @@ Output::~Output()
         fclose(fp_);
 }
 
+std::string Output::format_timestamp(uint64_t ts_ns) const
+{
+    if (mode_ == TimestampMode::BootSeconds) {
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "%llu.%09llu",
+                 static_cast<unsigned long long>(ts_ns / 1000000000ULL),
+                 static_cast<unsigned long long>(ts_ns % 1000000000ULL));
+        return buffer;
+    }
+
+    // The monotonic clock does not count suspend time and the wall-clock
+    // offset is sampled at startup, so this is an approximation if the system
+    // clock is stepped or the machine suspends while tracing.
+    const int64_t wall_ns = static_cast<int64_t>(ts_ns) + wall_offset_ns_;
+    time_t seconds = static_cast<time_t>(wall_ns / 1000000000LL);
+    long nanos = static_cast<long>(wall_ns % 1000000000LL);
+    if (nanos < 0) {
+        nanos += 1000000000L;
+        seconds -= 1;
+    }
+
+    struct tm local = {};
+    if (!localtime_r(&seconds, &local))
+        return "0000-00-00T00:00:00.000000000+00:00";
+
+    char date_time[64];
+    if (strftime(date_time, sizeof(date_time), "%Y-%m-%dT%H:%M:%S", &local) == 0)
+        return "0000-00-00T00:00:00.000000000+00:00";
+
+    const long offset = local.tm_gmtoff;
+    const char sign = offset < 0 ? '-' : '+';
+    const long magnitude = offset < 0 ? -offset : offset;
+
+    char buffer[96];
+    snprintf(buffer, sizeof(buffer), "%s.%09ld%c%02ld:%02ld", date_time, nanos,
+             sign, magnitude / 3600, (magnitude % 3600) / 60);
+    return buffer;
+}
+
 void Output::emit(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
                   const std::string& name)
 {
-    char prefix[80];
-    const int n = snprintf(prefix, sizeof(prefix), "%llu %u : %u %s ",
-                           static_cast<unsigned long long>(ts), tid, depth, arrow);
+    const std::string stamp = format_timestamp(ts);
+
+    char suffix[80];
+    const int suffix_length = snprintf(suffix, sizeof(suffix), " %u : %u %s ",
+                                       tid, depth, arrow);
 
     std::string line;
-    line.reserve(static_cast<size_t>(n) + name.size() + 1);
-    line.append(prefix, static_cast<size_t>(n));
+    line.reserve(stamp.size() + static_cast<size_t>(suffix_length) +
+                 name.size() + 1);
+    line.append(stamp);
+    line.append(suffix, static_cast<size_t>(suffix_length));
     line.append(name);
     line.push_back('\n');
 

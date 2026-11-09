@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,24 @@ void test_demangle()
     CHECK(demangle_symbol("square.constprop.0") == "square.constprop.0");
 }
 
+bool looks_like_boot_seconds(const std::string& line)
+{
+    const auto space = line.find(' ');
+    if (space == std::string::npos || space == 0)
+        return false;
+    const std::string stamp = line.substr(0, space);
+    const auto dot = stamp.find('.');
+    return dot != std::string::npos && dot > 0 &&
+           stamp.size() - dot - 1 == 9;
+}
+
+bool looks_like_wall_clock(const std::string& line)
+{
+    static const std::regex pattern(
+        R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}[+-][0-9]{2}:[0-9]{2} )");
+    return std::regex_search(line, pattern);
+}
+
 void test_basic_stack()
 {
     const auto names = make_names();
@@ -93,10 +112,33 @@ void test_basic_stack()
     const auto lines = read_lines(path);
     CHECK(lines.size() == 4);
     if (lines.size() == 4) {
+        CHECK(looks_like_boot_seconds(lines[0]));
         CHECK(lines[0].find(" : 0 -> main") != std::string::npos);
         CHECK(lines[1].find(" : 1 -> A(int)") != std::string::npos);
         CHECK(lines[2].find(" : 1 <- A(int)") != std::string::npos);
         CHECK(lines[3].find(" : 0 <- main") != std::string::npos);
+    }
+    unlink(path.c_str());
+}
+
+void test_wall_clock()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+
+    {
+        Output output(path, TimestampMode::WallClock);
+        CallStack stack(names, output, -1, false);
+        stack.on_event(make_event(0, 11, kEventEnter, 1000000000ULL));
+        stack.on_event(make_event(0, 11, kEventExit, 2000000000ULL));
+        output.stop();
+    }
+
+    const auto lines = read_lines(path);
+    CHECK(lines.size() == 2);
+    if (lines.size() == 2) {
+        CHECK(looks_like_wall_clock(lines[0]));
+        CHECK(looks_like_wall_clock(lines[1]));
     }
     unlink(path.c_str());
 }
@@ -164,6 +206,7 @@ int main()
     test_basic_stack();
     test_desync();
     test_max_depth();
+    test_wall_clock();
 
     if (failures != 0) {
         fprintf(stderr, "%d test(s) failed\n", failures);

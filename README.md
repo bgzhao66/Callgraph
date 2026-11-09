@@ -1,9 +1,10 @@
 # callgraph
 
 A Linux function call-graph tracer for native executables, built on libbpf and
-eBPF uprobes. It resolves function names from the ELF symbol table, attaches
-one entry probe per function, reconstructs a separate call stack for every
-thread, and writes a single chronological event stream.
+eBPF uprobes. It resolves function names from ELF symbol tables or external
+debug information, attaches one entry probe per function, reconstructs a
+separate call stack for every thread, and writes a single chronological event
+stream.
 
 ```
 <ts> <tid> : <depth> -> function
@@ -12,7 +13,7 @@ thread, and writes a single chronological event stream.
 
 ## Status
 
-Phase 1 is implemented:
+The current implementation includes:
 
 - launch (`run`) and attach (`attach -p PID`) modes
 - symbol resolution from ELF `.symtab`, or from external debug information via
@@ -64,6 +65,9 @@ The binary is `build/callgraph`.
 # Launch and trace from the first instruction
 sudo ./build/callgraph run -- ./my_app arg1 arg2
 
+# Wall-clock timestamps instead of seconds since boot
+sudo ./build/callgraph run -T -- ./my_app
+
 # Attach to a running process
 sudo ./build/callgraph attach -p 12345
 
@@ -95,6 +99,7 @@ Usage:
       --return-mode M   uretprobe (default) or ret (exception-safe)
       --all-modules     trace every mapped ELF module
       --module GLOB     also trace mapped modules matching GLOB
+  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)
       --max-depth N     print events with depth <= N (default: unlimited)
       --batch-size N    functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
@@ -128,13 +133,16 @@ Each event is one complete line:
 Example (`examples/simple.cpp`, filtered to `main`, `A`, `B`, `C`):
 
 ```
-85215196474365 26570 : 0 -> main
-85215196489646 26570 : 1 -> C(int)
-85215196498980 26570 : 1 <- C(int)
-85215196522041 26570 : 0 <- main
+85215.196474365 26570 : 0 -> main
+85215.196489646 26570 : 1 -> C(int)
+85215.196498980 26570 : 1 <- C(int)
+85215.196522041 26570 : 0 <- main
 ```
 
-- `ts` is `CLOCK_MONOTONIC` in nanoseconds (`bpf_ktime_get_ns`).
+- `ts` is seconds since boot (`CLOCK_MONOTONIC`, nine fractional digits) by
+  default. It is not an epoch timestamp.
+- With `-T` / `--wall-clock`, `ts` is local wall-clock time in ISO 8601, for
+  example `2026-11-10T00:19:31.462805287+08:00`.
 - `tid` is the Linux thread ID; all threads share the same stream.
 - `depth` is maintained independently per TID.
 - Entry events print the stack size *before* pushing the frame.
@@ -142,6 +150,11 @@ Example (`examples/simple.cpp`, filtered to `main`, `A`, `B`, `C`):
 
 All events go to stdout by default; diagnostics and the final summary go to
 stderr.
+
+The wall-clock offset is sampled at startup from `CLOCK_REALTIME -
+CLOCK_MONOTONIC`. If the system clock is stepped by NTP or the machine
+suspends while tracing, wall-clock values drift; seconds since boot remain
+exact.
 
 ### Depth semantics and filtering
 

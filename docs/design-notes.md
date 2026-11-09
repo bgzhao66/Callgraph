@@ -84,6 +84,15 @@ Per-thread event order is preserved because a thread's events are sequential;
 cross-thread ordering is collector serialization order and should be analyzed
 with timestamps.
 
+### Timestamps
+
+`bpf_ktime_get_ns()` is `CLOCK_MONOTONIC`, so the default output prints
+seconds since boot with nine fractional digits (`85215.196474365`). It is not
+a Unix epoch value. `-T` / `--wall-clock` samples
+`CLOCK_REALTIME - CLOCK_MONOTONIC` at startup and prints local ISO 8601
+timestamps (`2026-11-10T00:19:31.462805287+08:00`). NTP steps and suspend time
+after startup are not corrected; seconds since boot is the stable form.
+
 ### Attach mode
 
 Attach discovers the executable through `/proc/<pid>/exe`, attaches with the
