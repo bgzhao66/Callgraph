@@ -1,0 +1,116 @@
+# Design notes
+
+This file records the decisions taken while implementing the design in
+`README.md`, including deviations and open work.
+
+## Confirmed choices
+
+- Output markers are `->` (entry) and `<-` (return).
+- The default module scope is the main executable only.
+- Function filters are globs by default; `--regex` selects regex syntax.
+- The old bpftrace prototype lives in `tools/legacy/`.
+
+## Deviations from the original design
+
+### Symbol source: symtab first, external debug as fallback
+
+Entry points and names come from `.symtab` (`STT_FUNC` in executable
+sections). `__cxa_demangle` handles C++ names, including clone suffixes such as
+`foo.constprop.0`. If `.symtab` is absent, libdwfl locates external debug
+information through the build ID or `.gnu_debuglink` and its symbol table is
+used instead; `dwfl_report_offline` reports PIE modules at a synthetic base, so
+the module bias is subtracted before computing uprobe offsets. Traversing
+DWARF DIEs directly (for debug files that contain no `.symtab`) is still
+deferred, and source file/line information is not collected yet.
+
+### Vendored libbpf
+
+The distro libbpf is 0.5.0 on Ubuntu 22.04, which predates
+`bpf_program__attach_uprobe_multi`. libbpf v1.5.0 is vendored as a submodule
+and built as a static library.
+
+### BPF program sections
+
+`uprobe_multi` programs must be declared as `SEC("uprobe.multi")` /
+`SEC("uretprobe.multi")` so that libbpf sets
+`expected_attach_type = BPF_TRACE_UPROBE_MULTI` at load time. A plain
+`SEC("uprobe")` program will load but fail to attach.
+
+### Return probes and C++ exceptions
+
+The original design assumed that `uretprobe` only produces "missing returns"
+for non-local control flow. In reality a `uretprobe` hijacks the return address
+and points it at a trampoline with no `.eh_frame` metadata. If a C++ exception
+unwinds through a traced function, the unwinder cannot continue and the
+process calls `std::terminate`. This was confirmed with
+`examples/exceptions.cpp`.
+
+Two return modes are provided:
+
+- `uretprobe` (default, matches the design): one probe per function, exact
+  returns, unsafe for exception-based unwinding.
+- `ret`: ordinary uprobes on disassembled `ret` instructions. No return
+  address modification, so unwinding is safe. Frames unwound by an exception
+  produce no return event and are later reported as `desync`.
+
+The resolver warns when `.gcc_except_table` is present and `uretprobe` is
+selected. `ret` mode requires libopcodes (`binutils-dev`) and is x86-only for
+now.
+
+### Filtering and depth
+
+Filters are applied when probes are installed, not when events are printed.
+Depth counts instrumented frames only. `--max-depth` is display-only so that
+hidden frames still keep the remaining depths correct.
+
+### Launch synchronization
+
+`run` uses `fork` + `PTRACE_TRACEME` + `SIGSTOP`, then sets
+`PTRACE_O_TRACEEXEC` and resumes. The child stops after `exec` but before the
+dynamic loader runs; probes are attached, then the child is detached. The
+pipe-before-exec alternative was not needed.
+
+Shared libraries are not mapped at that point, so only the main executable is
+traced from its first instruction. This matches the Phase 1 module scope.
+
+### Event transport and ordering
+
+Events go through `BPF_MAP_TYPE_RINGBUF`. The collector is single-threaded and
+a dedicated writer thread drains a bounded line queue to stdout/file, so a
+slow consumer does not immediately overflow the ring buffer. Ring-buffer
+reservation failures are counted in a per-CPU array and reported at exit.
+
+Per-thread event order is preserved because a thread's events are sequential;
+cross-thread ordering is collector serialization order and should be analyzed
+with timestamps.
+
+### Attach mode
+
+Attach discovers the executable through `/proc/<pid>/exe`, attaches with the
+target TGID (all threads), and polls a pidfd for target exit. Depth is relative
+to the attach point: frames already on the stack before attachment are unknown.
+
+## Phase status
+
+| Phase | Status |
+|---|---|
+| 0. spikes (uprobe_multi, ptrace launch, offsets) | done |
+| 1. MVP: main exe, run/attach, filters, depth, output | done |
+| 2. shared libraries, dlopen, module lifecycle | partial: `--all-modules`/`--module`, polling discovery; no perf-mmap events |
+| 3. robustness: thread exit, desync policy, stripped+DWARF, batch failures | partial (desync, batch fallback, ring-loss, signals, external debug via libdwfl done; DIE-only debug files pending) |
+| 4. statistics (`--summary`), JSON, source locations | pending |
+| 5. performance, GDB comparison, CI | pending |
+
+## Known limitations
+
+- A stripped binary is only resolved if its external debug file also contains a
+  symbol table (the usual `objcopy --only-keep-debug` output). DWARF-only debug
+  files without `.symtab` are not traversed DIE by DIE yet.
+- Modules are discovered by polling `/proc/<pid>/maps` (about every 100 ms).
+  Calls in a library's constructors before the first poll are missed.
+- `ret` mode is x86-only and requires libopcodes.
+- Child processes created with `fork` are not followed.
+- `run` mode leaves the child's stdout connected to the same stream as the
+  trace; use `-o` to separate them.
+- No argument/return-value capture.
+- No statistics or summary mode yet.
