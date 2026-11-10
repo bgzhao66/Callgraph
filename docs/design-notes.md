@@ -21,7 +21,7 @@ information through the build ID or `.gnu_debuglink` and its symbol table is
 used instead; `dwfl_report_offline` reports PIE modules at a synthetic base, so
 the module bias is subtracted before computing uprobe offsets. Traversing
 DWARF DIEs to recover symbol names (for debug files that contain no `.symtab`)
-is still deferred; `--args` does walk subprogram DIEs, but only after symbols
+is still deferred; `--show-args` does walk subprogram DIEs, but only after symbols
 have been resolved. Source file/line information is not collected yet.
 
 ### Vendored libbpf
@@ -72,7 +72,7 @@ the reconstructed depth.
 
 ### Function arguments
 
-`--args` appends entry-time parameter values to `->` lines. The BPF program
+`--show-args` appends entry-time parameter values to `->` lines. The BPF program
 captures the six SysV x86-64 integer/pointer registers (`rdi`, `rsi`, `rdx`,
 `rcx`, `r8`, `r9`) and six 64-bit words from the user stack at `rsp + 8`; the
 event grows from 32 to 128 bytes. Exit events carry zeroed argument slots.
@@ -180,7 +180,7 @@ kernel-internal codes and the libbpf print callback rewrites the opaque
 | Phase | Status |
 |---|---|
 | 0. spikes (uprobe_multi, ptrace launch, offsets) | done |
-| 1. MVP: main exe, run/attach, filters, depth, output | done; `--args` added |
+| 1. MVP: main exe, run/attach, filters, depth, output | done; `--show-args` added |
 | 2. shared libraries, dlopen, module lifecycle | partial: `--all-modules`/`--module`, polling discovery; no perf-mmap events |
 | 3. robustness: thread exit, desync policy, stripped+DWARF, batch failures | partial (desync, batch fallback, ring-loss, signals, external debug via libdwfl done; DIE-only debug files pending) |
 | 4. statistics (`--summary`), JSON, source locations | pending |
@@ -194,7 +194,7 @@ kernel-internal codes and the libbpf print callback rewrites the opaque
 - Modules are discovered by polling `/proc/<pid>/maps` (about every 100 ms).
   Calls in a library's constructors before the first poll are missed.
 - `ret` mode is x86-only and requires libopcodes.
-- `--args` is x86-64 SysV only. Register-passed floating-point arguments are
+- `--show-args` is x86-64 SysV only. Register-passed floating-point arguments are
   unavailable because uprobe `pt_regs` has no XMM state, and pointers are not
   dereferenced.
 - Child processes created with `fork` are not followed.

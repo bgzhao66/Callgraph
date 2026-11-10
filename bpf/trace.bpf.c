@@ -46,7 +46,7 @@ struct {
     __type(value, __u64);
 } lost SEC(".maps");
 
-/* Set to 1 by user space when --args is enabled. */
+/* Set to 1 by user space when --show-args is enabled. */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);

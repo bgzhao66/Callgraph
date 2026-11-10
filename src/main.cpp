@@ -80,7 +80,7 @@ void usage(FILE* out)
             "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
-            "      --args            show function arguments after names (needs DWARF)\n"
+            "      --show-args       show function arguments after names (needs DWARF)\n"
             "      --histogram       append a per-thread latency histogram tree to the output\n"
             "      --batch-size N    functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
@@ -221,7 +221,7 @@ Options parse_args(int argc, char** argv)
             if (indent < 0)
                 usage_error("--indent must be >= 0");
             options.indent_step = static_cast<size_t>(indent);
-        } else if (arg == "--args") {
+        } else if (arg == "--show-args") {
             options.show_args = true;
         } else if (arg == "--histogram") {
             options.histogram = true;
@@ -268,7 +268,7 @@ Options parse_args(int argc, char** argv)
 #endif
 #if !defined(__x86_64__)
     if (options.show_args)
-        usage_error("--args is only supported on x86-64");
+        usage_error("--show-args is only supported on x86-64");
 #endif
 
     const long page_size = sysconf(_SC_PAGESIZE);

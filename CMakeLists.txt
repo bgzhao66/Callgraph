@@ -64,7 +64,7 @@ set_target_properties(libbpf PROPERTIES
 add_dependencies(libbpf libbpf_build)
 
 # The BPF program captures x86-64 SysV argument registers.  On other
-# architectures the fields remain zero and --args is rejected at runtime.
+# architectures the fields remain zero and --show-args is rejected at runtime.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(BPF_ARCH_DEFINE -DCALLGRAPH_BPF_X86_64=1)
 else()

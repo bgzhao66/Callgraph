@@ -96,7 +96,7 @@ int main()
 }
 EOF
     g++ -O0 -g -o "$TMP/args" "$TMP/args.cpp"
-    "$BIN" run --args -o "$TMP/args.trace" --regex \
+    "$BIN" run --show-args -o "$TMP/args.trace" --regex \
         --include '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
         -- "$TMP/args" >/dev/null 2>/dev/null
     grep -q ' : 1 -> many(int, int, int, int, int, int, int) \[a=1, b=2, c=3, d=4, e=5, f=6, g=7\]' "$TMP/args.trace"
@@ -104,7 +104,7 @@ EOF
     grep -q ' : 1 <- many(int, int, int, int, int, int, int)$' "$TMP/args.trace"
 
     echo "== function arguments with external debug info =="
-    "$BIN" run --args -o "$TMP/detached-args.trace" --regex \
+    "$BIN" run --show-args -o "$TMP/detached-args.trace" --regex \
         --include '^(main|A[(]int[)])$' -- "$TMP/detached" \
         >/dev/null 2>/dev/null
     grep -q 'A(int) \[x=3\]' "$TMP/detached-args.trace"

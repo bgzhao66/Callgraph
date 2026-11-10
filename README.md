@@ -24,7 +24,7 @@ The current implementation includes:
 - entry and return events over a BPF ring buffer
 - per-TID call-stack reconstruction, recursion, multi-threaded tracing
 - include/exclude filters, maximum displayed depth, dry-run listing
-- optional function argument values from DWARF (`--args`, x86-64)
+- optional function argument values from DWARF (`--show-args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 
 Not implemented yet: execution-time statistics and child-process (`fork`)
@@ -38,8 +38,8 @@ following.
 | C++20 compiler, CMake 3.20+ | host build |
 | clang with the BPF target | compiling `bpf/trace.bpf.c` |
 | libelf, libdw, zlib | ELF symbols, external debug info, compression |
-| DWARF debug info (`-g` or a separate debug file) | `--args` parameter names and types |
-| x86-64 | `--args` value capture (SysV ABI) |
+| DWARF debug info (`-g` or a separate debug file) | `--show-args` parameter names and types |
+| x86-64 | `--show-args` value capture (SysV ABI) |
 | `binutils-dev` (libopcodes) | optional; enables `--return-mode=ret` |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
 | ptrace permission | attach mode |
@@ -75,7 +75,7 @@ sudo ./build/callgraph run -T -- ./my_app
 sudo ./build/callgraph run --indent 2 -- ./my_app
 
 # Show argument values after names (requires DWARF debug info)
-sudo ./build/callgraph run --args -- ./my_app
+sudo ./build/callgraph run --show-args -- ./my_app
 
 # Attach to a running process
 sudo ./build/callgraph attach -p 12345
@@ -111,7 +111,7 @@ Usage:
   -T, --wall-clock      wall-clock timestamps (default: seconds since boot)
       --max-depth N     print events with depth <= N (default: unlimited)
       --indent N        indent names by depth*N spaces (default: 0)
-      --args            show function arguments after names (needs DWARF)
+      --show-args       show function arguments after names (needs DWARF)
       --histogram       append a per-thread latency histogram tree to the output
       --batch-size N    functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
@@ -171,7 +171,7 @@ With `--indent 2`:
 85215.196522041 26570 : 1 <-   C(int)
 ```
 
-With `--args`, entry events append the captured parameter values:
+With `--show-args`, entry events append the captured parameter values:
 
 ```
 85215.196474365 26570 : 0 -> main
@@ -186,7 +186,7 @@ The values are captured at function entry. Return events do not repeat them.
 
 Limitations:
 
-- `--args` currently supports the x86-64 SysV ABI only.
+- `--show-args` currently supports the x86-64 SysV ABI only.
 - Floating-point arguments passed in XMM registers are printed as `?`, because
   the uprobe `pt_regs` context does not contain XMM state. Stack-passed
   `float`/`double` values can still be decoded.

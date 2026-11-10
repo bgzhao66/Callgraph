@@ -26,7 +26,7 @@ struct FunctionInfo {
     std::string source_file;
     uint32_t source_line = 0;
 
-    // Parameter metadata from DWARF, filled when --args is enabled.
+    // Parameter metadata from DWARF, filled when --show-args is enabled.
     FunctionSignature signature;
 };
 
