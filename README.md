@@ -246,23 +246,28 @@ depth 0).
 === thread 26570 ===
 main  calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
 [ 16.38us,  32.77us)      1  ########################################
-  C(int)  calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
-  [  8.19us,  16.38us)      1  ########################################
-    B(int)  calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
-    [  4.10us,   8.19us)      1  ########################################
+└── C(int)  calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
+    [  8.19us,  16.38us)      1  ########################################
+    ├── B(int)  calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
+    │   [  4.10us,   8.19us)      1  ########################################
+    │   └── A(int)  calls=1  total=1.77us  avg=1.77us  min=1.77us  max=1.77us
+    │       [  1.02us,   2.05us)      1  ########################################
+    └── A(int)  calls=1  total=1.44us  avg=1.44us  min=1.44us  max=1.44us
+        [  1.02us,   2.05us)      1  ########################################
 ```
 
 - One section per thread, sorted by TID.
-- Nodes are indented by two spaces per call level. Each node is an immediate
-  caller to callee edge, so a function called from two different callers
-  appears under each caller with the calls made from that caller.
+- Nodes are rendered with `tree`-style connectors (`├──`, `└──`, `│`). Each
+  node's histogram lines align with its name and continue the tree's vertical
+  bars. Independent root trees within one thread are separated by a blank line.
+- Each node is an immediate caller to callee edge, so a function called from two
+  different callers appears under each caller with the calls made from that
+  caller.
 - Latency is the inclusive time between the function's entry and its matching
   return, including instrumented callees.
 - Histograms use power-of-two buckets: bucket 0 is exactly 0 ns; bucket `k` is
   `[2^(k-1), 2^k)` ns. Non-empty buckets are printed, including zero-count
   buckets between them.
-- Bucket lines share the function name's left margin; children are indented one
-  level further.
 - Calls without a matching return (exception unwinding, `longjmp`, lost events,
   or still running when tracing stops) are excluded from the histograms and
   reported as `incomplete: N call(s)`. A still-live frame with completed

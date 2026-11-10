@@ -165,16 +165,14 @@ void test_histogram_report()
     const auto lines = split_lines(report);
     bool checked_alignment = false;
     for (size_t i = 0; i + 1 < lines.size(); ++i) {
-        const size_t name_pos = lines[i].find("A(int)  calls=1");
-        if (name_pos == std::string::npos)
+        if (lines[i].rfind("└── A(int)  calls=1", 0) != 0)
             continue;
 
-        // A is one level below main, and its bucket line shares that margin.
-        CHECK(name_pos == 2);
+        // A is the only child of main; its bucket line shares its margin.
         const std::string& bucket = lines[i + 1];
-        CHECK(bucket.size() > 2);
-        CHECK(bucket.compare(0, 2, "  ") == 0);
-        CHECK(bucket[2] == '[');
+        CHECK(bucket.compare(0, 4, "    ") == 0);
+        CHECK(bucket.size() > 4);
+        CHECK(bucket[4] == '[');
         checked_alignment = true;
         break;
     }
@@ -249,11 +247,85 @@ void test_histogram_live_chain()
     CHECK(report.find("incomplete: 2 call(s)") != std::string::npos);
 
     // B must be nested two levels down: main -> A -> B.
-    const size_t b_pos = report.find("B(int)  calls=1");
-    CHECK(b_pos != std::string::npos);
-    const size_t line_start = report.rfind('\n', b_pos);
-    CHECK(line_start != std::string::npos);
-    CHECK(b_pos - line_start - 1 == 4);
+    const auto lines = split_lines(report);
+    bool checked_b = false;
+    for (size_t i = 0; i + 1 < lines.size(); ++i) {
+        if (lines[i].rfind("    └── B(int)  calls=1", 0) != 0)
+            continue;
+        CHECK(lines[i + 1].compare(0, 8, "        ") == 0);
+        CHECK(lines[i + 1].size() > 8);
+        CHECK(lines[i + 1][8] == '[');
+        checked_b = true;
+    }
+    CHECK(checked_b);
+}
+
+void test_histogram_siblings()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        stack.on_event(make_event(0, 70, kEventEnter, 0));
+        stack.on_event(make_event(1, 70, kEventEnter, 10));
+        stack.on_event(make_event(1, 70, kEventExit, 210));  // A: 200 ns
+        stack.on_event(make_event(2, 70, kEventEnter, 220));
+        stack.on_event(make_event(2, 70, kEventExit, 320));  // B: 100 ns
+        stack.on_event(make_event(0, 70, kEventExit, 330));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    const auto lines = split_lines(report);
+    bool saw_branch = false;
+    bool saw_last = false;
+    for (size_t i = 0; i + 1 < lines.size(); ++i) {
+        if (lines[i].rfind("├── A(int)  calls=1", 0) == 0) {
+            saw_branch = true;
+            CHECK(lines[i + 1].rfind("│   [", 0) == 0);
+        }
+        if (lines[i].rfind("└── B(int)  calls=1", 0) == 0) {
+            saw_last = true;
+            CHECK(lines[i + 1].rfind("    [", 0) == 0);
+        }
+    }
+    CHECK(saw_branch);
+    CHECK(saw_last);
+}
+
+void test_histogram_roots()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // Two independent root calls in the same thread.
+        stack.on_event(make_event(1, 80, kEventEnter, 0));
+        stack.on_event(make_event(1, 80, kEventExit, 200));   // A: 200 ns
+        stack.on_event(make_event(2, 80, kEventEnter, 300));
+        stack.on_event(make_event(2, 80, kEventExit, 400));   // B: 100 ns
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("A(int)  calls=1") != std::string::npos);
+    CHECK(report.find("B(int)  calls=1") != std::string::npos);
+    // Independent root trees are separated by a blank line.
+    CHECK(report.find("\n\nB(int)  calls=1") != std::string::npos);
 }
 
 void test_histogram_recursion()
@@ -637,6 +709,8 @@ int main()
     test_histogram_report();
     test_histogram_incomplete();
     test_histogram_live_chain();
+    test_histogram_siblings();
+    test_histogram_roots();
     test_histogram_recursion();
     test_histogram_max_depth();
     test_basic_stack();

@@ -106,9 +106,13 @@ by `Output::finish()`, which joins the writer thread first so the trailer cannot
 overtake queued events. Nodes are keyed by an immediate caller edge, not by a
 full call path, which keeps recursion and diamond-shaped call graphs bounded; a
 DFS over the edge tree cuts off when a function is already on the current path
-and marks that node `[recursive]`. A frame that is still live at shutdown is
-kept as an anchor (`calls=0  [incomplete]`) so completed calls made from inside
-it are still rendered under the correct caller chain. Bucket `k >= 1` covers
+and marks that node `[recursive]`. Rendering uses `tree`-style connectors: each
+node has a line prefix (`├── ` or `└── `) and a detail prefix (`│   ` or
+`    `) of the same display width, so histogram lines align with the function
+name while the vertical bars continue. Independent roots in one thread are
+separated by a blank line. A frame that is still live at shutdown is kept as an
+anchor (`calls=0  [incomplete]`) so completed calls made from inside it are
+still rendered under the correct caller chain. Bucket `k >= 1` covers
 `[2^(k-1), 2^k)` ns and bucket 0 is exactly 0 ns, so a 64-bit duration needs at
 most 65 counters per edge. Units are chosen per node from its maximum latency.
 

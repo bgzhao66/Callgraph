@@ -9,8 +9,13 @@
 namespace callgraph {
 namespace {
 
-constexpr size_t kIndentWidth = 2;
 constexpr size_t kBarWidth = 40;
+
+// Four display columns each, like `tree`.
+constexpr const char* kBranch = "├── ";
+constexpr const char* kLast = "└── ";
+constexpr const char* kVertical = "│   ";
+constexpr const char* kBlank = "    ";
 
 struct UnitScale {
     const char* suffix;
@@ -67,11 +72,12 @@ std::string right_justify(const std::string& text, size_t width)
     return std::string(width - text.size(), ' ') + text;
 }
 
-// `note` is appended to the header, for example "  [recursive]" or
-// "  [incomplete]".  Bucket lines share the function name's left margin.
-void append_node(std::string& out, const std::string& name,
-                 const LatencyHistogram& hist, size_t depth,
-                 const std::string& note)
+// `line_prefix` prefixes the function name; `detail_prefix` has the same
+// display width and prefixes the histogram lines, so they line up under the
+// name while the tree's vertical bars stay continuous.
+void append_node(std::string& out, const std::string& line_prefix,
+                 const std::string& detail_prefix, const std::string& name,
+                 const LatencyHistogram& hist, const std::string& note)
 {
     if (hist.calls == 0)
         return;
@@ -89,9 +95,8 @@ void append_node(std::string& out, const std::string& name,
         return;
 
     const UnitScale unit = choose_unit(hist.max_ns);
-    const std::string indent(depth * kIndentWidth, ' ');
 
-    out += indent;
+    out += line_prefix;
     out += name;
 
     char header[512];
@@ -144,7 +149,7 @@ void append_node(std::string& out, const std::string& name,
             bar = 1;
 
         const std::string& label = labels[static_cast<size_t>(i - first)];
-        out += indent;
+        out += detail_prefix;
         out += label;
         out += std::string(label_width - label.size(), ' ');
         out += "  ";
@@ -159,9 +164,10 @@ void append_node(std::string& out, const std::string& name,
 
 // A frame that is still on the stack at shutdown.  It has no measured latency,
 // but it anchors completed calls made from inside it.
-void append_anchor(std::string& out, const std::string& name, size_t depth)
+void append_anchor(std::string& out, const std::string& line_prefix,
+                   const std::string& name)
 {
-    out += std::string(depth * kIndentWidth, ' ');
+    out += line_prefix;
     out += name;
     out += "  calls=0  [incomplete]\n";
 }
@@ -231,23 +237,32 @@ std::string format_histogram_report(const LatencyStats& stats,
         std::unordered_set<uint64_t> path;
 
         // Completed subtree.  A cycle cut-off keeps recursion bounded.
-        std::function<void(uint64_t, uint64_t, size_t)> render_completed =
-            [&](uint64_t parent, uint64_t child, size_t depth) {
+        std::function<void(uint64_t, uint64_t, const std::string&, bool)>
+            render_completed = [&](uint64_t parent, uint64_t child,
+                                   const std::string& parent_prefix,
+                                   bool is_last) {
                 const auto it = thread.edges.find({parent, child});
                 if (it == thread.edges.end())
                     return;
 
+                const std::string line_prefix =
+                    parent_prefix + (is_last ? kLast : kBranch);
+                const std::string detail_prefix =
+                    parent_prefix + (is_last ? kBlank : kVertical);
+
                 const bool recursive = path.contains(child);
-                append_node(out, name_of(child), it->second, depth,
-                            recursive ? "  [recursive]" : "");
+                append_node(out, line_prefix, detail_prefix, name_of(child),
+                            it->second, recursive ? "  [recursive]" : "");
                 if (recursive)
                     return;
 
                 const bool inserted = path.insert(child).second;
                 const auto kids = children.find(child);
                 if (kids != children.end()) {
-                    for (uint64_t grandchild : kids->second)
-                        render_completed(child, grandchild, depth + 1);
+                    for (size_t i = 0; i < kids->second.size(); ++i) {
+                        render_completed(child, kids->second[i], detail_prefix,
+                                         i + 1 == kids->second.size());
+                    }
                 }
                 if (inserted)
                     path.erase(child);
@@ -255,35 +270,54 @@ std::string format_histogram_report(const LatencyStats& stats,
 
         // Live chain at shutdown.  Its frames have no duration, but their
         // completed children still belong underneath them.
-        std::function<void(size_t, size_t)> render_live =
-            [&](size_t index, size_t depth) {
+        std::function<void(size_t, const std::string&, bool)> render_live =
+            [&](size_t index, const std::string& parent_prefix, bool is_last) {
+                std::string line_prefix;
+                std::string detail_prefix;
+                if (index != 0) {
+                    line_prefix =
+                        parent_prefix + (is_last ? kLast : kBranch);
+                    detail_prefix =
+                        parent_prefix + (is_last ? kBlank : kVertical);
+                }
+
                 const uint64_t node = thread.live_stack[index];
-                const uint64_t parent = index == 0
-                                            ? kRootFunction
-                                            : thread.live_stack[index - 1];
+                const uint64_t parent =
+                    index == 0 ? kRootFunction
+                               : thread.live_stack[index - 1];
 
                 const auto edge = thread.edges.find({parent, node});
                 if (edge != thread.edges.end())
-                    append_node(out, name_of(node), edge->second, depth,
-                                "  [incomplete]");
+                    append_node(out, line_prefix, detail_prefix, name_of(node),
+                                edge->second, "  [incomplete]");
                 else
-                    append_anchor(out, name_of(node), depth);
+                    append_anchor(out, line_prefix, name_of(node));
 
                 const bool inserted = path.insert(node).second;
 
-                const auto kids = children.find(node);
-                if (kids != children.end()) {
-                    for (uint64_t grandchild : kids->second) {
+                std::vector<uint64_t> kids;
+                const auto it = children.find(node);
+                if (it != children.end()) {
+                    for (uint64_t grandchild : it->second) {
                         // The next live frame is rendered by the chain itself.
                         if (index + 1 < thread.live_stack.size() &&
                             grandchild == thread.live_stack[index + 1])
                             continue;
-                        render_completed(node, grandchild, depth + 1);
+                        kids.push_back(grandchild);
                     }
                 }
 
-                if (index + 1 < thread.live_stack.size())
-                    render_live(index + 1, depth + 1);
+                const bool has_live_child =
+                    index + 1 < thread.live_stack.size();
+                const size_t total =
+                    kids.size() + (has_live_child ? 1 : 0);
+
+                for (size_t i = 0; i < kids.size(); ++i) {
+                    render_completed(node, kids[i], detail_prefix,
+                                     i + 1 == total);
+                }
+                if (has_live_child)
+                    render_live(index + 1, detail_prefix, true);
 
                 if (inserted)
                     path.erase(node);
@@ -300,11 +334,32 @@ std::string format_histogram_report(const LatencyStats& stats,
         }
         sort_children(kRootFunction, roots);
 
+        bool first_root = true;
         for (uint64_t root : roots) {
-            if (!thread.live_stack.empty() && root == thread.live_stack[0])
-                render_live(0, 0);
-            else
-                render_completed(kRootFunction, root, 0);
+            if (!first_root)
+                out += '\n';
+            first_root = false;
+
+            if (!thread.live_stack.empty() && root == thread.live_stack[0]) {
+                render_live(0, "", false);
+                continue;
+            }
+
+            const auto it = thread.edges.find({kRootFunction, root});
+            if (it == thread.edges.end())
+                continue;
+
+            append_node(out, "", "", name_of(root), it->second, "");
+            const bool inserted = path.insert(root).second;
+            const auto kids = children.find(root);
+            if (kids != children.end()) {
+                for (size_t i = 0; i < kids->second.size(); ++i) {
+                    render_completed(root, kids->second[i], "",
+                                     i + 1 == kids->second.size());
+                }
+            }
+            if (inserted)
+                path.erase(root);
         }
 
         if (thread.incomplete != 0) {

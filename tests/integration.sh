@@ -143,22 +143,11 @@ echo "== latency histogram =="
 grep -q '^=== thread [0-9][0-9]* ===$' "$TMP/hist.trace"
 grep -q 'main  calls=1' "$TMP/hist.trace"
 grep -q 'C(int)  calls=' "$TMP/hist.trace"
+grep -q '└── C(int)  calls=' "$TMP/hist.trace"
+grep -q '├── ' "$TMP/hist.trace"
+grep -q '│   \[' "$TMP/hist.trace"
 grep -Eq '^\[ .*\) +[0-9]+  #' "$TMP/hist.trace"
 grep -q ' : 0 -> main' "$TMP/hist.trace"
-# Bucket lines share the function name's indentation.
-awk '
-    /C\(int\)  calls=/ {
-        match($0, /^ */);
-        node_indent = RLENGTH;
-        if (getline <= 0)
-            exit 1;
-        match($0, /^ */);
-        if (RLENGTH != node_indent)
-            exit 1;
-        found = 1;
-    }
-    END { exit found ? 0 : 1 }
-' "$TMP/hist.trace"
 # Without the option the report is absent.
 ! grep -q '^=== thread ' "$TMP/simple.trace"
 
