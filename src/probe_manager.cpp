@@ -54,7 +54,8 @@ void ProbeManager::load()
 
     events_map_ = bpf_object__find_map_by_name(obj_, "events");
     lost_map_ = bpf_object__find_map_by_name(obj_, "lost");
-    if (!events_map_ || !lost_map_)
+    config_map_ = bpf_object__find_map_by_name(obj_, "config");
+    if (!events_map_ || !lost_map_ || !config_map_)
         fail("embedded BPF object is missing required maps");
 
     if (bpf_map__set_max_entries(events_map_, ringbuf_size_) != 0)
@@ -68,6 +69,20 @@ void ProbeManager::load()
     exit_prog_ = bpf_object__find_program_by_name(obj_, "on_exit");
     if (!entry_prog_ || !exit_prog_)
         fail("embedded BPF object is missing required programs");
+}
+
+void ProbeManager::set_capture_arguments(bool enabled)
+{
+    if (!config_map_)
+        return;
+
+    uint32_t key = 0;
+    uint8_t value = enabled ? 1 : 0;
+    const int err =
+        bpf_map_update_elem(bpf_map__fd(config_map_), &key, &value, BPF_ANY);
+    if (err != 0)
+        fail("cannot configure BPF argument capture: %s",
+             errno_string(-err).c_str());
 }
 
 void ProbeManager::attach(const std::string& module_path,

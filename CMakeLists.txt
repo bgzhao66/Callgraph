@@ -63,6 +63,14 @@ set_target_properties(libbpf PROPERTIES
 )
 add_dependencies(libbpf libbpf_build)
 
+# The BPF program captures x86-64 SysV argument registers.  On other
+# architectures the fields remain zero and --args is rejected at runtime.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(BPF_ARCH_DEFINE -DCALLGRAPH_BPF_X86_64=1)
+else()
+  set(BPF_ARCH_DEFINE "")
+endif()
+
 # ---------------------------------------------------------------------------
 # BPF program: compile and embed.
 # ---------------------------------------------------------------------------
@@ -70,6 +78,7 @@ set(BPF_OBJ ${CMAKE_BINARY_DIR}/trace.bpf.o)
 add_custom_command(
   OUTPUT ${BPF_OBJ}
   COMMAND ${CLANG_EXECUTABLE} -g -O2 -target bpf
+          ${BPF_ARCH_DEFINE}
           -I${LIBBPF_PREFIX}/include
           -I/usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
           -I${CMAKE_CURRENT_SOURCE_DIR}/bpf
@@ -99,6 +108,8 @@ add_executable(callgraph
   src/main.cpp
   src/common.cpp
   src/elf_resolver.cpp
+  src/dwarf_args.cpp
+  src/arguments.cpp
   src/module_manager.cpp
   src/probe_manager.cpp
   src/call_stack.cpp
@@ -143,6 +154,7 @@ if(BUILD_TESTING)
   add_executable(callgraph_tests
     tests/unit/test_main.cpp
     src/common.cpp
+    src/arguments.cpp
     src/call_stack.cpp
     src/output.cpp
   )

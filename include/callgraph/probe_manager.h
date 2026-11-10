@@ -26,6 +26,7 @@ public:
     ProbeManager& operator=(const ProbeManager&) = delete;
 
     void load();
+    void set_capture_arguments(bool enabled);
     void attach(const std::string& module_path,
                 const std::vector<FunctionInfo>& functions, bool ret_mode);
 
@@ -57,6 +58,7 @@ private:
     bpf_program* exit_prog_ = nullptr;
     bpf_map* events_map_ = nullptr;
     bpf_map* lost_map_ = nullptr;
+    bpf_map* config_map_ = nullptr;
 
     std::vector<bpf_link*> links_;
     bool used_multi_ = false;

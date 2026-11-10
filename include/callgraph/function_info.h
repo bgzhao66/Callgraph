@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "callgraph/argument_info.h"
+
 namespace callgraph {
 
 struct FunctionInfo {
@@ -23,6 +25,9 @@ struct FunctionInfo {
     std::string module_path;
     std::string source_file;
     uint32_t source_line = 0;
+
+    // Parameter metadata from DWARF, filled when --args is enabled.
+    FunctionSignature signature;
 };
 
 }  // namespace callgraph

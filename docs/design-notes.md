@@ -20,8 +20,9 @@ sections). `__cxa_demangle` handles C++ names, including clone suffixes such as
 information through the build ID or `.gnu_debuglink` and its symbol table is
 used instead; `dwfl_report_offline` reports PIE modules at a synthetic base, so
 the module bias is subtracted before computing uprobe offsets. Traversing
-DWARF DIEs directly (for debug files that contain no `.symtab`) is still
-deferred, and source file/line information is not collected yet.
+DWARF DIEs to recover symbol names (for debug files that contain no `.symtab`)
+is still deferred; `--args` does walk subprogram DIEs, but only after symbols
+have been resolved. Source file/line information is not collected yet.
 
 ### Vendored libbpf
 
@@ -69,6 +70,26 @@ hidden frames still keep the remaining depths correct.
 demangled name, keeping the arrow column fixed. It does not affect filtering or
 the reconstructed depth.
 
+### Function arguments
+
+`--args` appends entry-time parameter values to `->` lines. The BPF program
+captures the six SysV x86-64 integer/pointer registers (`rdi`, `rsi`, `rdx`,
+`rcx`, `r8`, `r9`) and six 64-bit words from the user stack at `rsp + 8`; the
+event grows from 32 to 128 bytes. Exit events carry zeroed argument slots.
+
+Parameter names, order, and types come from DWARF, resolved through libdwfl so
+that build-id and `.gnu_debuglink` debug files work. Each parameter is placed
+using the x86-64 SysV ABI: scalars consume a GP register, aggregates consume
+one or two GP registers (or the stack), and floating-point values consume SSE
+registers. The uprobe `pt_regs` context does not include XMM state, so
+register-passed floats are shown as `?`; stack-spilled floats are decoded from
+the captured stack words. Artificial parameters such as C++ `this` are used for
+register allocation but omitted from the output. Aggregates are printed as raw
+64-bit words, and pointers are not dereferenced.
+
+The option is x86-64 only. Functions without DWARF, or whose DWARF type cannot
+be classified, simply omit the suffix.
+
 ### Launch synchronization
 
 `run` uses `fork` + `PTRACE_TRACEME` + `SIGSTOP`, then sets
@@ -110,7 +131,7 @@ to the attach point: frames already on the stack before attachment are unknown.
 | Phase | Status |
 |---|---|
 | 0. spikes (uprobe_multi, ptrace launch, offsets) | done |
-| 1. MVP: main exe, run/attach, filters, depth, output | done |
+| 1. MVP: main exe, run/attach, filters, depth, output | done; `--args` added |
 | 2. shared libraries, dlopen, module lifecycle | partial: `--all-modules`/`--module`, polling discovery; no perf-mmap events |
 | 3. robustness: thread exit, desync policy, stripped+DWARF, batch failures | partial (desync, batch fallback, ring-loss, signals, external debug via libdwfl done; DIE-only debug files pending) |
 | 4. statistics (`--summary`), JSON, source locations | pending |
@@ -124,8 +145,11 @@ to the attach point: frames already on the stack before attachment are unknown.
 - Modules are discovered by polling `/proc/<pid>/maps` (about every 100 ms).
   Calls in a library's constructors before the first poll are missed.
 - `ret` mode is x86-only and requires libopcodes.
+- `--args` is x86-64 SysV only. Register-passed floating-point arguments are
+  unavailable because uprobe `pt_regs` has no XMM state, and pointers are not
+  dereferenced.
 - Child processes created with `fork` are not followed.
 - `run` mode leaves the child's stdout connected to the same stream as the
   trace; use `-o` to separate them.
-- No argument/return-value capture.
+- Return values are not captured.
 - No statistics or summary mode yet.

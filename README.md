@@ -24,6 +24,7 @@ The current implementation includes:
 - entry and return events over a BPF ring buffer
 - per-TID call-stack reconstruction, recursion, multi-threaded tracing
 - include/exclude filters, maximum displayed depth, dry-run listing
+- optional function argument values from DWARF (`--args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 
 Not implemented yet: execution-time statistics and child-process (`fork`)
@@ -37,6 +38,8 @@ following.
 | C++20 compiler, CMake 3.20+ | host build |
 | clang with the BPF target | compiling `bpf/trace.bpf.c` |
 | libelf, libdw, zlib | ELF symbols, external debug info, compression |
+| DWARF debug info (`-g` or a separate debug file) | `--args` parameter names and types |
+| x86-64 | `--args` value capture (SysV ABI) |
 | `binutils-dev` (libopcodes) | optional; enables `--return-mode=ret` |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
 | ptrace permission | attach mode |
@@ -70,6 +73,9 @@ sudo ./build/callgraph run -T -- ./my_app
 
 # Indent names by depth (two spaces per level)
 sudo ./build/callgraph run --indent 2 -- ./my_app
+
+# Show argument values after names (requires DWARF debug info)
+sudo ./build/callgraph run --args -- ./my_app
 
 # Attach to a running process
 sudo ./build/callgraph attach -p 12345
@@ -105,6 +111,7 @@ Usage:
   -T, --wall-clock      wall-clock timestamps (default: seconds since boot)
       --max-depth N     print events with depth <= N (default: unlimited)
       --indent N        indent names by depth*N spaces (default: 0)
+      --args            show function arguments after names (needs DWARF)
       --batch-size N    functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -162,6 +169,30 @@ With `--indent 2`:
 85215.196498980 26570 : 2 ->     B(int)
 85215.196522041 26570 : 1 <-   C(int)
 ```
+
+With `--args`, entry events append the captured parameter values:
+
+```
+85215.196474365 26570 : 0 -> main
+85215.196489646 26570 : 1 -> C(int) [x=3]
+85215.196498980 26570 : 1 <- C(int)
+85215.196522041 26570 : 0 <- main
+```
+
+Arguments are shown only on `->` lines. Parameter names and types come from
+DWARF, so the target must be compiled with `-g` (or have separate debug info).
+The values are captured at function entry. Return events do not repeat them.
+
+Limitations:
+
+- `--args` currently supports the x86-64 SysV ABI only.
+- Floating-point arguments passed in XMM registers are printed as `?`, because
+  the uprobe `pt_regs` context does not contain XMM state. Stack-passed
+  `float`/`double` values can still be decoded.
+- Aggregates are printed as raw 64-bit words (`{0x..., 0x...}`); aggregates
+  containing floating-point fields are printed as `?`.
+- Pointers are printed as hexadecimal addresses; they are not dereferenced.
+- Functions without DWARF information simply have no argument suffix.
 
 All events go to stdout by default; diagnostics and the final summary go to
 stderr.

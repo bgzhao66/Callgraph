@@ -7,9 +7,17 @@
 
 namespace callgraph {
 
+CallStack::CallStack(const std::vector<std::string>& names,
+                     const std::vector<FunctionSignature>* signatures,
+                     Output& output, int max_depth, bool verbose)
+    : names_(names), signatures_(signatures), output_(output),
+      max_depth_(max_depth), verbose_(verbose)
+{
+}
+
 CallStack::CallStack(const std::vector<std::string>& names, Output& output,
                      int max_depth, bool verbose)
-    : names_(names), output_(output), max_depth_(max_depth), verbose_(verbose)
+    : CallStack(names, nullptr, output, max_depth, verbose)
 {
 }
 
@@ -26,8 +34,13 @@ void CallStack::on_event(const TraceEvent& event)
         auto& state = threads_[event.tid];
         const uint32_t depth = static_cast<uint32_t>(state.frames.size());
 
-        if (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_))
-            output_.emit(event.ts, event.tid, depth, "->", name);
+        if (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) {
+            std::string display = name;
+            if (signatures_ && event.func_id < signatures_->size())
+                display += format_arguments((*signatures_)[event.func_id],
+                                            event);
+            output_.emit(event.ts, event.tid, depth, "->", display);
+        }
 
         state.frames.push_back({event.func_id, event.ts});
         ++entries_;

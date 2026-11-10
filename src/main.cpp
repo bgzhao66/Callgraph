@@ -21,6 +21,7 @@
 
 #include "callgraph/call_stack.h"
 #include "callgraph/common.h"
+#include "callgraph/dwarf_args.h"
 #include "callgraph/elf_resolver.h"
 #include "callgraph/event_collector.h"
 #include "callgraph/module_manager.h"
@@ -49,6 +50,7 @@ struct Options {
     bool wall_clock = false;
     int max_depth = -1;
     size_t indent_step = 0;
+    bool show_args = false;
     size_t batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
     bool dry_run = false;
@@ -76,6 +78,7 @@ void usage(FILE* out)
             "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
+            "      --args            show function arguments after names (needs DWARF)\n"
             "      --batch-size N    functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
@@ -215,6 +218,8 @@ Options parse_args(int argc, char** argv)
             if (indent < 0)
                 usage_error("--indent must be >= 0");
             options.indent_step = static_cast<size_t>(indent);
+        } else if (arg == "--args") {
+            options.show_args = true;
         } else if (arg == "--batch-size") {
             options.batch_size = static_cast<size_t>(parse_long(value(), arg));
         } else if (arg == "--ringbuf-size") {
@@ -255,6 +260,10 @@ Options parse_args(int argc, char** argv)
     if (options.return_mode == "ret")
         usage_error("--return-mode=ret requires libopcodes (install binutils-dev "
                     "and rebuild)");
+#endif
+#if !defined(__x86_64__)
+    if (options.show_args)
+        usage_error("--args is only supported on x86-64");
 #endif
 
     const long page_size = sysconf(_SC_PAGESIZE);
@@ -386,10 +395,14 @@ public:
             return false;
         }
 
+        if (options_.show_args)
+            annotate_parameters(path, selected);
+
         const size_t base = names_.size();
         for (size_t i = 0; i < selected.size(); ++i) {
             selected[i].function_id = base + i;
             names_.push_back(selected[i].name);
+            signatures_.push_back(std::move(selected[i].signature));
         }
 
         if (probes_)
@@ -412,6 +425,10 @@ public:
     }
 
     const std::vector<std::string>& names() const { return names_; }
+    const std::vector<FunctionSignature>& signatures() const
+    {
+        return signatures_;
+    }
     const std::vector<PlannedModule>& modules() const { return modules_; }
     bool has_path(const std::string& path) const
     {
@@ -425,6 +442,7 @@ private:
     bool ret_mode_;
 
     std::vector<std::string> names_;
+    std::vector<FunctionSignature> signatures_;
     std::vector<PlannedModule> modules_;
     std::unordered_set<std::string> attached_;
     bool warned_exceptions_ = false;
@@ -554,6 +572,7 @@ int main(int argc, char** argv)
         ProbeManager probes(target, options.ringbuf_size, options.batch_size,
                             options.verbose);
         probes.load();
+        probes.set_capture_arguments(options.show_args);
 
         const bool ret_mode = options.return_mode == "ret";
         ModuleRegistry registry(options, filter, &probes, ret_mode);
@@ -564,8 +583,9 @@ int main(int argc, char** argv)
         if (registry.names().empty())
             log_info("no functions matched yet; waiting for matching modules to load");
 
-        CallStack stack(registry.names(), output, options.max_depth,
-                        options.verbose);
+        CallStack stack(registry.names(),
+                        options.show_args ? &registry.signatures() : nullptr,
+                        output, options.max_depth, options.verbose);
 
         if (is_child) {
             ProcessController::detach(target);

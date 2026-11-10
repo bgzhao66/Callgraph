@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "callgraph/argument_info.h"
 #include "callgraph/event.h"
 
 namespace callgraph {
@@ -23,6 +24,10 @@ struct ThreadState {
 // Reconstructs one logical call stack per TID from the event stream.
 class CallStack {
 public:
+    CallStack(const std::vector<std::string>& names,
+              const std::vector<FunctionSignature>* signatures, Output& output,
+              int max_depth, bool verbose);
+
     CallStack(const std::vector<std::string>& names, Output& output,
               int max_depth, bool verbose);
 
@@ -37,6 +42,7 @@ public:
 
 private:
     const std::vector<std::string>& names_;
+    const std::vector<FunctionSignature>* signatures_;
     Output& output_;
     int max_depth_;
     bool verbose_;

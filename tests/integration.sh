@@ -72,6 +72,46 @@ grep -Eq ' : 2 -> {5}B[(]int[)]$' "$TMP/indent.trace"
 grep -Eq ' : 3 -> {7}A[(]int[)]$' "$TMP/indent.trace"
 grep -Eq ' : 3 <- {7}A[(]int[)]$' "$TMP/indent.trace"
 
+if [ "$(uname -m)" = "x86_64" ]; then
+    echo "== function arguments =="
+    cat > "$TMP/args.cpp" <<'EOF'
+#include <cstdio>
+
+__attribute__((noinline)) int many(int a, int b, int c, int d, int e, int f,
+                                   int g)
+{
+    return a + b + c + d + e + f + g;
+}
+
+__attribute__((noinline)) int ptr(const char* s, bool flag, char ch)
+{
+    return (s != nullptr) + flag + ch;
+}
+
+int main()
+{
+    std::printf("%d %d\n", many(1, 2, 3, 4, 5, 6, 7),
+                ptr("hi", true, 'A'));
+    return 0;
+}
+EOF
+    g++ -O0 -g -o "$TMP/args" "$TMP/args.cpp"
+    "$BIN" run --args -o "$TMP/args.trace" --regex \
+        --include '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
+        -- "$TMP/args" >/dev/null 2>/dev/null
+    grep -q ' : 1 -> many(int, int, int, int, int, int, int) \[a=1, b=2, c=3, d=4, e=5, f=6, g=7\]' "$TMP/args.trace"
+    grep -Eq " : 1 -> ptr[(]char const[*], bool, char[)] \\[s=0x[0-9a-f]+, flag=true, ch='A'\\]" "$TMP/args.trace"
+    grep -q ' : 1 <- many(int, int, int, int, int, int, int)$' "$TMP/args.trace"
+
+    echo "== function arguments with external debug info =="
+    "$BIN" run --args -o "$TMP/detached-args.trace" --regex \
+        --include '^(main|A[(]int[)])$' -- "$TMP/detached" \
+        >/dev/null 2>/dev/null
+    grep -q 'A(int) \[x=3\]' "$TMP/detached-args.trace"
+else
+    echo "== function arguments skipped (not x86-64) =="
+fi
+
 echo "== trace recursive =="
 "$BIN" run -o "$TMP/rec.trace" --regex \
     --include '^(main|factorial[(]int[)])$' -- "$TMP/recursive" \

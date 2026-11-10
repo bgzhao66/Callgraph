@@ -173,6 +173,163 @@ void test_indent()
     unlink(path.c_str());
 }
 
+ParameterInfo make_parameter(const std::string& name, ArgumentKind kind,
+                             uint32_t size, bool is_signed = false)
+{
+    ParameterInfo parameter;
+    parameter.name = name;
+    parameter.kind = kind;
+    parameter.byte_size = size;
+    parameter.is_signed = is_signed;
+    return parameter;
+}
+
+void test_argument_formatting()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+    signature.parameters.push_back(
+        make_parameter("x", ArgumentKind::Integer, 4, true));
+    signature.parameters.push_back(
+        make_parameter("p", ArgumentKind::Pointer, 8));
+    signature.parameters.push_back(
+        make_parameter("flag", ArgumentKind::Boolean, 1));
+    signature.parameters.push_back(
+        make_parameter("ch", ArgumentKind::Char, 1, true));
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    event.args[0] = 3;
+    event.args[1] = 0x1234;
+    event.args[2] = 1;
+    event.args[3] = 'A';
+
+    CHECK(format_arguments(signature, event) ==
+          " [x=3, p=0x1234, flag=true, ch='A']");
+}
+
+void test_argument_signedness()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+    signature.parameters.push_back(
+        make_parameter("x", ArgumentKind::Integer, 4, true));
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    event.args[0] = 0xfffffffeu;
+    CHECK(format_arguments(signature, event) == " [x=-2]");
+
+    signature.parameters[0].is_signed = false;
+    CHECK(format_arguments(signature, event) == " [x=4294967294]");
+}
+
+void test_argument_stack()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+    for (int i = 0; i < 7; ++i)
+        signature.parameters.push_back(
+            make_parameter("a" + std::to_string(i), ArgumentKind::Integer, 4,
+                           true));
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    for (int i = 0; i < 6; ++i)
+        event.args[i] = static_cast<uint64_t>(i + 1);
+    event.stack[0] = 7;
+
+    CHECK(format_arguments(signature, event) ==
+          " [a0=1, a1=2, a2=3, a3=4, a4=5, a5=6, a6=7]");
+}
+
+void test_argument_artificial()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+
+    ParameterInfo self = make_parameter("this", ArgumentKind::Pointer, 8);
+    self.artificial = true;
+    signature.parameters.push_back(self);
+    signature.parameters.push_back(
+        make_parameter("x", ArgumentKind::Integer, 4, true));
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    event.args[0] = 0xdeadbeef;
+    event.args[1] = 9;
+
+    CHECK(format_arguments(signature, event) == " [x=9]");
+}
+
+void test_argument_aggregate()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+    ParameterInfo aggregate = make_parameter("s", ArgumentKind::Aggregate, 16);
+    signature.parameters.push_back(aggregate);
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    event.args[0] = 1;
+    event.args[1] = 2;
+    CHECK(format_arguments(signature, event) == " [s={0x1, 0x2}]");
+
+    signature.parameters[0].contains_float = true;
+    classify_parameters(signature);
+    CHECK(format_arguments(signature, event) == " [s=?]");
+}
+
+void test_argument_stack_float()
+{
+    FunctionSignature signature;
+    signature.has_signature = true;
+    for (int i = 0; i < 9; ++i)
+        signature.parameters.push_back(
+            make_parameter("f" + std::to_string(i), ArgumentKind::Float, 8));
+    classify_parameters(signature);
+
+    TraceEvent event = {};
+    // 2.5 as an IEEE-754 double.
+    event.stack[0] = 0x4004000000000000ULL;
+
+    const std::string rendered = format_arguments(signature, event);
+    CHECK(rendered.find("f8=2.5") != std::string::npos);
+    CHECK(rendered.find("f0=?") != std::string::npos);
+}
+
+void test_call_stack_arguments()
+{
+    const std::vector<std::string> names = {"foo"};
+    FunctionSignature signature;
+    signature.has_signature = true;
+    signature.parameters.push_back(
+        make_parameter("x", ArgumentKind::Integer, 4, true));
+    classify_parameters(signature);
+    const std::vector<FunctionSignature> signatures = {signature};
+
+    const std::string path = temp_path();
+    {
+        Output output(path);
+        CallStack stack(names, &signatures, output, -1, false);
+
+        TraceEvent enter = make_event(0, 5, kEventEnter, 1);
+        enter.args[0] = 42;
+        stack.on_event(enter);
+        stack.on_event(make_event(0, 5, kEventExit, 2));
+        output.stop();
+    }
+
+    const auto lines = read_lines(path);
+    CHECK(lines.size() == 2);
+    if (lines.size() == 2) {
+        CHECK(lines[0].find(" : 0 -> foo [x=42]") != std::string::npos);
+        CHECK(lines[1].find(" : 0 <- foo") != std::string::npos);
+        CHECK(lines[1].find("[x=42]") == std::string::npos);
+    }
+    unlink(path.c_str());
+}
+
 void test_desync()
 {
     const auto names = make_names();
@@ -238,6 +395,13 @@ int main()
     test_max_depth();
     test_wall_clock();
     test_indent();
+    test_argument_formatting();
+    test_argument_signedness();
+    test_argument_stack();
+    test_argument_artificial();
+    test_argument_aggregate();
+    test_argument_stack_float();
+    test_call_stack_arguments();
 
     if (failures != 0) {
         fprintf(stderr, "%d test(s) failed\n", failures);
