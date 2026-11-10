@@ -68,6 +68,9 @@ sudo ./build/callgraph run -- ./my_app arg1 arg2
 # Wall-clock timestamps instead of seconds since boot
 sudo ./build/callgraph run -T -- ./my_app
 
+# Indent names by depth (two spaces per level)
+sudo ./build/callgraph run --indent 2 -- ./my_app
+
 # Attach to a running process
 sudo ./build/callgraph attach -p 12345
 
@@ -101,6 +104,7 @@ Usage:
       --module GLOB     also trace mapped modules matching GLOB
   -T, --wall-clock      wall-clock timestamps (default: seconds since boot)
       --max-depth N     print events with depth <= N (default: unlimited)
+      --indent N        indent names by depth*N spaces (default: 0)
       --batch-size N    functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -143,10 +147,21 @@ Example (`examples/simple.cpp`, filtered to `main`, `A`, `B`, `C`):
   default. It is not an epoch timestamp.
 - With `-T` / `--wall-clock`, `ts` is local wall-clock time in ISO 8601, for
   example `2026-11-10T00:19:31.462805287+08:00`.
+- `--indent N` inserts `depth * N` spaces before the name, leaving the arrow
+  column fixed.
 - `tid` is the Linux thread ID; all threads share the same stream.
 - `depth` is maintained independently per TID.
 - Entry events print the stack size *before* pushing the frame.
 - Return events print the depth of the matched frame *before* popping it.
+
+With `--indent 2`:
+
+```
+85215.196474365 26570 : 0 -> main
+85215.196489646 26570 : 1 ->   C(int)
+85215.196498980 26570 : 2 ->     B(int)
+85215.196522041 26570 : 1 <-   C(int)
+```
 
 All events go to stdout by default; diagnostics and the final summary go to
 stderr.
@@ -171,6 +186,10 @@ Filtering happens at instrumentation time. A function excluded by
 
 `--max-depth N` hides events deeper than `N` but keeps tracking them, so the
 depths of the remaining events stay correct.
+
+`--indent N` is display-only: `depth * N` spaces are inserted before the
+demangled name, leaving the arrow column fixed. It does not affect filtering or
+the reconstructed depth.
 
 CRT/startup functions (`_start`, `_init`, `frame_dummy`, ...) are ordinary
 functions and are traced by default. As a result `main` normally appears at

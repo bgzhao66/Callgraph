@@ -62,6 +62,16 @@ echo "== wall-clock timestamps =="
     --include '^(main|C[(]int[)])$' -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}[+-][0-9]{2}:[0-9]{2} [0-9]+ : 0 -> main' "$TMP/wall.trace"
 
+echo "== indentation =="
+"$BIN" run --indent 2 -o "$TMP/indent.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+grep -Eq ' : 0 -> main$' "$TMP/indent.trace"
+grep -Eq ' : 1 -> {3}C[(]int[)]$' "$TMP/indent.trace"
+grep -Eq ' : 2 -> {5}B[(]int[)]$' "$TMP/indent.trace"
+grep -Eq ' : 3 -> {7}A[(]int[)]$' "$TMP/indent.trace"
+grep -Eq ' : 3 <- {7}A[(]int[)]$' "$TMP/indent.trace"
+
 echo "== trace recursive =="
 "$BIN" run -o "$TMP/rec.trace" --regex \
     --include '^(main|factorial[(]int[)])$' -- "$TMP/recursive" \

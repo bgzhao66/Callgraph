@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -24,7 +25,8 @@ enum class TimestampMode {
 class Output {
 public:
     explicit Output(const std::string& path,
-                    TimestampMode mode = TimestampMode::BootSeconds);
+                    TimestampMode mode = TimestampMode::BootSeconds,
+                    size_t indent_step = 0);
     ~Output();
 
     Output(const Output&) = delete;
@@ -45,6 +47,7 @@ private:
 
     TimestampMode mode_;
     int64_t wall_offset_ns_ = 0;
+    size_t indent_step_ = 0;
 
     std::mutex mu_;
     std::condition_variable cv_;

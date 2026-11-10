@@ -48,6 +48,7 @@ struct Options {
     std::vector<std::string> modules;
     bool wall_clock = false;
     int max_depth = -1;
+    size_t indent_step = 0;
     size_t batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
     bool dry_run = false;
@@ -74,6 +75,7 @@ void usage(FILE* out)
             "      --module GLOB     also trace mapped modules matching GLOB\n"
             "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
+            "      --indent N        indent names by depth*N spaces (default: 0)\n"
             "      --batch-size N    functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
@@ -208,6 +210,11 @@ Options parse_args(int argc, char** argv)
             options.wall_clock = true;
         } else if (arg == "--max-depth") {
             options.max_depth = static_cast<int>(parse_long(value(), arg));
+        } else if (arg == "--indent") {
+            const long indent = parse_long(value(), arg);
+            if (indent < 0)
+                usage_error("--indent must be >= 0");
+            options.indent_step = static_cast<size_t>(indent);
         } else if (arg == "--batch-size") {
             options.batch_size = static_cast<size_t>(parse_long(value(), arg));
         } else if (arg == "--ringbuf-size") {
@@ -542,7 +549,8 @@ int main(int argc, char** argv)
 
         Output output(options.output, options.wall_clock
                                           ? TimestampMode::WallClock
-                                          : TimestampMode::BootSeconds);
+                                          : TimestampMode::BootSeconds,
+                      options.indent_step);
         ProbeManager probes(target, options.ringbuf_size, options.batch_size,
                             options.verbose);
         probes.load();

@@ -143,6 +143,36 @@ void test_wall_clock()
     unlink(path.c_str());
 }
 
+void test_indent()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+
+    {
+        Output output(path, TimestampMode::BootSeconds, 2);
+        CallStack stack(names, output, -1, false);
+        stack.on_event(make_event(0, 42, kEventEnter, 1));
+        stack.on_event(make_event(1, 42, kEventEnter, 2));
+        stack.on_event(make_event(2, 42, kEventEnter, 3));
+        stack.on_event(make_event(2, 42, kEventExit, 4));
+        stack.on_event(make_event(1, 42, kEventExit, 5));
+        stack.on_event(make_event(0, 42, kEventExit, 6));
+        output.stop();
+    }
+
+    const auto lines = read_lines(path);
+    CHECK(lines.size() == 6);
+    if (lines.size() == 6) {
+        CHECK(lines[0].find(" : 0 -> main") != std::string::npos);
+        CHECK(lines[1].find(" : 1 ->   A(int)") != std::string::npos);
+        CHECK(lines[2].find(" : 2 ->     B(int)") != std::string::npos);
+        CHECK(lines[3].find(" : 2 <-     B(int)") != std::string::npos);
+        CHECK(lines[4].find(" : 1 <-   A(int)") != std::string::npos);
+        CHECK(lines[5].find(" : 0 <- main") != std::string::npos);
+    }
+    unlink(path.c_str());
+}
+
 void test_desync()
 {
     const auto names = make_names();
@@ -207,6 +237,7 @@ int main()
     test_desync();
     test_max_depth();
     test_wall_clock();
+    test_indent();
 
     if (failures != 0) {
         fprintf(stderr, "%d test(s) failed\n", failures);

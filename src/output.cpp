@@ -1,5 +1,6 @@
 #include "callgraph/output.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <ctime>
@@ -10,7 +11,8 @@
 
 namespace callgraph {
 
-Output::Output(const std::string& path, TimestampMode mode) : mode_(mode)
+Output::Output(const std::string& path, TimestampMode mode, size_t indent_step)
+    : mode_(mode), indent_step_(indent_step)
 {
     if (mode_ == TimestampMode::WallClock) {
         struct timespec monotonic = {};
@@ -97,11 +99,23 @@ void Output::emit(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
     const int suffix_length = snprintf(suffix, sizeof(suffix), " %u : %u %s ",
                                        tid, depth, arrow);
 
+    // Keep the arrow column fixed; only the name moves.  Cap the indent so a
+    // pathological --indent/depth combination cannot grow a line without bound.
+    size_t indent = 0;
+    if (indent_step_ != 0 && depth != 0) {
+        constexpr size_t kMaxIndent = 4096;
+        if (indent_step_ > kMaxIndent / depth)
+            indent = kMaxIndent;
+        else
+            indent = static_cast<size_t>(depth) * indent_step_;
+    }
+
     std::string line;
-    line.reserve(stamp.size() + static_cast<size_t>(suffix_length) +
+    line.reserve(stamp.size() + static_cast<size_t>(suffix_length) + indent +
                  name.size() + 1);
     line.append(stamp);
     line.append(suffix, static_cast<size_t>(suffix_length));
+    line.append(indent, ' ');
     line.append(name);
     line.push_back('\n');
 

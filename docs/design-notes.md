@@ -63,6 +63,12 @@ Filters are applied when probes are installed, not when events are printed.
 Depth counts instrumented frames only. `--max-depth` is display-only so that
 hidden frames still keep the remaining depths correct.
 
+### Indentation
+
+`--indent N` is display-only: it inserts `depth * N` spaces before the
+demangled name, keeping the arrow column fixed. It does not affect filtering or
+the reconstructed depth.
+
 ### Launch synchronization
 
 `run` uses `fork` + `PTRACE_TRACEME` + `SIGSTOP`, then sets
