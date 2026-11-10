@@ -70,6 +70,26 @@ void test_demangle()
     CHECK(demangle_symbol("square.constprop.0") == "square.constprop.0");
 }
 
+void test_errno_string()
+{
+    CHECK(errno_string(524).find("ENOTSUPP") != std::string::npos);
+    CHECK(errno_string(524).find("524") != std::string::npos);
+    CHECK(errno_string(-524) == errno_string(524));
+    CHECK(errno_string(13) == "Permission denied");
+
+    CHECK(readable_error_message("unknown error (-524)") ==
+          "Operation not supported (ENOTSUPP, kernel errno 524)");
+    CHECK(readable_error_message("prog 'on_exit': failed: unknown error (-524)") ==
+          "prog 'on_exit': failed: Operation not supported "
+          "(ENOTSUPP, kernel errno 524)");
+    CHECK(readable_error_message("two: unknown error (-524) and (-524)") ==
+          "two: Operation not supported (ENOTSUPP, kernel errno 524) and "
+          "(-524)");
+    CHECK(readable_error_message("nothing to rewrite") ==
+          "nothing to rewrite");
+    CHECK(readable_error_message("unknown error (") == "unknown error (");
+}
+
 bool looks_like_boot_seconds(const std::string& line)
 {
     const auto space = line.find(' ');
@@ -390,6 +410,7 @@ void test_max_depth()
 int main()
 {
     test_demangle();
+    test_errno_string();
     test_basic_stack();
     test_desync();
     test_max_depth();

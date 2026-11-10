@@ -17,13 +17,27 @@ namespace {
 
 bool g_libbpf_verbose = false;
 
+// Kernel-internal ENOTSUPP (include/linux/errno.h).  It is distinct from the
+// userspace EOPNOTSUPP/ENOTSUP (95) and is returned by uprobe registration when
+// the kernel cannot probe the instruction at a particular offset.
+constexpr int kEnNotSupp = 524;
+
 int libbpf_print_cb(enum libbpf_print_level level, const char* format, va_list args)
 {
     if (level == LIBBPF_DEBUG && !g_libbpf_verbose)
         return 0;
     if (level == LIBBPF_INFO && !g_libbpf_verbose)
         return 0;
-    return vfprintf(stderr, format, args);
+
+    char buf[2048];
+    const int len = vsnprintf(buf, sizeof(buf), format, args);
+    if (len < 0)
+        return 0;
+    const size_t size =
+        std::min(static_cast<size_t>(len), sizeof(buf) - 1);
+    const std::string message =
+        readable_error_message(std::string(buf, size));
+    return fputs(message.c_str(), stderr) < 0 ? -1 : 0;
 }
 
 }  // namespace
@@ -176,6 +190,15 @@ void ProbeManager::attach_range(bpf_program* prog, const std::string& path,
         return;
     }
 
+    if (err == -kEnNotSupp) {
+        // One of the offsets is not a probeable instruction.  Keep bisecting
+        // so only that offset is dropped; the rest stay in multi-uprobe links.
+        log_verbose("kernel rejected a %zu-offset uprobe_multi batch (%s); "
+                    "narrowing it down to the unsupported offset(s)",
+                    end - begin,
+                    errno_string(static_cast<int>(-err)).c_str());
+    }
+
     if (end - begin > 1) {
         const size_t mid = begin + (end - begin) / 2;
         attach_range(prog, path, offsets, cookies, begin, mid, retprobe);
@@ -201,9 +224,16 @@ void ProbeManager::attach_single(bpf_program* prog, const std::string& path,
         const long err = libbpf_get_error(link);
         if (err != 0) {
             ++attach_failures_;
+            const int code = static_cast<int>(-err);
             log_warn("cannot attach probe at %s+0x%llx: %s", path.c_str(),
                      static_cast<unsigned long long>(offsets[i]),
-                     errno_string(static_cast<int>(-err)).c_str());
+                     errno_string(code).c_str());
+            if (code == kEnNotSupp) {
+                log_warn("the kernel rejected the instruction at this offset; "
+                         "it may point into data or padding, start with an "
+                         "int3 (0xcc) byte, or fall in the middle of an "
+                         "instruction");
+            }
             continue;
         }
         links_.push_back(link);

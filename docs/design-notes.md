@@ -126,6 +126,25 @@ Attach discovers the executable through `/proc/<pid>/exe`, attaches with the
 target TGID (all threads), and polls a pidfd for target exit. Depth is relative
 to the attach point: frames already on the stack before attachment are unknown.
 
+### Attach failures and kernel-internal errno values
+
+`uprobe_multi` registers every offset in one link, so a single offset that the
+kernel cannot probe fails the whole batch. On x86 `uprobe_register()` rejects an
+offset in `prepare_uprobe()`/`arch_uprobe_analyze_insn()` with `-ENOTSUPP`
+(`524`) when the instruction is an `int3` byte, carries a segment or lock
+prefix, masks exceptions (`cli`, `sti`, `popf`, `iret`, ...), or is otherwise
+not in the kernel's whitelist of single-steppable opcodes. This is a per-offset
+condition, not "multi-uprobe is unavailable"; the latter is `-EOPNOTSUPP`
+(`95`) and triggers the individual-uprobe fallback.
+
+For `-ENOTSUPP` the manager keeps bisecting the batch, so only the offending
+offset is dropped and the remaining offsets stay in multi-uprobe links. A
+single failing offset is reported with its path and file offset, and the run
+continues. `524` is above the userspace errno range, so `strerror_r()` and
+libbpf's `libbpf_strerror_r()` cannot name it; `errno_string()` maps the
+kernel-internal codes and the libbpf print callback rewrites the opaque
+`unknown error (-N)` fragments before they reach stderr.
+
 ## Phase status
 
 | Phase | Status |

@@ -332,6 +332,19 @@ callgraph: N events, N entries, N returns, N lost, N desync, N stray, N dropped
 **`uprobe_multi is unavailable`** — the kernel or libbpf is too old; the tool
 falls back to individual uprobes. This works but attaches much more slowly.
 
+**`failed to attach multi-uprobe: ... (-524)`** — `524` is the kernel-internal
+`ENOTSUPP`, not the userspace `EOPNOTSUPP`/`ENOTSUP` (`95`). glibc and libbpf
+have no name for it, which is why it is printed as `unknown error (-524)`; this
+tool translates it to `Operation not supported (ENOTSUPP, kernel errno 524)`.
+The kernel returns it while registering one offset in the batch: the byte there
+is already an `int3` (`0xcc`), the offset is not an instruction boundary, or the
+instruction cannot be single-stepped by uprobes (for example a segment/lock
+prefix, or `cli`/`sti`/`popf`). A symbol that points into data or padding, or a
+desynchronised `--return-mode=ret` scan, produces such offsets. The tool splits
+the batch until the bad offset is isolated, skips that probe, and keeps the
+rest. Run with `-v` to see the rejected offset; narrow `--module` if the offset
+comes from an unexpected symbol.
+
 **`no functions matched` / `has no .symtab`** — the binary is stripped and no
 separate debug information was found. Install the matching debug file under
 `/usr/lib/debug` or keep one next to the binary with a `.gnu_debuglink`, or

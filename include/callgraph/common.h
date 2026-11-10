@@ -21,6 +21,9 @@ void log_info(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void log_verbose(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 std::string errno_string(int err);
+// Rewrites libbpf's opaque "unknown error (-N)" fragments into readable names
+// for kernel-internal errno values.
+std::string readable_error_message(const std::string& message);
 std::string demangle_symbol(const std::string& name);
 std::string hex_encode(const uint8_t* data, size_t len);
 std::string read_symlink(const std::string& path);
