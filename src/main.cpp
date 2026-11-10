@@ -24,6 +24,7 @@
 #include "callgraph/dwarf_args.h"
 #include "callgraph/elf_resolver.h"
 #include "callgraph/event_collector.h"
+#include "callgraph/histogram_report.h"
 #include "callgraph/module_manager.h"
 #include "callgraph/output.h"
 #include "callgraph/process_controller.h"
@@ -51,6 +52,7 @@ struct Options {
     int max_depth = -1;
     size_t indent_step = 0;
     bool show_args = false;
+    bool histogram = false;
     size_t batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
     bool dry_run = false;
@@ -79,6 +81,7 @@ void usage(FILE* out)
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
             "      --args            show function arguments after names (needs DWARF)\n"
+            "      --histogram       append a per-thread latency histogram tree to the output\n"
             "      --batch-size N    functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
@@ -220,6 +223,8 @@ Options parse_args(int argc, char** argv)
             options.indent_step = static_cast<size_t>(indent);
         } else if (arg == "--args") {
             options.show_args = true;
+        } else if (arg == "--histogram") {
+            options.histogram = true;
         } else if (arg == "--batch-size") {
             options.batch_size = static_cast<size_t>(parse_long(value(), arg));
         } else if (arg == "--ringbuf-size") {
@@ -585,7 +590,8 @@ int main(int argc, char** argv)
 
         CallStack stack(registry.names(),
                         options.show_args ? &registry.signatures() : nullptr,
-                        output, options.max_depth, options.verbose);
+                        output, options.max_depth, options.verbose,
+                        options.histogram);
 
         if (is_child) {
             ProcessController::detach(target);
@@ -611,7 +617,13 @@ int main(int argc, char** argv)
 
         EventCollector collector(probes.events_fd(), stack);
         collector.run(target, is_child ? target : -1, refresh_modules);
-        output.stop();
+
+        std::string report;
+        if (options.histogram) {
+            stack.finish_statistics();
+            report = format_histogram_report(stack.stats(), registry.names());
+        }
+        output.finish(report);
 
         const uint64_t lost = probes.lost_events();
         const uint64_t events = stack.entries() + stack.returns();

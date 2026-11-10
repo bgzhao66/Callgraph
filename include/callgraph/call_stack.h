@@ -7,6 +7,7 @@
 
 #include "callgraph/argument_info.h"
 #include "callgraph/event.h"
+#include "callgraph/latency_stats.h"
 
 namespace callgraph {
 
@@ -26,12 +27,18 @@ class CallStack {
 public:
     CallStack(const std::vector<std::string>& names,
               const std::vector<FunctionSignature>* signatures, Output& output,
-              int max_depth, bool verbose);
+              int max_depth, bool verbose, bool collect_latency = false);
 
     CallStack(const std::vector<std::string>& names, Output& output,
-              int max_depth, bool verbose);
+              int max_depth, bool verbose, bool collect_latency = false);
 
     void on_event(const TraceEvent& event);
+
+    // Marks frames still live at shutdown as incomplete.  Safe to call more
+    // than once; only the first call has an effect.
+    void finish_statistics();
+
+    const LatencyStats& stats() const { return stats_; }
 
     uint64_t entries() const { return entries_; }
     uint64_t returns() const { return returns_; }
@@ -46,8 +53,11 @@ private:
     Output& output_;
     int max_depth_;
     bool verbose_;
+    bool collect_latency_;
+    bool stats_finished_ = false;
 
     std::unordered_map<uint32_t, ThreadState> threads_;
+    LatencyStats stats_;
 
     uint64_t entries_ = 0;
     uint64_t returns_ = 0;

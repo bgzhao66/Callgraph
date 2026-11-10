@@ -10,6 +10,8 @@
 #include "callgraph/call_stack.h"
 #include "callgraph/common.h"
 #include "callgraph/event.h"
+#include "callgraph/histogram_report.h"
+#include "callgraph/latency_stats.h"
 #include "callgraph/output.h"
 
 using namespace callgraph;
@@ -43,6 +45,20 @@ std::vector<std::string> read_lines(const std::string& path)
     std::string line;
     while (std::getline(in, line))
         lines.push_back(line);
+    return lines;
+}
+
+std::vector<std::string> split_lines(const std::string& text)
+{
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos)
+            end = text.size();
+        lines.push_back(text.substr(start, end - start));
+        start = end + 1;
+    }
     return lines;
 }
 
@@ -88,6 +104,212 @@ void test_errno_string()
     CHECK(readable_error_message("nothing to rewrite") ==
           "nothing to rewrite");
     CHECK(readable_error_message("unknown error (") == "unknown error (");
+}
+
+void test_latency_histogram()
+{
+    LatencyHistogram hist;
+    hist.add(0);
+    hist.add(1);
+    hist.add(2);
+    hist.add(3);
+    hist.add(1000);
+
+    CHECK(hist.calls == 5);
+    CHECK(hist.total_ns == 1006);
+    CHECK(hist.min_ns == 0);
+    CHECK(hist.max_ns == 1000);
+
+    CHECK(latency_bucket(0) == 0);
+    CHECK(latency_bucket(1) == 1);
+    CHECK(latency_bucket(2) == 2);
+    CHECK(latency_bucket(3) == 2);
+    CHECK(latency_bucket(1000) == 10);
+
+    CHECK(hist.buckets[0] == 1);
+    CHECK(hist.buckets[1] == 1);
+    CHECK(hist.buckets[2] == 2);
+    CHECK(hist.buckets[10] == 1);
+}
+
+void test_histogram_report()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        stack.on_event(make_event(0, 10, kEventEnter, 1000));
+        stack.on_event(make_event(1, 10, kEventEnter, 2000));
+        stack.on_event(make_event(1, 10, kEventExit, 5000));
+        stack.on_event(make_event(0, 10, kEventExit, 6000));
+
+        stack.on_event(make_event(0, 20, kEventEnter, 1000));
+        stack.on_event(make_event(0, 20, kEventExit, 2000));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("=== thread 10 ===") != std::string::npos);
+    CHECK(report.find("=== thread 20 ===") != std::string::npos);
+    CHECK(report.find("=== thread 10 ===") < report.find("=== thread 20 ==="));
+    CHECK(report.find("main  calls=1") != std::string::npos);
+    CHECK(report.find("A(int)  calls=1") != std::string::npos);
+
+    const auto lines = split_lines(report);
+    bool checked_alignment = false;
+    for (size_t i = 0; i + 1 < lines.size(); ++i) {
+        const size_t name_pos = lines[i].find("A(int)  calls=1");
+        if (name_pos == std::string::npos)
+            continue;
+
+        // A is one level below main, and its bucket line shares that margin.
+        CHECK(name_pos == 2);
+        const std::string& bucket = lines[i + 1];
+        CHECK(bucket.size() > 2);
+        CHECK(bucket.compare(0, 2, "  ") == 0);
+        CHECK(bucket[2] == '[');
+        checked_alignment = true;
+        break;
+    }
+    CHECK(checked_alignment);
+}
+
+void test_histogram_incomplete()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // main -> A, then main returns: A is skipped and stays incomplete.
+        stack.on_event(make_event(0, 30, kEventEnter, 100));
+        stack.on_event(make_event(1, 30, kEventEnter, 200));
+        stack.on_event(make_event(0, 30, kEventExit, 500));
+
+        // A second thread never returns at all.
+        stack.on_event(make_event(2, 31, kEventEnter, 100));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("=== thread 30 ===") != std::string::npos);
+    CHECK(report.find("=== thread 31 ===") != std::string::npos);
+    CHECK(report.find("main  calls=1") != std::string::npos);
+    CHECK(report.find("A(int)  calls=") == std::string::npos);
+    CHECK(report.find("B(int)  calls=0  [incomplete]") != std::string::npos);
+
+    size_t incomplete_lines = 0;
+    size_t pos = 0;
+    while ((pos = report.find("incomplete: 1 call(s)", pos)) !=
+           std::string::npos) {
+        ++incomplete_lines;
+        ++pos;
+    }
+    CHECK(incomplete_lines == 2);
+}
+
+void test_histogram_live_chain()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // main -> A -> B returns while main and A are still live at shutdown.
+        stack.on_event(make_event(0, 60, kEventEnter, 100));
+        stack.on_event(make_event(1, 60, kEventEnter, 200));
+        stack.on_event(make_event(2, 60, kEventEnter, 300));
+        stack.on_event(make_event(2, 60, kEventExit, 400));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("main  calls=0  [incomplete]") != std::string::npos);
+    CHECK(report.find("A(int)  calls=0  [incomplete]") != std::string::npos);
+    CHECK(report.find("B(int)  calls=1") != std::string::npos);
+    CHECK(report.find("incomplete: 2 call(s)") != std::string::npos);
+
+    // B must be nested two levels down: main -> A -> B.
+    const size_t b_pos = report.find("B(int)  calls=1");
+    CHECK(b_pos != std::string::npos);
+    const size_t line_start = report.rfind('\n', b_pos);
+    CHECK(line_start != std::string::npos);
+    CHECK(b_pos - line_start - 1 == 4);
+}
+
+void test_histogram_recursion()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        stack.on_event(make_event(1, 40, kEventEnter, 0));
+        stack.on_event(make_event(1, 40, kEventEnter, 10));
+        stack.on_event(make_event(1, 40, kEventExit, 20));
+        stack.on_event(make_event(1, 40, kEventExit, 30));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    size_t markers = 0;
+    size_t pos = 0;
+    while ((pos = report.find("[recursive]", pos)) != std::string::npos) {
+        ++markers;
+        ++pos;
+    }
+    CHECK(markers == 1);
+}
+
+void test_histogram_max_depth()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        // --max-depth only suppresses event lines; statistics still see A.
+        CallStack stack(names, output, 0, false, true);
+
+        stack.on_event(make_event(0, 50, kEventEnter, 0));
+        stack.on_event(make_event(1, 50, kEventEnter, 10));
+        stack.on_event(make_event(1, 50, kEventExit, 20));
+        stack.on_event(make_event(0, 50, kEventExit, 30));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("main  calls=1") != std::string::npos);
+    CHECK(report.find("A(int)  calls=1") != std::string::npos);
 }
 
 bool looks_like_boot_seconds(const std::string& line)
@@ -411,6 +633,12 @@ int main()
 {
     test_demangle();
     test_errno_string();
+    test_latency_histogram();
+    test_histogram_report();
+    test_histogram_incomplete();
+    test_histogram_live_chain();
+    test_histogram_recursion();
+    test_histogram_max_depth();
     test_basic_stack();
     test_desync();
     test_max_depth();

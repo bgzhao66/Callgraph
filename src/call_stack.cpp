@@ -9,15 +9,17 @@ namespace callgraph {
 
 CallStack::CallStack(const std::vector<std::string>& names,
                      const std::vector<FunctionSignature>* signatures,
-                     Output& output, int max_depth, bool verbose)
+                     Output& output, int max_depth, bool verbose,
+                     bool collect_latency)
     : names_(names), signatures_(signatures), output_(output),
-      max_depth_(max_depth), verbose_(verbose)
+      max_depth_(max_depth), verbose_(verbose),
+      collect_latency_(collect_latency)
 {
 }
 
 CallStack::CallStack(const std::vector<std::string>& names, Output& output,
-                     int max_depth, bool verbose)
-    : CallStack(names, nullptr, output, max_depth, verbose)
+                     int max_depth, bool verbose, bool collect_latency)
+    : CallStack(names, nullptr, output, max_depth, verbose, collect_latency)
 {
 }
 
@@ -86,11 +88,45 @@ void CallStack::on_event(const TraceEvent& event)
     if (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_))
         output_.emit(event.ts, event.tid, depth, "<-", name);
 
+    if (collect_latency_) {
+        const CallFrame& frame = frames[index - 1];
+        const uint64_t parent =
+            index >= 2 ? frames[index - 2].function_id : kRootFunction;
+        const uint64_t duration =
+            event.ts >= frame.start_ts ? event.ts - frame.start_ts : 0;
+        stats_.record(event.tid, parent, frame.function_id, duration);
+
+        // Frames above the match never returned: their latency is unknown.
+        const size_t skipped = frames.size() - index;
+        if (skipped != 0)
+            stats_.mark_incomplete(event.tid, skipped);
+    }
+
     frames.resize(index - 1);
     ++returns_;
 
     if (frames.empty())
         threads_.erase(it);
+}
+
+void CallStack::finish_statistics()
+{
+    if (!collect_latency_ || stats_finished_)
+        return;
+    stats_finished_ = true;
+
+    for (const auto& [tid, state] : threads_) {
+        stats_.mark_incomplete(tid, state.frames.size());
+
+        if (state.frames.empty())
+            continue;
+
+        std::vector<uint64_t> live;
+        live.reserve(state.frames.size());
+        for (const auto& frame : state.frames)
+            live.push_back(frame.function_id);
+        stats_.mark_live(tid, live);
+    }
 }
 
 }  // namespace callgraph

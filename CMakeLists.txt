@@ -113,6 +113,8 @@ add_executable(callgraph
   src/module_manager.cpp
   src/probe_manager.cpp
   src/call_stack.cpp
+  src/latency_stats.cpp
+  src/histogram_report.cpp
   src/output.cpp
   src/process_controller.cpp
   src/event_collector.cpp
@@ -156,6 +158,8 @@ if(BUILD_TESTING)
     src/common.cpp
     src/arguments.cpp
     src/call_stack.cpp
+    src/latency_stats.cpp
+    src/histogram_report.cpp
     src/output.cpp
   )
   target_include_directories(callgraph_tests PRIVATE

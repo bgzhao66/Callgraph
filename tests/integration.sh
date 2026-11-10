@@ -136,6 +136,39 @@ echo "== max depth =="
 ! grep -q ' : 2 ' "$TMP/depth.trace"
 grep -q ' : 1 -> C(int)' "$TMP/depth.trace"
 
+echo "== latency histogram =="
+"$BIN" run --histogram -o "$TMP/hist.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+grep -q '^=== thread [0-9][0-9]* ===$' "$TMP/hist.trace"
+grep -q 'main  calls=1' "$TMP/hist.trace"
+grep -q 'C(int)  calls=' "$TMP/hist.trace"
+grep -Eq '^\[ .*\) +[0-9]+  #' "$TMP/hist.trace"
+grep -q ' : 0 -> main' "$TMP/hist.trace"
+# Bucket lines share the function name's indentation.
+awk '
+    /C\(int\)  calls=/ {
+        match($0, /^ */);
+        node_indent = RLENGTH;
+        if (getline <= 0)
+            exit 1;
+        match($0, /^ */);
+        if (RLENGTH != node_indent)
+            exit 1;
+        found = 1;
+    }
+    END { exit found ? 0 : 1 }
+' "$TMP/hist.trace"
+# Without the option the report is absent.
+! grep -q '^=== thread ' "$TMP/simple.trace"
+
+echo "== latency histogram: one section per thread =="
+"$BIN" run --histogram -o "$TMP/hist_mt.trace" --regex \
+    --include '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
+    >/dev/null 2>/dev/null
+sections=$(grep -c '^=== thread ' "$TMP/hist_mt.trace" || true)
+[ "$sections" -ge 2 ]
+
 echo "== exception-safe return mode =="
 if "$BIN" run --return-mode ret --dry-run -- "$TMP/exceptions" >/dev/null 2>&1; then
     "$BIN" run --return-mode ret -o "$TMP/exc.trace" --regex \

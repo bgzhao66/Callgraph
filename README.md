@@ -112,6 +112,7 @@ Usage:
       --max-depth N     print events with depth <= N (default: unlimited)
       --indent N        indent names by depth*N spaces (default: 0)
       --args            show function arguments after names (needs DWARF)
+      --histogram       append a per-thread latency histogram tree to the output
       --batch-size N    functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -236,6 +237,43 @@ Frames that were already on the stack when the probes were attached are not
 known, so depth is relative to the attach point (the first observed frame is
 depth 0).
 
+### Latency histogram
+
+`--histogram` appends a report to the same stream as the events (stdout or the
+`-o` file) after the last event line:
+
+```
+=== thread 26570 ===
+main  calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
+[ 16.38us,  32.77us)      1  ########################################
+  C(int)  calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
+  [  8.19us,  16.38us)      1  ########################################
+    B(int)  calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
+    [  4.10us,   8.19us)      1  ########################################
+```
+
+- One section per thread, sorted by TID.
+- Nodes are indented by two spaces per call level. Each node is an immediate
+  caller to callee edge, so a function called from two different callers
+  appears under each caller with the calls made from that caller.
+- Latency is the inclusive time between the function's entry and its matching
+  return, including instrumented callees.
+- Histograms use power-of-two buckets: bucket 0 is exactly 0 ns; bucket `k` is
+  `[2^(k-1), 2^k)` ns. Non-empty buckets are printed, including zero-count
+  buckets between them.
+- Bucket lines share the function name's left margin; children are indented one
+  level further.
+- Calls without a matching return (exception unwinding, `longjmp`, lost events,
+  or still running when tracing stops) are excluded from the histograms and
+  reported as `incomplete: N call(s)`. A still-live frame with completed
+  children is shown as `name  calls=0  [incomplete]` so those children stay
+  nested under it.
+- `--max-depth` and `--indent` do not affect the histogram; `--max-depth` only
+  hides event lines. `--include`/`--exclude` still apply at instrumentation
+  time, so excluded functions do not appear.
+- A recursive call is printed once more and marked `[recursive]` instead of
+  being expanded forever.
+
 ## Return probes: `uretprobe` vs `ret`
 
 This is important for C++ programs.
@@ -287,12 +325,17 @@ CLI / process controller
         |
    Per-TID call-stack reconstruction
         |
+   Latency statistics + histogram tree (--histogram)
+        |
    Writer thread -> stdout / file
 ```
 
 The BPF programs are deliberately tiny: they emit `{timestamp, function_id,
 tgid, tid, type}` and do no symbol resolution. Function IDs are per-offset
-cookies; user space owns the ID-to-name table and all stack logic.
+cookies; user space owns the ID-to-name table and all stack logic. With
+`--histogram`, the call-stack reconstructor also accumulates per-thread
+caller-to-callee latency histograms; the tree is rendered after the collector
+stops and appended to the same stream by the writer.
 
 Symbol resolution uses the ELF symbol table first (entry points are
 `STT_FUNC` symbols in executable sections). C++ linkage names are demangled

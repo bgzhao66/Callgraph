@@ -148,6 +148,19 @@ void Output::stop()
         fflush(fp_);
 }
 
+void Output::finish(const std::string& trailer)
+{
+    stop();
+
+    if (trailer.empty() || !fp_)
+        return;
+
+    const size_t written = fwrite(trailer.data(), 1, trailer.size(), fp_);
+    if (written != trailer.size())
+        log_warn("output write failed: %s", errno_string(errno).c_str());
+    fflush(fp_);
+}
+
 void Output::worker()
 {
     std::deque<std::string> batch;

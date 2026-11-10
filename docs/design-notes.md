@@ -90,6 +90,32 @@ register allocation but omitted from the output. Aggregates are printed as raw
 The option is x86-64 only. Functions without DWARF, or whose DWARF type cannot
 be classified, simply omit the suffix.
 
+### Latency histogram
+
+`--histogram` collects a per-thread latency distribution while the event stream
+is consumed. On a matched return, `CallStack` derives the immediate caller from
+the frame below the returning one (or a root sentinel at depth 0), subtracts the
+entry timestamp, and adds the duration to the `(tid, parent, child)` edge. The
+statistics live in a map separate from the live per-TID stacks, so erasing an
+empty stack does not discard them. Frames skipped by a desync and frames still
+live at shutdown have no measurable duration; they are counted as incomplete
+instead.
+
+The report is rendered after collection stops and appended to the event stream
+by `Output::finish()`, which joins the writer thread first so the trailer cannot
+overtake queued events. Nodes are keyed by an immediate caller edge, not by a
+full call path, which keeps recursion and diamond-shaped call graphs bounded; a
+DFS over the edge tree cuts off when a function is already on the current path
+and marks that node `[recursive]`. A frame that is still live at shutdown is
+kept as an anchor (`calls=0  [incomplete]`) so completed calls made from inside
+it are still rendered under the correct caller chain. Bucket `k >= 1` covers
+`[2^(k-1), 2^k)` ns and bucket 0 is exactly 0 ns, so a 64-bit duration needs at
+most 65 counters per edge. Units are chosen per node from its maximum latency.
+
+`--max-depth` remains display-only and does not gate statistics. `--include` and
+`--exclude` still filter at instrumentation time, so the reported tree is
+compressed across excluded functions.
+
 ### Launch synchronization
 
 `run` uses `fork` + `PTRACE_TRACEME` + `SIGSTOP`, then sets

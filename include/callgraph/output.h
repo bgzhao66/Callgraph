@@ -35,6 +35,9 @@ public:
     void emit(uint64_t ts, uint32_t tid, uint32_t depth,
               const char* arrow, const std::string& name);
     void stop();
+    // Stops the writer and appends a trailer (for example the histogram
+    // report) directly to the stream, after every queued event line.
+    void finish(const std::string& trailer = {});
 
     uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
 
