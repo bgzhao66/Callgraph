@@ -156,7 +156,7 @@ void append_node(std::string& out, const std::string& line_prefix,
         out += right_justify(std::to_string(count), count_width);
         if (bar != 0) {
             out += "  ";
-            out.append(bar, '#');
+            out.append(bar, '-');
         }
         out += '\n';
     }

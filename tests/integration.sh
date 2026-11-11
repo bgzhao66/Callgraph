@@ -146,7 +146,7 @@ grep -q 'C(int)  calls=' "$TMP/hist.trace"
 grep -q '└── C(int)  calls=' "$TMP/hist.trace"
 grep -q '├── ' "$TMP/hist.trace"
 grep -q '│   \[' "$TMP/hist.trace"
-grep -Eq '^\[ .*\) +[0-9]+  #' "$TMP/hist.trace"
+grep -Eq '^\[ .*\) +[0-9]+  -' "$TMP/hist.trace"
 grep -q ' : 0 -> main' "$TMP/hist.trace"
 # Without the option the report is absent.
 ! grep -q '^=== thread ' "$TMP/simple.trace"
