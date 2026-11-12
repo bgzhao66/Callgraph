@@ -15,6 +15,8 @@ pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
 pkg_check_modules(LIBDW REQUIRED IMPORTED_TARGET libdw)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
+find_package(CURL QUIET)
+find_package(Protobuf QUIET)
 find_program(CLANG_EXECUTABLE NAMES clang REQUIRED)
 
 include(ProcessorCount)
@@ -104,6 +106,45 @@ add_custom_command(
 # ---------------------------------------------------------------------------
 # User-space tracer.
 # ---------------------------------------------------------------------------
+# OTLP protobuf messages.  gRPC and OTLP/HTTP+protobuf use the generated
+# classes; without protobuf, OTLP/HTTP+JSON remains available.
+set(CALLGRAPH_HAVE_OTLP_PROTO OFF)
+set(OTLP_PROTO_SRCS "")
+if(Protobuf_FOUND AND Protobuf_PROTOC_EXECUTABLE)
+  set(OTLP_PROTO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opentelemetry-proto)
+  set(OTLP_PROTO_REL
+    opentelemetry/proto/common/v1/common.proto
+    opentelemetry/proto/resource/v1/resource.proto
+    opentelemetry/proto/trace/v1/trace.proto
+    opentelemetry/proto/collector/trace/v1/trace_service.proto
+  )
+  set(OTLP_PROTO_SRCS
+    ${CMAKE_CURRENT_BINARY_DIR}/opentelemetry/proto/common/v1/common.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/opentelemetry/proto/resource/v1/resource.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/opentelemetry/proto/trace/v1/trace.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/opentelemetry/proto/collector/trace/v1/trace_service.pb.cc
+  )
+  set(OTLP_PROTO_DEPS "")
+  foreach(rel ${OTLP_PROTO_REL})
+    list(APPEND OTLP_PROTO_DEPS ${OTLP_PROTO_ROOT}/${rel})
+  endforeach()
+  add_custom_command(
+    OUTPUT ${OTLP_PROTO_SRCS}
+    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+            --cpp_out=${CMAKE_CURRENT_BINARY_DIR}
+            -I${OTLP_PROTO_ROOT}
+            ${OTLP_PROTO_REL}
+    DEPENDS ${OTLP_PROTO_DEPS}
+    WORKING_DIRECTORY ${OTLP_PROTO_ROOT}
+    COMMENT "Generating OTLP protobuf messages"
+    VERBATIM
+  )
+  set(CALLGRAPH_HAVE_OTLP_PROTO ON)
+  message(STATUS "protobuf found: OTLP gRPC and HTTP/protobuf enabled")
+else()
+  message(STATUS "protobuf/protoc not found: OTLP gRPC and HTTP/protobuf unavailable")
+endif()
+
 add_executable(callgraph
   src/main.cpp
   src/common.cpp
@@ -118,6 +159,15 @@ add_executable(callgraph
   src/output.cpp
   src/process_controller.cpp
   src/event_collector.cpp
+  src/clock_converter.cpp
+  src/span_context.cpp
+  src/span_generator.cpp
+  src/otlp_json.cpp
+  src/otlp_proto.cpp
+  src/otel_exporter.cpp
+  src/trace_parser.cpp
+  src/trace_metadata.cpp
+  ${OTLP_PROTO_SRCS}
   ${BPF_BLOB}
 )
 
@@ -125,8 +175,13 @@ target_include_directories(callgraph PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/bpf
   ${CMAKE_BINARY_DIR}
+  ${OTLP_PROTO_ROOT}
 )
 target_compile_definitions(callgraph PRIVATE CALLGRAPH_VERSION="${PROJECT_VERSION}")
+if(CALLGRAPH_HAVE_OTLP_PROTO)
+  target_compile_definitions(callgraph PRIVATE CALLGRAPH_HAVE_OTLP_PROTO=1)
+  target_link_libraries(callgraph PRIVATE protobuf::libprotobuf)
+endif()
 target_compile_options(callgraph PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(callgraph PRIVATE
   libbpf
@@ -149,6 +204,15 @@ else()
   message(STATUS "libopcodes not found: --return-mode=ret unavailable")
 endif()
 
+# Optional: OTLP network export.  --exporter otlp-json works without curl.
+if(CURL_FOUND)
+  target_compile_definitions(callgraph PRIVATE CALLGRAPH_HAVE_CURL=1)
+  target_link_libraries(callgraph PRIVATE CURL::libcurl)
+  message(STATUS "libcurl found: OTLP network export enabled")
+else()
+  message(STATUS "libcurl not found: OTLP network export unavailable")
+endif()
+
 add_dependencies(callgraph libbpf_build)
 
 include(CTest)
@@ -161,13 +225,34 @@ if(BUILD_TESTING)
     src/latency_stats.cpp
     src/histogram_report.cpp
     src/output.cpp
+    src/clock_converter.cpp
+    src/span_context.cpp
+    src/span_generator.cpp
+    src/otlp_json.cpp
+    src/otlp_proto.cpp
+    src/otel_exporter.cpp
+    src/trace_parser.cpp
+    src/trace_metadata.cpp
+    ${OTLP_PROTO_SRCS}
   )
   target_include_directories(callgraph_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/bpf
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${OTLP_PROTO_ROOT}
   )
+  target_compile_definitions(callgraph_tests PRIVATE
+    CALLGRAPH_VERSION="${PROJECT_VERSION}")
+  if(CALLGRAPH_HAVE_OTLP_PROTO)
+    target_compile_definitions(callgraph_tests PRIVATE CALLGRAPH_HAVE_OTLP_PROTO=1)
+    target_link_libraries(callgraph_tests PRIVATE protobuf::libprotobuf)
+  endif()
   target_compile_options(callgraph_tests PRIVATE -Wall -Wextra)
-  target_link_libraries(callgraph_tests PRIVATE Threads::Threads)
+  target_link_libraries(callgraph_tests PRIVATE Threads::Threads ZLIB::ZLIB)
+  if(CURL_FOUND)
+    target_compile_definitions(callgraph_tests PRIVATE CALLGRAPH_HAVE_CURL=1)
+    target_link_libraries(callgraph_tests PRIVATE CURL::libcurl)
+  endif()
   add_test(NAME unit COMMAND callgraph_tests)
   add_test(NAME integration
            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.sh

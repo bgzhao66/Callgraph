@@ -26,9 +26,15 @@ The current implementation includes:
 - include/exclude filters, maximum displayed depth, dry-run listing
 - optional function argument values from DWARF (`--show-args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
+- OTLP export for Jaeger: gRPC (`--exporter otlp`), OTLP/HTTP with
+  protobuf (`--exporter otlp-http`), OTLP/JSON file output
+  (`--exporter otlp-json`), and `callgraph export otel` for existing text
+  traces
+- root-trace sampling, source file/line attributes, and best-effort thread
+  names
 
-Not implemented yet: execution-time statistics and child-process (`fork`)
-following.
+Not implemented yet: a `--summary` aggregated statistics mode and
+child-process (`fork`) following.
 
 ## Requirements
 
@@ -38,7 +44,9 @@ following.
 | C++20 compiler, CMake 3.20+ | host build |
 | clang with the BPF target | compiling `bpf/trace.bpf.c` |
 | libelf, libdw, zlib | ELF symbols, external debug info, compression |
-| DWARF debug info (`-g` or a separate debug file) | `--show-args` parameter names and types |
+| libcurl (optional) | OTLP network export; `--exporter otlp-json` works without it |
+| protobuf + protoc (optional) | OTLP gRPC and OTLP/HTTP protobuf; JSON file export works without it |
+| DWARF debug info (`-g` or a separate debug file) | `--show-args` parameter names and types; source file/line attributes |
 | x86-64 | `--show-args` value capture (SysV ABI) |
 | `binutils-dev` (libopcodes) | optional; enables `--return-mode=ret` |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
@@ -61,6 +69,23 @@ cmake --build build -j
 ```
 
 The binary is `build/callgraph`.
+
+On Debian/Ubuntu, Fedora/RHEL/CentOS, Arch, or openSUSE, the dependency
+installer handles the system packages and initializes the libbpf submodule:
+
+```bash
+./tools/install-deps.sh              # required + optional feature packages
+./tools/install-deps.sh --minimal    # required packages only
+./tools/install-deps.sh --dry-run    # print commands without changing the system
+```
+
+It checks for CMake 3.20+, a C++20 compiler, clang with the BPF target,
+pkg-config, libelf, and libdw. If the distro's CMake is older than 3.20, it
+prints an actionable error instead of building with a broken toolchain.
+
+OTLP network export needs `libcurl` development headers. OTLP/gRPC and
+OTLP/HTTP-protobuf additionally need `protobuf-compiler` and the protobuf C++
+development headers. Without protobuf, `--exporter otlp-json` still writes OTLP/JSON.
 
 ## Usage
 
@@ -92,6 +117,20 @@ sudo ./build/callgraph run --return-mode ret -- ./my_app
 
 # Redirect the event stream to a file (keeps the app's stdout separate)
 sudo ./build/callgraph run -o trace.log -- ./my_app
+
+# Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
+sudo ./build/callgraph run -T --exporter otlp -- ./my_app
+
+# Export over OTLP/HTTP with protobuf (default http://localhost:4318)
+sudo ./build/callgraph run -T --exporter otlp-http -- ./my_app
+
+# Write an OTLP/JSON request body that can be POSTed later
+sudo ./build/callgraph run -T --exporter otlp-json \
+    --export-file trace.otlp.json -- ./my_app
+
+# Convert an existing text trace (use -T, --metadata, or --assume-local-capture)
+./build/callgraph export otel \
+    --input trace.log --output spans.json --service-name my_app
 ```
 
 ### Options
@@ -100,6 +139,7 @@ sudo ./build/callgraph run -o trace.log -- ./my_app
 Usage:
   callgraph run [options] -- program [args...]
   callgraph attach [options] -p PID
+  callgraph export otel [options] --input TRACE
 
   -o, --output FILE     write events to FILE (default: stdout)
       --include GLOB    only trace functions matching GLOB (repeatable)
@@ -113,13 +153,37 @@ Usage:
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
       --histogram       append a per-thread latency histogram tree to the output
-      --batch-size N    functions per uprobe_multi link (default: 1000)
+      --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
+      --exporter M      stdout (default), otlp, otlp-http, or otlp-json
+      --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
+      --export-file FILE  output file for --exporter otlp-json
+      --service-name NAME
+                        override service.name (default: exe basename)
+      --service-namespace NAME
+      --trace-scope M   root (default), thread, or process
+      --batch-size N    spans per OTLP batch (default: 512)
+      --batch-bytes N   OTLP request size limit (default: 1m)
+      --flush-interval N  OTLP batch flush interval in ms (default: 1000)
+      --timeout-ms N    OTLP HTTP timeout (default: 5000)
+      --queue-spans N   exporter queue limit (default: 10000)
+      --header K=V      add an HTTP header (repeatable)
+      --compression M   none (default) or gzip (OTLP/HTTP only)
+      --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
+      --fail-on-export-error  exit non-zero if export fails
+      --trace-metadata FILE  write an offline-conversion sidecar
   -v, --verbose         verbose diagnostics
   -h, --help            show help
       --version         show version
 ```
+
+`callgraph export otel` accepts `--input TRACE`, `--output FILE`,
+`--endpoint URL`, `--service-name NAME`, `--service-namespace NAME`,
+`--metadata FILE`, `--assume-local-capture`, `--trace-scope MODE`,
+`--trace-id-seed HEX`, `--sample-rate R`, `--input-show-args`, and batch/HTTP
+options (`--batch-size`, `--batch-bytes`, `--flush-interval`, `--timeout-ms`,
+`--queue-spans`, `--compression`, `--header`, `--fail-on-export-error`).
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;
@@ -279,6 +343,121 @@ main  calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
 - A recursive call is printed once more and marked `[recursive]` instead of
   being expanded forever.
 
+## OTEL / Jaeger export
+
+Each completed function invocation can be exported as an OpenTelemetry span:
+
+- one trace per depth-0 root invocation by default
+  (`--trace-scope=root`), so each thread and each top-level call has a
+  meaningful trace boundary;
+- one span per instrumented call, nested by the reconstructed call stack;
+- `code.function`, `code.filepath`, `code.lineno`, `callgraph.function_id`,
+  `callgraph.module`, `thread.id`, `thread.name`, and depth as span
+  attributes;
+- `callgraph.incomplete=true` and `callgraph.end_reason` for frames that never
+  returned (desync or shutdown).
+
+The network transports are:
+
+- `--exporter otlp` uses OTLP/gRPC (default `localhost:4317`);
+- `--exporter otlp-http` uses OTLP/HTTP with protobuf (default
+  `http://localhost:4318`).
+
+There is also a file backend:
+
+- `--exporter otlp-json --export-file FILE` writes an OTLP/JSON request body
+  without any network dependency.
+
+OTLP/gRPC and OTLP/HTTP use the protobuf messages in
+`third_party/opentelemetry-proto`.
+
+```bash
+# Start a Jaeger version with an OTLP receiver (v2, or all-in-one 1.35+).
+docker run --rm -p 16686:16686 -p 4317:4317 -p 4318:4318 \
+    jaegertracing/jaeger:latest
+
+sudo ./build/callgraph run -T \
+    --exporter otlp \
+    --endpoint localhost:4317 \
+    --service-name my_app \
+    --exclude '^_start$|^_init$|^_fini$' \
+    -- ./my_app
+```
+
+The same exporter options work in attach mode:
+
+```bash
+sudo ./build/callgraph attach -p 12345 \
+    --exporter otlp \
+    --endpoint localhost:4317 \
+    --service-name my_app
+```
+
+Then open `http://localhost:16686` and select `my_app`. The trace page shows the
+nested call tree. Jaeger displays individual traces, not an aggregated call
+graph; use `--histogram` for the aggregate view. The same endpoint flag works
+with an OpenTelemetry Collector, which can add batching, filtering, sampling,
+and routing before exporting to Jaeger.
+
+Batching uses `--batch-size` (spans) and `--flush-interval` (milliseconds).
+The exporter queue is bounded and never blocks the ring-buffer collector.
+`--compression gzip` applies to OTLP/HTTP; OTLP/gRPC compression is not
+implemented.
+
+Root-trace sampling is available with `--sample-rate R` (`0..1`, default
+`1.0`). The decision is made once for the root and inherited by all
+descendants, so Jaeger never receives a retained root with sampled-out
+children. For more advanced policies, send complete traces through an
+OpenTelemetry Collector and tail-sample there.
+
+Source file and line attributes require DWARF; functions without debug info
+simply omit them. Thread names are read from
+`/proc/<pid>/task/<tid>/comm` when available; in restricted PID-namespace
+setups the attribute may be absent.
+
+To convert an existing text trace:
+
+```bash
+# -T records Unix-capable wall-clock timestamps.
+sudo ./build/callgraph run -T -o trace.log -- ./my_app
+
+./build/callgraph export otel \
+    --input trace.log --output spans.json --service-name my_app
+
+curl -sS -X POST -H 'Content-Type: application/json' \
+    --data-binary @spans.json http://localhost:4318/v1/traces
+```
+
+A default (boot-second) trace needs a timestamp anchor. Prefer recording a
+sidecar during capture and passing it to the converter:
+
+```bash
+sudo ./build/callgraph run -o trace.log \
+    --trace-metadata trace.meta -- ./my_app
+
+./build/callgraph export otel \
+    --input trace.log --metadata trace.meta --output spans.json
+```
+
+If no sidecar exists and the trace was captured on this host in the current
+boot session, `--assume-local-capture` derives an approximate anchor from the
+local realtime/monotonic clocks and prints a warning:
+
+```bash
+./build/callgraph export otel \
+    --input trace.log --output spans.json --assume-local-capture
+```
+
+This is less accurate than `-T` or `--trace-metadata`, especially for old,
+remote, or suspend-affected traces.
+
+Text conversion limitations: it has no stable function IDs (same-demangled-name
+static functions in different modules can merge), and `--show-args` suffixes
+are stripped and preserved as `callgraph.arguments` only when
+`--input-show-args` is given. Native export avoids both limitations.
+
+See `docs/otel-export-design.md` for the full mapping and edge-case semantics.
+
 ## Return probes: `uretprobe` vs `ret`
 
 This is important for C++ programs.
@@ -330,9 +509,11 @@ CLI / process controller
         |
    Per-TID call-stack reconstruction
         |
-   Latency statistics + histogram tree (--histogram)
+        +--> Latency statistics + histogram tree (--histogram)
         |
-   Writer thread -> stdout / file
+        +--> Writer thread -> stdout / file
+        |
+        +--> Span generator -> OTLP/gRPC, OTLP/HTTP protobuf, or JSON file
 ```
 
 The BPF programs are deliberately tiny: they emit `{timestamp, function_id,
@@ -370,6 +551,13 @@ callgraph: N events, N entries, N returns, N lost, N desync, N stray, N dropped
   event)
 - `stray`: returns with no matching frame (e.g. attach started mid-stack)
 - `dropped`: output lines dropped because the writer queue was full
+
+When OTEL export is enabled, one additional line reports exported, dropped, and
+failed span writes:
+
+```
+callgraph: OTLP 5 span(s) exported, 0 dropped, 0 failed
+```
 
 ## Troubleshooting
 
@@ -415,6 +603,19 @@ collector.
 use stdout. Write the trace to a file with `-o trace.log`, or run the program
 in attach mode.
 
+**`--exporter otlp` says protobuf is unavailable** — the binary was built
+without protobuf/protoc. Install the protobuf development package and rebuild,
+or use `--exporter otlp-json` with OTLP/JSON.
+
+**`--exporter otlp-http` says libcurl is unavailable** — the binary was built
+without libcurl. Use `--exporter otlp-json --export-file` and POST the file
+yourself, or install the libcurl development package and rebuild.
+
+**Jaeger shows no trace** — check that the OTLP receiver is on the expected port
+(`4317` for gRPC, `4318` for OTLP/HTTP), that the service name matches, and that
+the exporter reported `0 failed`. A long-lived root span is exported only when
+it returns; completed child spans may already be present.
+
 **`Cannot attach to pid` / ptrace denied** — attach mode needs ptrace access
 (same user, Yama `ptrace_scope`, or root).
 
@@ -424,12 +625,17 @@ in attach mode.
 CMakeLists.txt
 bpf/trace.bpf.c, bpf/trace.h    BPF programs and shared event layout
 include/callgraph/              headers
-src/                            resolver, modules, probes, collector, stack, output
+src/                            resolver, modules, probes, collector, stack, output,
+                                clock converter, span generator, OTLP encoders,
+                                exporter, offline parser
 examples/                       simple, recursive, multithread, exceptions, loop, lib
 tests/                          unit and integration tests
+tools/install-deps.sh           distro-aware build dependency installer
 tools/legacy/                   earlier bpftrace generator (Python)
 third_party/libbpf/             vendored libbpf v1.5.0
+third_party/opentelemetry-proto/ vendored OTLP protobuf definitions
 docs/design-notes.md            design decisions and phase plan
+docs/otel-export-design.md      OTEL/Jaeger export design
 ```
 
 ## Legacy prototype

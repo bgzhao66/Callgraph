@@ -12,6 +12,8 @@
 
 namespace callgraph {
 
+class ClockConverter;
+
 enum class TimestampMode {
     BootSeconds,  // seconds since boot, CLOCK_MONOTONIC
     WallClock,    // local wall clock, ISO 8601
@@ -26,7 +28,8 @@ class Output {
 public:
     explicit Output(const std::string& path,
                     TimestampMode mode = TimestampMode::BootSeconds,
-                    size_t indent_step = 0);
+                    size_t indent_step = 0,
+                    const ClockConverter* clock = nullptr);
     ~Output();
 
     Output(const Output&) = delete;

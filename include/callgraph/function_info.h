@@ -23,6 +23,7 @@ struct FunctionInfo {
     std::vector<uint64_t> return_offsets;
 
     std::string module_path;
+    std::string module_build_id;
     std::string source_file;
     uint32_t source_line = 0;
 

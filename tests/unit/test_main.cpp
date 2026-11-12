@@ -12,7 +12,18 @@
 #include "callgraph/event.h"
 #include "callgraph/histogram_report.h"
 #include "callgraph/latency_stats.h"
+#include "callgraph/otel_exporter.h"
+#include "callgraph/otlp_json.h"
+#include "callgraph/otlp_proto.h"
 #include "callgraph/output.h"
+#include "callgraph/span_generator.h"
+#include "callgraph/clock_converter.h"
+#include "callgraph/trace_metadata.h"
+#include "callgraph/trace_parser.h"
+
+#ifdef CALLGRAPH_HAVE_OTLP_PROTO
+#include "opentelemetry/proto/collector/trace/v1/trace_service.pb.h"
+#endif
 
 using namespace callgraph;
 
@@ -699,6 +710,336 @@ void test_max_depth()
     unlink(path.c_str());
 }
 
+void test_span_generator()
+{
+    const std::vector<std::string> names = {"main", "A(int)", "B(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        metadata.linkage_name = name;
+        metadata.module_path = "/tmp/app";
+        metadata.file_offset = 0x1234;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.scope = TraceScope::Root;
+    config.seed_hi = 11;
+    config.seed_lo = 22;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+
+    std::vector<SpanRecord> closed;
+    SpanGenerator builder(config, [&](SpanRecord&& span) {
+        closed.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &builder);
+
+    stack.on_event(make_event(0, 10, kEventEnter, 1000));
+    stack.on_event(make_event(1, 10, kEventEnter, 2000));
+    stack.on_event(make_event(1, 10, kEventExit, 3000));
+    stack.on_event(make_event(0, 10, kEventExit, 4000));
+
+    CHECK(closed.size() == 2);
+    if (closed.size() == 2) {
+        const SpanRecord& a = closed[0];
+        const SpanRecord& main = closed[1];
+        CHECK(a.function.name == "A(int)");
+        CHECK(main.function.name == "main");
+        CHECK(a.context.parent_span_id == main.context.span_id);
+        CHECK(main.context.parent_span_id == 0);
+        CHECK(a.depth == 1);
+        CHECK(a.start_unix_ns == 2000);
+        CHECK(a.end_unix_ns == 3000);
+        CHECK(!a.incomplete);
+        CHECK(a.context.trace_id == main.context.trace_id);
+    }
+
+    // A skipped return closes the intervening frames as incomplete.
+    std::vector<SpanRecord> desynced;
+    SpanGenerator desync_builder(config, [&](SpanRecord&& span) {
+        desynced.push_back(std::move(span));
+    });
+    CallStack desync_stack(names, static_cast<Output*>(nullptr), -1, false,
+                           false, &desync_builder);
+    desync_stack.on_event(make_event(0, 11, kEventEnter, 100));
+    desync_stack.on_event(make_event(1, 11, kEventEnter, 200));
+    desync_stack.on_event(make_event(2, 11, kEventEnter, 300));
+    desync_stack.on_event(make_event(0, 11, kEventExit, 400));
+
+    CHECK(desynced.size() == 3);
+    if (desynced.size() == 3) {
+        CHECK(desynced[0].function.name == "B(int)");
+        CHECK(desynced[0].incomplete);
+        CHECK(desynced[0].reason == SpanCloseReason::Desync);
+        CHECK(desynced[0].end_unix_ns == 400);
+        CHECK(desynced[1].function.name == "A(int)");
+        CHECK(desynced[1].incomplete);
+        CHECK(desynced[2].function.name == "main");
+        CHECK(!desynced[2].incomplete);
+    }
+
+    // Frames still live at shutdown are closed once.
+    std::vector<SpanRecord> live;
+    SpanGenerator live_builder(config, [&](SpanRecord&& span) {
+        live.push_back(std::move(span));
+    });
+    CallStack live_stack(names, static_cast<Output*>(nullptr), -1, false,
+                         false, &live_builder);
+    live_stack.on_event(make_event(0, 12, kEventEnter, 100));
+    live_stack.on_event(make_event(1, 12, kEventEnter, 200));
+    live_stack.finish_spans(500);
+    live_stack.finish_spans(600);
+
+    CHECK(live.size() == 2);
+    if (live.size() == 2) {
+        CHECK(live[0].function.name == "A(int)");
+        CHECK(live[0].incomplete);
+        CHECK(live[0].end_unix_ns == 500);
+        CHECK(live[1].function.name == "main");
+        CHECK(live[1].incomplete);
+        CHECK(live[1].end_unix_ns == 500);
+    }
+}
+
+void test_span_trace_scope()
+{
+    const std::vector<std::string> names = {"main"};
+    std::vector<FunctionMetadata> functions;
+    FunctionMetadata metadata;
+    metadata.name = "main";
+    functions.push_back(metadata);
+
+    const auto collect = [&](TraceScope scope) {
+        SpanGeneratorConfig config;
+        config.scope = scope;
+        config.seed_hi = 1;
+        config.seed_lo = 2;
+        config.timestamps_are_unix = true;
+        config.functions = &functions;
+        std::vector<SpanRecord> spans;
+        SpanGenerator builder(config, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &builder);
+        stack.on_event(make_event(0, 20, kEventEnter, 100));
+        stack.on_event(make_event(0, 20, kEventExit, 200));
+        stack.on_event(make_event(0, 20, kEventEnter, 300));
+        stack.on_event(make_event(0, 20, kEventExit, 400));
+        return spans;
+    };
+
+    const auto root = collect(TraceScope::Root);
+    CHECK(root.size() == 2);
+    if (root.size() == 2)
+        CHECK(root[0].context.trace_id != root[1].context.trace_id);
+
+    const auto thread = collect(TraceScope::Thread);
+    CHECK(thread.size() == 2);
+    if (thread.size() == 2)
+        CHECK(thread[0].context.trace_id == thread[1].context.trace_id);
+}
+
+void test_otlp_encoding()
+{
+    SpanRecord span;
+    span.context.trace_id[15] = 1;
+    span.context.span_id = 0x1234;
+    span.function_id = 7;
+    span.tid = 42;
+    span.depth = 2;
+    span.start_unix_ns = 1000;
+    span.end_unix_ns = 2000;
+    span.function.name = "A\"\\B";
+    span.function.linkage_name = "_Z1Av";
+    span.function.module_path = "/tmp/app";
+    span.function.file_offset = 0x99;
+    span.function.source_file = "/tmp/app.cpp";
+    span.function.source_line = 17;
+    span.thread_name = "worker-1";
+
+    OtelConfig config;
+    config.service_name = "demo";
+    config.pid = 123;
+    config.return_mode = "uretprobe";
+    config.trace_scope = "root";
+    config.tool_version = "0.1.0";
+
+    const std::string json = encode_otlp_request({span}, config);
+    CHECK(json.find("\"resourceSpans\"") != std::string::npos);
+    CHECK(json.find("\"scopeSpans\"") != std::string::npos);
+    CHECK(json.find("\"traceId\":\"00000000000000000000000000000001\"") !=
+          std::string::npos);
+    CHECK(json.find("\"spanId\":\"0000000000001234\"") != std::string::npos);
+    CHECK(json.find("\"name\":\"A\\\"\\\\B\"") != std::string::npos);
+    CHECK(json.find("\"parentSpanId\"") == std::string::npos);
+    CHECK(json.find("{{") == std::string::npos);
+    CHECK(json.find("\"key\":\"thread.id\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"thread.name\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"code.function\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"code.filepath\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"code.lineno\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"callgraph.module\"") != std::string::npos);
+
+    if (otlp_protobuf_available()) {
+        const std::string protobuf = encode_otlp_protobuf({span}, config);
+        CHECK(!protobuf.empty());
+#ifdef CALLGRAPH_HAVE_OTLP_PROTO
+        opentelemetry::proto::collector::trace::v1::
+            ExportTraceServiceRequest request;
+        CHECK(request.ParseFromString(protobuf));
+        CHECK(request.resource_spans_size() == 1);
+        CHECK(request.resource_spans(0).scope_spans_size() == 1);
+        CHECK(request.resource_spans(0).scope_spans(0).spans_size() == 1);
+        const auto& encoded_span =
+            request.resource_spans(0).scope_spans(0).spans(0);
+        CHECK(encoded_span.name() == "A\"\\B");
+        CHECK(encoded_span.trace_id().size() == 16);
+        CHECK(encoded_span.span_id().size() == 8);
+#endif
+    }
+}
+
+void test_root_sampling()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 3;
+    config.seed_lo = 4;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    config.sample_rate = 0.0;
+
+    std::vector<SpanRecord> spans;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &generator);
+    stack.on_event(make_event(0, 30, kEventEnter, 100));
+    stack.on_event(make_event(1, 30, kEventEnter, 200));
+    stack.on_event(make_event(1, 30, kEventExit, 300));
+    stack.on_event(make_event(0, 30, kEventExit, 400));
+
+    CHECK(spans.empty());
+    CHECK(generator.spans_sampled_out() == 2);
+
+    // A kept root keeps all descendants.
+    config.sample_rate = 1.0;
+    std::vector<SpanRecord> kept;
+    SpanGenerator kept_generator(config, [&](SpanRecord&& span) {
+        kept.push_back(std::move(span));
+    });
+    CallStack kept_stack(names, static_cast<Output*>(nullptr), -1, false,
+                         false, &kept_generator);
+    kept_stack.on_event(make_event(0, 31, kEventEnter, 100));
+    kept_stack.on_event(make_event(1, 31, kEventEnter, 200));
+    kept_stack.on_event(make_event(1, 31, kEventExit, 300));
+    kept_stack.on_event(make_event(0, 31, kEventExit, 400));
+    CHECK(kept.size() == 2);
+}
+
+void test_text_parser()
+{
+    const std::string path = temp_path();
+    {
+        std::ofstream out(path);
+        out << "2026-11-12T10:00:00.000000000+00:00 10 : 0 -> main\n"
+               "2026-11-12T10:00:00.000001000+00:00 10 : 1 -> A(int) [x=3]\n"
+               "2026-11-12T10:00:00.000002000+00:00 10 : 1 <- A(int)\n"
+               "2026-11-12T10:00:00.000003000+00:00 10 : 0 <- main\n"
+               "=== thread 10 ===\n";
+    }
+
+    std::vector<std::string> names;
+    std::vector<FunctionMetadata> functions;
+    std::vector<SpanRecord> spans;
+    SpanGeneratorConfig config;
+    config.seed_hi = 5;
+    config.seed_lo = 6;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    SpanGenerator builder(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &builder);
+
+    TraceParseOptions options;
+    options.input_show_args = true;
+    uint64_t last_ts = 0;
+    const TraceParseStats stats = parse_text_trace(
+        path, stack, names, functions, nullptr, options, &last_ts);
+    stack.finish_spans(last_ts);
+    unlink(path.c_str());
+
+    CHECK(stats.event_lines == 4);
+    CHECK(stats.ignored_lines == 1);
+    CHECK(names.size() == 2);
+    CHECK(spans.size() == 2);
+    if (spans.size() == 2) {
+        CHECK(spans[0].function.name == "A(int)");
+        CHECK(spans[0].arguments == "[x=3]");
+        CHECK(spans[1].function.name == "main");
+    }
+}
+
+void test_trace_metadata_roundtrip()
+{
+    const std::string path = temp_path();
+    TraceMetadata source;
+    source.service_name = "demo";
+    source.service_namespace = "ns";
+    source.pid = 123;
+    source.monotonic_offset_ns = 99;
+    source.seed_hi = 1;
+    source.seed_lo = 2;
+    source.return_mode = "ret";
+    source.trace_scope = "thread";
+    source.attach_mode = true;
+    FunctionMetadata function;
+    function.name = "A(int)";
+    function.linkage_name = "_Z1Ai";
+    function.module_path = "/tmp/app";
+    function.module_build_id = "abc";
+    function.file_offset = 0x42;
+    function.source_file = "/src/a.cpp";
+    function.source_line = 12;
+    source.functions.push_back(function);
+
+    CHECK(write_trace_metadata(path, source));
+    TraceMetadata loaded;
+    CHECK(read_trace_metadata(path, &loaded));
+    unlink(path.c_str());
+
+    CHECK(loaded.present);
+    CHECK(loaded.service_name == "demo");
+    CHECK(loaded.service_namespace == "ns");
+    CHECK(loaded.pid == 123);
+    CHECK(loaded.monotonic_offset_ns == 99);
+    CHECK(loaded.return_mode == "ret");
+    CHECK(loaded.trace_scope == "thread");
+    CHECK(loaded.attach_mode);
+    CHECK(loaded.functions.size() == 1);
+    if (loaded.functions.size() == 1) {
+        CHECK(loaded.functions[0].name == "A(int)");
+        CHECK(loaded.functions[0].module_build_id == "abc");
+        CHECK(loaded.functions[0].file_offset == 0x42);
+        CHECK(loaded.functions[0].source_file == "/src/a.cpp");
+        CHECK(loaded.functions[0].source_line == 12);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -725,6 +1066,12 @@ int main()
     test_argument_aggregate();
     test_argument_stack_float();
     test_call_stack_arguments();
+    test_span_generator();
+    test_span_trace_scope();
+    test_root_sampling();
+    test_otlp_encoding();
+    test_text_parser();
+    test_trace_metadata_roundtrip();
 
     if (failures != 0) {
         fprintf(stderr, "%d test(s) failed\n", failures);

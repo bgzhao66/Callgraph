@@ -175,6 +175,42 @@ libbpf's `libbpf_strerror_r()` cannot name it; `errno_string()` maps the
 kernel-internal codes and the libbpf print callback rewrites the opaque
 `unknown error (-N)` fragments before they reach stderr.
 
+### OTEL export
+
+OTLP export is implemented as a second consumer of `CallStack` alongside the
+text writer, and is shared by both `run` and `attach`. `SpanSink` receives
+enter/exit callbacks from the existing stack reconstruction logic, so
+recursion, desync matching, and shutdown handling are not duplicated. The
+default trace scope is one trace per depth-0 root invocation;
+`--trace-scope=thread` reuses a trace ID per TID. Attach-mode roots are marked
+`callgraph.partial_stack=true` because their callers were already running when
+tracing started.
+
+Live spans use `ClockConverter` (realtime minus monotonic, sampled at startup
+and recalibrated every 30 seconds) to convert `bpf_ktime_get_ns()` values to
+Unix epoch nanoseconds. Offline text conversion converts timestamps in the
+parser; boot-second logs require a `--trace-metadata` sidecar (preferred) or
+`--assume-local-capture`. Desynced frames are closed at the return timestamp
+that revealed the gap; frames live at shutdown are closed at the stop
+timestamp. Both are marked `callgraph.incomplete=true` with an
+`callgraph.end_reason` attribute rather than `status=ERROR`.
+
+The exporter supports OTLP/gRPC (`--exporter otlp`, default port 4317) and
+OTLP/HTTP with protobuf (`--exporter otlp-http`, default port 4318). OTLP
+message definitions are vendored in `third_party/opentelemetry-proto` and
+generated with `protoc`; the gRPC transport uses libcurl's HTTP/2 support with
+gRPC framing. A build without protobuf can still use
+`--exporter otlp-json --export-file FILE`. File export works without libcurl;
+network export, batching, retries, custom headers, and gzip are compiled in
+when libcurl is available. The exporter queue is bounded and never blocks the
+ring-buffer collector. `--show-args` values are exported as one
+`callgraph.arguments` string to avoid high-cardinality per-argument keys.
+
+Root-trace sampling (`--sample-rate`) decides once per root and is inherited by
+descendants so retained traces keep their full child tree. Source file/line
+attributes come from DWARF; thread names come from
+`/proc/<pid>/task/<tid>/comm` when the PID namespace permits it.
+
 ## Phase status
 
 | Phase | Status |
@@ -183,7 +219,7 @@ kernel-internal codes and the libbpf print callback rewrites the opaque
 | 1. MVP: main exe, run/attach, filters, depth, output | done; `--show-args` added |
 | 2. shared libraries, dlopen, module lifecycle | partial: `--all-modules`/`--module`, polling discovery; no perf-mmap events |
 | 3. robustness: thread exit, desync policy, stripped+DWARF, batch failures | partial (desync, batch fallback, ring-loss, signals, external debug via libdwfl done; DIE-only debug files pending) |
-| 4. statistics (`--summary`), JSON, source locations | pending |
+| 4. statistics (`--summary`), JSON, source locations | partial: OTLP gRPC/HTTP export, source locations, and offline conversion done; aggregate summary pending |
 | 5. performance, GDB comparison, CI | pending |
 
 ## Known limitations

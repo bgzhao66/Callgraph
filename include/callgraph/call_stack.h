@@ -8,6 +8,7 @@
 #include "callgraph/argument_info.h"
 #include "callgraph/event.h"
 #include "callgraph/latency_stats.h"
+#include "callgraph/span.h"
 
 namespace callgraph {
 
@@ -16,6 +17,7 @@ class Output;
 struct CallFrame {
     uint64_t function_id;
     uint64_t start_ts;
+    uint64_t span_token = 0;
 };
 
 struct ThreadState {
@@ -27,16 +29,34 @@ class CallStack {
 public:
     CallStack(const std::vector<std::string>& names,
               const std::vector<FunctionSignature>* signatures, Output& output,
-              int max_depth, bool verbose, bool collect_latency = false);
+              int max_depth, bool verbose, bool collect_latency = false,
+              SpanSink* sink = nullptr);
 
     CallStack(const std::vector<std::string>& names, Output& output,
-              int max_depth, bool verbose, bool collect_latency = false);
+              int max_depth, bool verbose, bool collect_latency = false,
+              SpanSink* sink = nullptr);
 
-    void on_event(const TraceEvent& event);
+    // Output may be null for offline span conversion.  The six-argument form
+    // is unambiguous when nullptr is passed as the output.
+    CallStack(const std::vector<std::string>& names,
+              const std::vector<FunctionSignature>* signatures,
+              Output* output, int max_depth, bool verbose,
+              bool collect_latency, SpanSink* sink);
+
+    CallStack(const std::vector<std::string>& names, Output* output,
+              int max_depth, bool verbose, bool collect_latency = false,
+              SpanSink* sink = nullptr);
+
+    void on_event(const TraceEvent& event,
+                  const std::string& arguments_override = {});
 
     // Marks frames still live at shutdown as incomplete.  Safe to call more
     // than once; only the first call has an effect.
     void finish_statistics();
+
+    // Closes spans for frames that never returned.  Independent of
+    // --histogram/collect_latency.
+    void finish_spans(uint64_t stop_ts);
 
     const LatencyStats& stats() const { return stats_; }
 
@@ -48,13 +68,18 @@ public:
     size_t live_threads() const { return threads_.size(); }
 
 private:
+    void emit_line(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
+                   const std::string& name);
+
     const std::vector<std::string>& names_;
     const std::vector<FunctionSignature>* signatures_;
-    Output& output_;
+    Output* output_;
     int max_depth_;
     bool verbose_;
     bool collect_latency_;
+    SpanSink* sink_;
     bool stats_finished_ = false;
+    bool spans_finished_ = false;
 
     std::unordered_map<uint32_t, ThreadState> threads_;
     LatencyStats stats_;

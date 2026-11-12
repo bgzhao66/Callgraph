@@ -272,14 +272,70 @@ ModuleInfo build_module(
         if (scan_returns)
             scan_return_instructions(fd, entry.second.first, is_64bit);
 #endif
+        entry.second.first.module_build_id = build_id;
         module.functions.push_back(std::move(entry.second.first));
     }
     return module;
 }
 
-ModuleInfo resolve_with_dwfl(const std::string& path)
+void annotate_source_info(const std::string& path,
+                          std::vector<FunctionInfo>& functions)
 {
+    if (functions.empty())
+        return;
+
     Dwfl_Callbacks callbacks = {};
+    callbacks.find_elf = dwfl_build_id_find_elf;
+    callbacks.find_debuginfo = dwfl_standard_find_debuginfo;
+    callbacks.section_address = dwfl_offline_section_address;
+    callbacks.debuginfo_path = nullptr;
+
+    Dwfl* dwfl = dwfl_begin(&callbacks);
+    if (!dwfl)
+        return;
+
+    struct DwflGuard {
+        Dwfl* dwfl;
+        ~DwflGuard() { dwfl_end(dwfl); }
+    } guard{dwfl};
+
+    Dwfl_Module* module =
+        dwfl_report_offline(dwfl, path.c_str(), path.c_str(), -1);
+    if (!module)
+        return;
+    if (dwfl_report_end(dwfl, nullptr, nullptr) != 0)
+        return;
+
+    GElf_Addr module_bias = 0;
+    if (!dwfl_module_getelf(module, &module_bias))
+        return;
+
+    for (auto& function : functions) {
+        Dwfl_Line* line =
+            dwfl_module_getsrc(module, function.low_pc + module_bias);
+        if (!line)
+            continue;
+
+        Dwarf_Addr address = 0;
+        int line_number = 0;
+        const char* file = dwfl_lineinfo(line, &address, &line_number, nullptr,
+                                         nullptr, nullptr);
+        if (!file || !*file)
+            continue;
+
+        std::string source = file;
+        const char* compile_dir = dwfl_line_comp_dir(line);
+        if (!source.empty() && source.front() != '/' && compile_dir &&
+            *compile_dir) {
+            source = std::string(compile_dir) + "/" + source;
+        }
+        function.source_file = std::move(source);
+        function.source_line = line_number > 0 ? line_number : 0;
+    }
+}
+
+ModuleInfo resolve_with_dwfl(const std::string& path)
+{    Dwfl_Callbacks callbacks = {};
     callbacks.find_elf = dwfl_build_id_find_elf;
     callbacks.find_debuginfo = dwfl_standard_find_debuginfo;
     callbacks.section_address = dwfl_offline_section_address;
@@ -399,6 +455,7 @@ ModuleInfo resolve_with_dwfl(const std::string& path)
                      scan_returns, is_64bit);
     if (fd >= 0)
         close(fd);
+    annotate_source_info(path, result.functions);
     return result;
 }
 
@@ -523,8 +580,11 @@ ModuleInfo ElfResolver::resolve(const std::string& path)
     const bool is_64bit = false;
 #endif
 
-    return build_module(path, build_id_of(file.elf), has_exception_tables,
-                        by_offset, file.fd, is_x86, is_64bit);
+    ModuleInfo result =
+        build_module(path, build_id_of(file.elf), has_exception_tables,
+                     by_offset, file.fd, is_x86, is_64bit);
+    annotate_source_info(path, result.functions);
+    return result;
 }
 
 }  // namespace callgraph

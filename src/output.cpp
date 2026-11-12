@@ -8,24 +8,21 @@
 #include <unistd.h>
 
 #include "callgraph/common.h"
+#include "callgraph/clock_converter.h"
 
 namespace callgraph {
 
-Output::Output(const std::string& path, TimestampMode mode, size_t indent_step)
+Output::Output(const std::string& path, TimestampMode mode, size_t indent_step,
+               const ClockConverter* clock)
     : mode_(mode), indent_step_(indent_step)
 {
     if (mode_ == TimestampMode::WallClock) {
-        struct timespec monotonic = {};
-        struct timespec realtime = {};
-        if (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 ||
-            clock_gettime(CLOCK_REALTIME, &realtime) != 0) {
-            fail("cannot read the system clock: %s",
-                 errno_string(errno).c_str());
+        if (clock) {
+            wall_offset_ns_ = clock->offset_ns();
+        } else {
+            ClockConverter sampled;
+            wall_offset_ns_ = sampled.offset_ns();
         }
-        wall_offset_ns_ =
-            (static_cast<int64_t>(realtime.tv_sec - monotonic.tv_sec) *
-                 1000000000LL) +
-            (realtime.tv_nsec - monotonic.tv_nsec);
     }
 
     if (path.empty() || path == "-") {
