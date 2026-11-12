@@ -10,6 +10,7 @@
 #include "callgraph/call_stack.h"
 #include "callgraph/common.h"
 #include "callgraph/event.h"
+#include "callgraph/flame_graph.h"
 #include "callgraph/histogram_report.h"
 #include "callgraph/latency_stats.h"
 #include "callgraph/otel_exporter.h"
@@ -949,6 +950,42 @@ void test_root_sampling()
     CHECK(kept.size() == 2);
 }
 
+void test_flame_graph_sink()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    FlameGraphSink sink(functions);
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &sink);
+    stack.on_event(make_event(0, 40, kEventEnter, 100));
+    stack.on_event(make_event(1, 40, kEventEnter, 200));
+    stack.on_event(make_event(1, 40, kEventExit, 300));
+    stack.on_event(make_event(0, 40, kEventExit, 400));
+
+    const std::string folded = sink.render();
+    CHECK(folded.find("main 1\n") != std::string::npos);
+    CHECK(folded.find("main;A(int) 1\n") != std::string::npos);
+    CHECK(sink.unique_stacks() == 2);
+
+    FlameGraphSink incomplete(functions);
+    CallStack incomplete_stack(names, static_cast<Output*>(nullptr), -1, false,
+                               false, &incomplete);
+    incomplete_stack.on_event(make_event(0, 41, kEventEnter, 100));
+    incomplete_stack.on_event(make_event(1, 41, kEventEnter, 200));
+    incomplete_stack.on_event(make_event(0, 41, kEventExit, 300));
+
+    const std::string incomplete_folded = incomplete.render();
+    CHECK(incomplete_folded.find("main;A(int);[incomplete] 1\n") !=
+          std::string::npos);
+    CHECK(incomplete_folded.find("main 1\n") != std::string::npos);
+}
+
 void test_text_parser()
 {
     const std::string path = temp_path();
@@ -1070,6 +1107,7 @@ int main()
     test_span_trace_scope();
     test_root_sampling();
     test_otlp_encoding();
+    test_flame_graph_sink();
     test_text_parser();
     test_trace_metadata_roundtrip();
 

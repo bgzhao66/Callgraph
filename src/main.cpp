@@ -29,6 +29,7 @@
 #include "callgraph/dwarf_args.h"
 #include "callgraph/elf_resolver.h"
 #include "callgraph/event_collector.h"
+#include "callgraph/flame_graph.h"
 #include "callgraph/histogram_report.h"
 #include "callgraph/module_manager.h"
 #include "callgraph/otel_exporter.h"
@@ -104,7 +105,7 @@ void usage(FILE* out)
             "Usage:\n"
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
-            "  callgraph export otel [options] --input TRACE\n"
+            "  callgraph export --otel|--flame --input TRACE [options]\n"
             "\n"
             "Options:\n"
             "  -o, --output FILE     write events to FILE (default: stdout)\n"
@@ -152,21 +153,49 @@ void usage(FILE* out)
             "  sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo\n"
             "  sudo callgraph attach -p 12345 --exporter otlp \\\n"
             "      --endpoint localhost:4317 --service-name my_app\n"
-            "  callgraph export otel --input trace.log --output spans.json\n"
+            "  callgraph export --otel --input trace.log --output spans.json\n"
+            "  callgraph export --flame --input trace.log --output stacks.folded\n"
             "\n"
-            "Run 'callgraph export otel --help' for offline conversion options.\n");
+            "Run 'callgraph export --help' for offline conversion options.\n");
 }
 
 void export_usage(FILE* out)
 {
     fprintf(out,
             "Usage:\n"
-            "  callgraph export otel --input TRACE [options]\n"
+            "  callgraph export --otel --input TRACE [options]\n"
+            "  callgraph export --flame --input TRACE [options]\n"
+            "\n"
+            "Modes:\n"
+            "  --otel    convert a text trace to OpenTelemetry OTLP/JSON spans\n"
+            "  --flame   convert a text trace to folded stacks for flame graphs\n"
+            "\n"
+            "Shared options:\n"
+            "  --input FILE          callgraph text trace to convert\n"
+            "  -o, --output FILE     write output to FILE\n"
+            "  -h, --help            show this help\n"
+            "\n"
+            "Mode-specific help:\n"
+            "  callgraph export --otel --help\n"
+            "  callgraph export --flame --help\n");
+}
+
+void otel_export_usage(FILE* out)
+{
+    fprintf(out,
+            "Usage:\n"
+            "  callgraph export --otel --input TRACE [options]\n"
+            "\n"
+            "Convert a callgraph text trace into OpenTelemetry spans.  The\n"
+            "offline command emits one OTLP/JSON request body; use -o/--output\n"
+            "to write it to a file or --endpoint to POST it to an OTLP/HTTP\n"
+            "JSON receiver.\n"
             "\n"
             "Options:\n"
             "  --input FILE          callgraph text trace to convert\n"
-            "  -o, --output FILE     write OTLP/JSON to FILE\n"
-            "  --endpoint URL        POST OTLP/JSON to URL instead of a file\n"
+            "  -o, --output FILE     write the OTLP/JSON request body to FILE\n"
+            "  --endpoint URL        POST the OTLP/JSON body to URL\n"
+            "                        (OTLP/HTTP JSON; path defaults to /v1/traces)\n"
             "  --service-name NAME   override service.name\n"
             "  --service-namespace NAME\n"
             "  --metadata FILE       trace metadata sidecar\n"
@@ -185,18 +214,51 @@ void export_usage(FILE* out)
             "  --input-show-args     preserve --show-args suffixes as attributes\n"
             "  -h, --help            show this help\n"
             "\n"
+            "Notes:\n"
+            "  --output and --endpoint are alternatives; one is required.\n"
+            "  This command emits OTLP/JSON only. For live OTLP/gRPC or\n"
+            "  OTLP/HTTP-protobuf use --exporter otlp or --exporter otlp-http.\n"
+            "\n"
             "Examples:\n"
             "  # Preferred: record the anchor while capturing\n"
             "  callgraph run -o trace.log --trace-metadata trace.meta -- ./app\n"
-            "  callgraph export otel --input trace.log \\\n"
+            "  callgraph export --otel --input trace.log \\\n"
             "      --metadata trace.meta --output spans.json\n"
             "\n"
             "  # Trace with -T (ISO wall-clock timestamps), no sidecar\n"
-            "  callgraph export otel --input trace.log --output spans.json\n"
+            "  callgraph export --otel --input trace.log --output spans.json\n"
             "\n"
             "  # Boot-second trace with no sidecar; approximate this-host anchor\n"
-            "  callgraph export otel --input trace.log --output spans.json \\\n"
+            "  callgraph export --otel --input trace.log --output spans.json \\\n"
             "      --assume-local-capture\n");
+}
+
+void flame_export_usage(FILE* out)
+{
+    fprintf(out,
+            "Usage:\n"
+            "  callgraph export --flame --input TRACE [options]\n"
+            "\n"
+            "Convert a callgraph text trace into folded stacks for\n"
+            "flamegraph.pl or inferno-flamegraph.  Output goes to stdout unless\n"
+            "-o/--output is given.\n"
+            "\n"
+            "Options:\n"
+            "  --input FILE          callgraph text trace to convert\n"
+            "  -o, --output FILE     write folded stacks to FILE (default: stdout)\n"
+            "  -h, --help            show this help\n"
+            "\n"
+            "Format:\n"
+            "  main;C(int);B(int) 1\n"
+            "  main;C(int) 1\n"
+            "  main 1\n"
+            "\n"
+            "Each line is a root-to-function stack followed by its invocation\n"
+            "count. Frames closed by desync or shutdown end in [incomplete].\n"
+            "\n"
+            "Example:\n"
+            "  callgraph export --flame --input trace.log --output stacks.folded\n"
+            "  flamegraph.pl stacks.folded > flame.svg\n");
 }
 
 [[noreturn]] void usage_error(const char* fmt, ...)
@@ -574,9 +636,15 @@ void fill_host_otel_config(OtelConfig& config)
     config.tool_version = CALLGRAPH_VERSION;
 }
 
+enum class ExportMode { Otel, Flame };
+
 struct ExportOptions {
     std::string input;
     std::string output;
+    ExportMode mode = ExportMode::Otel;
+    bool mode_set = false;
+    bool help = false;
+    bool otel_option_used = false;
     std::string endpoint;
     std::string service_name;
     std::string service_namespace;
@@ -603,11 +671,13 @@ struct ExportOptions {
 ExportOptions parse_export_args(int argc, char** argv)
 {
     g_usage_mode = UsageMode::Export;
-    if (argc < 3 || std::string(argv[2]) != "otel")
-        usage_error("usage: callgraph export otel --input TRACE");
+    if (argc >= 3 && std::string(argv[2]) == "otel") {
+        usage_error("the 'otel' token was removed; use "
+                    "'callgraph export --otel --input TRACE'");
+    }
 
     ExportOptions options;
-    for (int i = 3; i < argc; ++i) {
+    for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         std::string inline_value;
         bool has_inline_value = false;
@@ -627,26 +697,44 @@ ExportOptions parse_export_args(int argc, char** argv)
                 usage_error("option %s requires a value", arg.c_str());
             return argv[++i];
         };
+        auto mark_otel_option = [&] { options.otel_option_used = true; };
 
-        if (arg == "--input") {
+        if (arg == "--otel") {
+            if (options.mode_set && options.mode != ExportMode::Otel)
+                usage_error("--otel and --flame are mutually exclusive");
+            options.mode = ExportMode::Otel;
+            options.mode_set = true;
+        } else if (arg == "--flame") {
+            if (options.mode_set && options.mode != ExportMode::Flame)
+                usage_error("--otel and --flame are mutually exclusive");
+            options.mode = ExportMode::Flame;
+            options.mode_set = true;
+        } else if (arg == "--input") {
             options.input = value();
         } else if (arg == "-o" || arg == "--output") {
             options.output = value();
         } else if (arg == "--endpoint") {
             options.endpoint = value();
+            mark_otel_option();
         } else if (arg == "--service-name") {
             options.service_name = value();
+            mark_otel_option();
         } else if (arg == "--service-namespace") {
             options.service_namespace = value();
+            mark_otel_option();
         } else if (arg == "--metadata") {
             options.metadata_path = value();
+            mark_otel_option();
         } else if (arg == "--pid") {
             options.pid = static_cast<pid_t>(parse_long(value(), arg));
+            mark_otel_option();
         } else if (arg == "--assume-local-capture") {
             options.assume_local_capture = true;
+            mark_otel_option();
         } else if (arg == "--trace-scope") {
             options.trace_scope = value();
             options.trace_scope_set = true;
+            mark_otel_option();
         } else if (arg == "--sample-rate") {
             const std::string rate = value();
             char* end = nullptr;
@@ -657,8 +745,10 @@ ExportOptions parse_export_args(int argc, char** argv)
                 options.sample_rate < 0.0 || options.sample_rate > 1.0) {
                 usage_error("--sample-rate must be between 0 and 1");
             }
+            mark_otel_option();
         } else if (arg == "--input-show-args") {
             options.input_show_args = true;
+            mark_otel_option();
         } else if (arg == "--trace-id-seed") {
             const std::string seed = value();
             char* end = nullptr;
@@ -667,36 +757,65 @@ ExportOptions parse_export_args(int argc, char** argv)
                 usage_error("invalid --trace-id-seed '%s'", seed.c_str());
             options.seed_lo = options.seed_hi ^ 0x9e3779b97f4a7c15ULL;
             options.have_seed = true;
+            mark_otel_option();
         } else if (arg == "--header") {
             options.headers.push_back(value());
+            mark_otel_option();
         } else if (arg == "--batch-size") {
             options.batch_spans = parse_size(value(), arg);
+            mark_otel_option();
         } else if (arg == "--batch-bytes") {
             options.batch_bytes = parse_size(value(), arg);
+            mark_otel_option();
         } else if (arg == "--flush-interval") {
             options.flush_ms = static_cast<int>(parse_long(value(), arg));
+            mark_otel_option();
         } else if (arg == "--timeout-ms") {
             options.timeout_ms = static_cast<int>(parse_long(value(), arg));
+            mark_otel_option();
         } else if (arg == "--queue-spans") {
             options.queue_spans = parse_size(value(), arg);
+            mark_otel_option();
         } else if (arg == "--compression") {
             options.compression = value();
+            mark_otel_option();
         } else if (arg == "--fail-on-export-error") {
             options.fail_on_error = true;
+            mark_otel_option();
         } else if (arg == "-h" || arg == "--help") {
-            export_usage(stdout);
-            std::exit(0);
+            options.help = true;
         } else {
             usage_error("unknown export option '%s'", arg.c_str());
         }
     }
 
+    if (options.help) {
+        if (!options.mode_set)
+            export_usage(stdout);
+        else if (options.mode == ExportMode::Otel)
+            otel_export_usage(stdout);
+        else
+            flame_export_usage(stdout);
+        std::exit(0);
+    }
+
+    if (!options.mode_set)
+        usage_error("export requires --otel or --flame");
+
+    if (options.mode == ExportMode::Flame) {
+        if (options.otel_option_used)
+            usage_error("OTel options are not valid with --flame");
+        if (options.input.empty())
+            usage_error("export --flame requires --input TRACE");
+        return options;
+    }
+
     if (options.input.empty())
-        usage_error("export otel requires --input TRACE");
+        usage_error("export --otel requires --input TRACE");
     if (options.output.empty() && options.endpoint.empty())
-        usage_error("export otel requires --output FILE or --endpoint URL");
+        usage_error("export --otel requires --output FILE or --endpoint URL");
     if (options.output == "-")
-        usage_error("export otel --output requires a file path, not '-'");
+        usage_error("export --otel --output requires a file path, not '-'");
     if (options.batch_spans == 0 || options.batch_bytes == 0 ||
         options.queue_spans == 0)
         usage_error("batch and queue sizes must be >= 1");
@@ -712,7 +831,7 @@ ExportOptions parse_export_args(int argc, char** argv)
     return options;
 }
 
-int run_export(const ExportOptions& options)
+int run_otel_export(const ExportOptions& options)
 {
     TraceMetadata metadata;
     if (!options.metadata_path.empty()) {
@@ -827,6 +946,59 @@ int run_export(const ExportOptions& options)
             exporter.exported(), exporter.failed());
 
     return exporter.failed() != 0 && options.fail_on_error ? 1 : 0;
+}
+
+int run_flame_export(const ExportOptions& options)
+{
+    std::vector<std::string> names;
+    std::vector<FunctionMetadata> functions;
+    FlameGraphSink sink(functions);
+
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &sink);
+
+    TraceParseOptions parse_options;
+    parse_options.require_timestamp_anchor = false;
+
+    uint64_t last_ts = 0;
+    const TraceParseStats stats = parse_text_trace(
+        options.input, stack, names, functions, nullptr, parse_options,
+        &last_ts);
+
+    if (stats.event_lines == 0)
+        fail("no callgraph events found in %s", options.input.c_str());
+
+    stack.finish_spans(last_ts);
+    const std::string folded = sink.render();
+
+    if (options.output.empty() || options.output == "-") {
+        const size_t written = fwrite(folded.data(), 1, folded.size(), stdout);
+        if (written != folded.size())
+            fail("cannot write folded stacks to stdout");
+        fflush(stdout);
+    } else {
+        std::ofstream output(options.output, std::ios::binary);
+        if (!output) {
+            fail("cannot open %s for writing", options.output.c_str());
+        }
+        output.write(folded.data(), static_cast<std::streamsize>(folded.size()));
+        if (!output) {
+            fail("cannot write folded stacks to %s", options.output.c_str());
+        }
+    }
+
+    fprintf(stderr,
+            "callgraph: converted %" PRIu64 " events into %" PRIu64
+            " folds (%zu unique stacks)\n",
+            stats.event_lines, sink.recorded(), sink.unique_stacks());
+    return 0;
+}
+
+int run_export(const ExportOptions& options)
+{
+    if (options.mode == ExportMode::Flame)
+        return run_flame_export(options);
+    return run_otel_export(options);
 }
 
 class FunctionFilter {

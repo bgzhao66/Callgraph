@@ -211,6 +211,12 @@ descendants so retained traces keep their full child tree. Source file/line
 attributes come from DWARF; thread names come from
 `/proc/<pid>/task/<tid>/comm` when the PID namespace permits it.
 
+Offline `callgraph export` has two mutually exclusive modes: `--otel` emits
+OTLP/JSON, and `--flame` emits folded stacks for flamegraph.pl/inferno. The
+flame path reuses `TraceParser` and `CallStack`, does not need a timestamp
+anchor, and records each function exit's current root-to-function stack.
+Incomplete frames are marked with a trailing `[incomplete]` pseudo-frame.
+
 ## Phase status
 
 | Phase | Status |

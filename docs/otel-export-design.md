@@ -322,12 +322,15 @@ callgraph run --exporter otlp --sample-rate 0.1 \
 
 # File/offline paths
 callgraph run --exporter otlp-json --export-file trace.otlp.json -- ./my_app
-callgraph export otel --input trace.log --output spans.json
+callgraph export --otel --input trace.log --output spans.json
+callgraph export --flame --input trace.log --output stacks.folded
 ```
 
-The default exporter is stdout. OTLP is explicitly enabled. Existing
-`--batch-size` controls OTLP batching; `--probe-batch-size` controls the
-`uprobe_multi` link batch independently.
+The default exporter is stdout. OTLP is explicitly enabled. `callgraph export`
+has two mutually exclusive offline modes: `--otel` emits OTLP/JSON and
+`--flame` emits folded stacks for flamegraph tools. `--batch-size` controls
+OTLP batching; `--probe-batch-size` controls the `uprobe_multi` link batch
+independently.
 
 ## 11. Jaeger visualization
 

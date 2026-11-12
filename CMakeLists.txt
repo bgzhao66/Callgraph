@@ -167,6 +167,7 @@ add_executable(callgraph
   src/otel_exporter.cpp
   src/trace_parser.cpp
   src/trace_metadata.cpp
+  src/flame_graph.cpp
   ${OTLP_PROTO_SRCS}
   ${BPF_BLOB}
 )
@@ -233,6 +234,7 @@ if(BUILD_TESTING)
     src/otel_exporter.cpp
     src/trace_parser.cpp
     src/trace_metadata.cpp
+    src/flame_graph.cpp
     ${OTLP_PROTO_SRCS}
   )
   target_include_directories(callgraph_tests PRIVATE

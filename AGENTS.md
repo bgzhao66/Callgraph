@@ -47,7 +47,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - `--batch-size` is the OTLP batch size. `--probe-batch-size` is the `uprobe_multi` attachment batch. Do not conflate them.
 - `--max-depth` and `--indent` are display-only and do not affect exported spans.
 - The same `--exporter` options work in both `run` and `attach` mode.
-- `callgraph export otel` converts text traces offline and does not need root; see `callgraph export otel --help`.
+- `callgraph export --otel` converts text traces to OTLP/JSON and does not need root; `callgraph export --flame` emits folded stacks. See the mode-specific `--help`.
 
 ## Runtime requirements and gotchas
 
@@ -67,7 +67,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - Userspace owns ELF/DWARF resolution, module discovery, probe attachment, and per-TID call-stack reconstruction.
 - `CallStack` pairs entry/return events, handles recursion/desync/shutdown, and feeds `SpanSink`.
 - `SpanGenerator` turns call events into OTel spans; `OtelExporter` owns batching/queue/retry/transport; `ClockConverter` maps monotonic timestamps to Unix epoch.
-- `TraceParser` + `callgraph export otel` replay text traces through the same `CallStack`/`SpanGenerator` path.
+- `TraceParser` + `callgraph export --otel|--flame` replay text traces through the same `CallStack` path.
 - Source file/line attributes are populated from libdwfl in the ELF resolver.
 
 ## OpenCode session tooling

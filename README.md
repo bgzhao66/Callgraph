@@ -28,8 +28,9 @@ The current implementation includes:
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 - OTLP export for Jaeger: gRPC (`--exporter otlp`), OTLP/HTTP with
   protobuf (`--exporter otlp-http`), OTLP/JSON file output
-  (`--exporter otlp-json`), and `callgraph export otel` for existing text
+  (`--exporter otlp-json`), and `callgraph export --otel` for existing text
   traces
+- folded-stack flamegraph export via `callgraph export --flame`
 - root-trace sampling, source file/line attributes, and best-effort thread
   names
 
@@ -129,8 +130,12 @@ sudo ./build/callgraph run -T --exporter otlp-json \
     --export-file trace.otlp.json -- ./my_app
 
 # Convert an existing text trace (use -T, --metadata, or --assume-local-capture)
-./build/callgraph export otel \
+./build/callgraph export --otel \
     --input trace.log --output spans.json --service-name my_app
+
+# Export folded stacks for flamegraph.pl / inferno-flamegraph
+./build/callgraph export --flame \
+    --input trace.log --output stacks.folded
 ```
 
 ### Options
@@ -139,7 +144,7 @@ sudo ./build/callgraph run -T --exporter otlp-json \
 Usage:
   callgraph run [options] -- program [args...]
   callgraph attach [options] -p PID
-  callgraph export otel [options] --input TRACE
+  callgraph export --otel|--flame [options] --input TRACE
 
   -o, --output FILE     write events to FILE (default: stdout)
       --include GLOB    only trace functions matching GLOB (repeatable)
@@ -178,12 +183,16 @@ Usage:
       --version         show version
 ```
 
-`callgraph export otel` accepts `--input TRACE`, `--output FILE`,
+`callgraph export --otel` accepts `--input TRACE`, `--output FILE`,
 `--endpoint URL`, `--service-name NAME`, `--service-namespace NAME`,
 `--metadata FILE`, `--assume-local-capture`, `--trace-scope MODE`,
 `--trace-id-seed HEX`, `--sample-rate R`, `--input-show-args`, and batch/HTTP
 options (`--batch-size`, `--batch-bytes`, `--flush-interval`, `--timeout-ms`,
 `--queue-spans`, `--compression`, `--header`, `--fail-on-export-error`).
+
+`callgraph export --flame` accepts `--input TRACE` and optional
+`--output FILE`; it writes folded stacks to stdout by default. The two modes
+are mutually exclusive.
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;
@@ -421,7 +430,7 @@ To convert an existing text trace:
 # -T records Unix-capable wall-clock timestamps.
 sudo ./build/callgraph run -T -o trace.log -- ./my_app
 
-./build/callgraph export otel \
+./build/callgraph export --otel \
     --input trace.log --output spans.json --service-name my_app
 
 curl -sS -X POST -H 'Content-Type: application/json' \
@@ -435,7 +444,7 @@ sidecar during capture and passing it to the converter:
 sudo ./build/callgraph run -o trace.log \
     --trace-metadata trace.meta -- ./my_app
 
-./build/callgraph export otel \
+./build/callgraph export --otel \
     --input trace.log --metadata trace.meta --output spans.json
 ```
 
@@ -444,7 +453,7 @@ boot session, `--assume-local-capture` derives an approximate anchor from the
 local realtime/monotonic clocks and prints a warning:
 
 ```bash
-./build/callgraph export otel \
+./build/callgraph export --otel \
     --input trace.log --output spans.json --assume-local-capture
 ```
 
@@ -456,7 +465,31 @@ static functions in different modules can merge), and `--show-args` suffixes
 are stripped and preserved as `callgraph.arguments` only when
 `--input-show-args` is given. Native export avoids both limitations.
 
-See `docs/otel-export-design.md` for the full mapping and edge-case semantics.
+See `docs/otel-export-design.md` for the full OTel mapping and edge-case semantics.
+
+## Flamegraph export
+
+`callgraph export --flame` converts a text trace into folded stacks:
+
+```text
+main 1
+main;C(int) 1
+main;C(int);B(int) 1
+```
+
+Each line is a root-to-function stack followed by its invocation count.
+Identical stacks are aggregated, and the output is sorted for deterministic
+diffs. Frames closed by desync or shutdown end in `[incomplete]`.
+
+```bash
+callgraph export --flame --input trace.log --output stacks.folded
+flamegraph.pl stacks.folded > flame.svg
+# or:
+inferno-flamegraph stacks.folded > flame.svg
+```
+
+`--flame` writes to stdout when `--output` is omitted. It does not require a
+timestamp anchor, OTLP metadata, or network access.
 
 ## Return probes: `uretprobe` vs `ret`
 

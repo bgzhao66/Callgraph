@@ -150,13 +150,14 @@ TraceParseStats parse_text_trace(
         }
 
         if (!iso) {
-            if (!have_offset) {
+            if (!have_offset && options.require_timestamp_anchor) {
                 fail("trace %s uses monotonic timestamps but no anchor was "
                      "provided; capture with -T, supply --metadata from "
                      "--trace-metadata, or use --assume-local-capture",
                      path.c_str());
             }
-            ts += offset;
+            if (have_offset)
+                ts += offset;
         }
 
         char* end = nullptr;

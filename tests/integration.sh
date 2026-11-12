@@ -49,14 +49,14 @@ cat > "$TMP/otel.trace" <<'EOF'
 2026-11-12T10:00:00.000004000+00:00 100 : 1 <- C(int)
 2026-11-12T10:00:00.000005000+00:00 100 : 0 <- main
 EOF
-"$BIN" export otel --input "$TMP/otel.trace" --output "$TMP/otel.json" \
+"$BIN" export --otel --input "$TMP/otel.trace" --output "$TMP/otel.json" \
     --service-name demo --trace-id-seed 1234 2>"$TMP/otel.err"
 grep -q 'converted 6 events' "$TMP/otel.err"
 grep -q '3 OTLP span(s)' "$TMP/otel.err"
 grep -q '"resourceSpans"' "$TMP/otel.json"
 grep -q '"service.name","value":{"stringValue":"demo"}' "$TMP/otel.json"
 grep -q '"name":"C(int)"' "$TMP/otel.json"
-"$BIN" export otel --input "$TMP/otel.trace" --output "$TMP/sampled.json" \
+"$BIN" export --otel --input "$TMP/otel.trace" --output "$TMP/sampled.json" \
     --sample-rate 0 2>/dev/null
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$TMP/sampled.json" <<'PY'
@@ -73,7 +73,7 @@ cat > "$TMP/boot.trace" <<'EOF'
 100.000002000 7 : 1 <- C(int)
 100.000003000 7 : 0 <- main
 EOF
-"$BIN" export otel --input "$TMP/boot.trace" --output "$TMP/boot.json" \
+"$BIN" export --otel --input "$TMP/boot.trace" --output "$TMP/boot.json" \
     --assume-local-capture 2>"$TMP/boot.err"
 grep -q 'assuming the trace was captured on this host' "$TMP/boot.err"
 if command -v python3 >/dev/null 2>&1; then
@@ -85,6 +85,33 @@ assert len(spans) == 2
 assert all(int(s["startTimeUnixNano"]) > 10**18 for s in spans), spans
 PY
 fi
+
+echo "== Flamegraph export =="
+"$BIN" export --flame --input "$TMP/boot.trace" \
+    --output "$TMP/boot.folded" 2>"$TMP/flame.err"
+grep -q 'converted .* events into .* folds' "$TMP/flame.err"
+grep -qx 'main 1' "$TMP/boot.folded"
+grep -qx 'main;C(int) 1' "$TMP/boot.folded"
+cat > "$TMP/flame-incomplete.trace" <<'EOF'
+100.000000000 7 : 0 -> main
+100.000001000 7 : 1 -> A(int)
+100.000002000 7 : 0 <- main
+EOF
+"$BIN" export --flame --input "$TMP/flame-incomplete.trace" \
+    --output "$TMP/flame-incomplete.folded" 2>/dev/null
+grep -Fqx 'main;A(int);[incomplete] 1' "$TMP/flame-incomplete.folded"
+grep -qx 'main 1' "$TMP/flame-incomplete.folded"
+"$BIN" export --flame --help | grep -q 'flamegraph.pl'
+if "$BIN" export --flame --metadata "$TMP/otel.meta" \
+    --input "$TMP/boot.trace" >/dev/null 2>&1; then
+    echo "expected OTel options to be rejected with --flame" >&2
+    exit 1
+fi
+if "$BIN" export otel --input "$TMP/boot.trace" >/dev/null 2>&1; then
+    echo "expected the old 'export otel' form to be rejected" >&2
+    exit 1
+fi
+
 if command -v python3 >/dev/null 2>&1; then
     echo "== OTLP JSON validation and HTTP + gzip export =="
     python3 - "$BIN" "$TMP/otel.json" "$TMP/otel.trace" <<'PY'
@@ -127,7 +154,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 port = server.server_port
 result = subprocess.run(
-    [binary, "export", "otel", "--input", trace_path,
+    [binary, "export", "--otel", "--input", trace_path,
      "--endpoint", f"http://127.0.0.1:{port}",
      "--compression", "gzip", "--header", "X-Test=value"],
     capture_output=True, text=True, timeout=60)
