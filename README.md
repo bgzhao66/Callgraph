@@ -354,8 +354,10 @@ Histograms:
   (`├──`, `└──`, `│`). Sibling nodes appear in call order (the order they first
   occurred), not sorted by duration. Each node ends with its inclusive total
   time (the duration of that caller→callee edge, including callees),
-  right-aligned in a single column; one unit is chosen for the whole tree. A
-  node still running at shutdown has no measured duration and shows none.
+  right-aligned in a single column. Every node uses the unit that suits its own
+  duration (`ns`, `us`, `ms`, `s`), so a short child under a long root is not
+  rounded down to `0.00`. A node still running at shutdown has no measured
+  duration and shows none.
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
   is relative to the root. Entries follow the same DFS/preorder top-to-bottom
   order as the `Tree:` section; the depth number is not a sort key. Calls to

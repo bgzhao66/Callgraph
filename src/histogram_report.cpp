@@ -104,30 +104,25 @@ size_t display_width(const std::string& text)
 }
 
 // Tree lines are flushed after the whole tree is known so the totals line up
-// in one column.  A single unit is chosen for the tree so the column stays
-// comparable even when individual nodes span different unit ranges.
+// in one column.  Each node picks the unit that suits its own duration, so a
+// short child under a long root does not print as 0.00ms.
 void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
 {
-    uint64_t max_total = 0;
     size_t text_width = 0;
-    for (const TreeLine& line : lines) {
-        text_width = std::max(text_width, display_width(line.text));
-        if (line.has_total)
-            max_total = std::max(max_total, line.total_ns);
-    }
-
-    const UnitScale unit = choose_unit(max_total);
-
     size_t value_width = 0;
     for (const TreeLine& line : lines) {
-        if (line.has_total)
+        text_width = std::max(text_width, display_width(line.text));
+        if (line.has_total) {
+            const UnitScale unit = choose_unit(line.total_ns);
             value_width = std::max(
                 value_width, format_value(line.total_ns, unit).size());
+        }
     }
 
     for (const TreeLine& line : lines) {
         out += line.text;
         if (line.has_total) {
+            const UnitScale unit = choose_unit(line.total_ns);
             out.append(text_width - display_width(line.text), ' ');
             out += "  ";
             out += right_justify(format_value(line.total_ns, unit),

@@ -246,6 +246,35 @@ void test_histogram_bar_proportional()
     CHECK(bars == 2);
 }
 
+void test_histogram_tree_units()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // Root lasts 8.4 ms but its child is only 100 ns.  A tree-wide unit
+        // would round the child down to 0.00ms.
+        stack.on_event(make_event(0, 90, kEventEnter, 0));
+        stack.on_event(make_event(1, 90, kEventEnter, 0));
+        stack.on_event(make_event(1, 90, kEventExit, 100));
+        stack.on_event(make_event(0, 90, kEventExit, 8400000));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("main        8.40ms") != std::string::npos);
+    CHECK(report.find("└── A(int)   100ns") != std::string::npos);
+    // The long root must not force a coarser unit on the short child.
+    CHECK(report.find("0.00ms") == std::string::npos);
+}
+
 void test_histogram_incomplete()
 {
     const auto names = make_names();
@@ -1450,6 +1479,7 @@ int main()
     test_latency_histogram();
     test_histogram_report();
     test_histogram_bar_proportional();
+    test_histogram_tree_units();
     test_histogram_incomplete();
     test_histogram_live_chain();
     test_histogram_siblings();
