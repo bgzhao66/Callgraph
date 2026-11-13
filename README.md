@@ -568,14 +568,28 @@ default `uretprobe` mode can crash the Go runtime during stack growth or GC,
 because the runtime validates return PCs and sees the uretprobe trampoline; use
 `--return-mode=ret` for Go binaries. Even then, the per-thread shadow stack
 cannot follow goroutine switches or stack relocation, so nesting across
-`Gosched`/channel operations and deep recursion is unreliable (expect extra
-`desync`/`stray` events). C++20 coroutines are unaffected by the stack issue:
+`Gosched`/channel operations is unreliable. Stack relocation also truncates deep
+recursion, because copied frames carry stale stack pointers; `--no-rsp-resync`
+restores the full depth. C++20 coroutines are unaffected by the stack issue:
 their frame is heap-allocated but the body runs on the resumer's stack.
 
 Go binaries are detected through their `.note.go.buildid`/`.go.buildinfo`
 sections, and callgraph prints a warning naming the applicable limitation.
 Go binaries built with `-ldflags="-s -w"` keep those sections but lose the
 symbol table, so they are rejected as untraceable.
+
+### Stackful coroutines and fibers
+
+`ucontext`, Boost.Context, and green-thread runtimes switch to a separate stack,
+which the per-thread shadow stack cannot follow. The entry stack pointer then
+either nests the new fiber under the suspended one (lower address) or looks like
+an unwind (higher address). `uretprobe` returns from a suspended fiber are also
+lost, so use `--return-mode=ret`. `--no-rsp-resync` disables the stack-pointer
+heuristic: suspended frames are preserved and their returns pair up, at the cost
+of attributing a fiber's calls to its resumer. For ucontext and Boost.Context,
+`--return-mode=ret --no-rsp-resync` produces a complete, consistent trace with
+no `desync` or `stray` events; nesting across a switch is still not joined.
+Without the flag, switching back to a higher stack drops the suspended frames.
 
 ## Architecture
 

@@ -52,6 +52,12 @@ public:
     void on_event(const TraceEvent& event,
                   const std::string& arguments_override = {});
 
+    // The entry-rsp heuristic assumes one monotonically descending stack per
+    // thread.  Runtimes that switch stacks (ucontext, Boost.Context, Go
+    // goroutines) violate that, so they can disable it and fall back to
+    // return matching.
+    void set_rsp_resync(bool enabled) { rsp_resync_ = enabled; }
+
     // Marks frames still live at shutdown as incomplete.  Safe to call more
     // than once; only the first call has an effect.
     void finish_statistics();
@@ -85,6 +91,7 @@ private:
     int max_depth_;
     bool verbose_;
     bool collect_latency_;
+    bool rsp_resync_ = true;
     SpanSink* sink_;
     bool stats_finished_ = false;
     bool spans_finished_ = false;

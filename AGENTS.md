@@ -46,6 +46,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - Network exporters use `--endpoint`; `otlp-json` uses `--export-file`.
 - `--batch-size` is the OTLP batch size. `--probe-batch-size` is the `uprobe_multi` attachment batch. Do not conflate them.
 - `--max-depth` and `--indent` are display-only and do not affect exported spans.
+- `--no-rsp-resync` disables the entry-`rsp` unwind heuristic for stackful runtimes (`ucontext`, Boost.Context, Go); pair it with `--return-mode=ret`.
 - The same `--exporter` options work in both `run` and `attach` mode.
 - `callgraph export --otel` converts text traces to OTLP/JSON and does not need root; `callgraph export --flame` emits folded stacks. See the mode-specific `--help`.
 
@@ -57,6 +58,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - `--show-args` is x86-64 only and needs DWARF.
 - `--return-mode=uretprobe` can terminate C++ programs that unwind exceptions through traced functions. Use `--return-mode=ret` for those; it is only available when libopcodes is found.
 - Go binaries are detected via `.note.go.buildid`/`.go.buildinfo` and trigger a warning: `uretprobe` can crash the Go runtime during stack growth/GC, and goroutine stack switches make nesting unreliable even in `ret` mode. Go binaries built with `-ldflags="-s -w"` have no symbol table and are rejected.
+- Stackful coroutines (`ucontext`, Boost.Context) need `--return-mode=ret` for returns across a switch and `--no-rsp-resync` to avoid dropping suspended frames; nesting across the switch is still not joined.
 - Attach mode starts at the attach point. The first observed frame is a root marked `callgraph.partial_stack=true`; calls before attachment are not seen.
 - Default OTel trace scope is one trace per depth-0 root invocation (`--trace-scope=root`). Thread and process scopes are available for special cases.
 - OTLP/gRPC and OTLP/HTTP protobuf require protobuf/protoc; network export requires libcurl. JSON file export works without either.

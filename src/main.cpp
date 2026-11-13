@@ -59,6 +59,7 @@ struct Options {
     std::vector<std::string> exclude;
     bool use_regex = false;
     std::string return_mode = "uretprobe";
+    bool no_rsp_resync = false;
     bool all_modules = false;
     std::vector<std::string> modules;
     bool wall_clock = false;
@@ -113,6 +114,8 @@ void usage(FILE* out)
             "      --exclude GLOB    skip functions matching GLOB (repeatable)\n"
             "      --regex           treat --include/--exclude as extended regex\n"
             "      --return-mode M   uretprobe (default) or ret (exception-safe)\n"
+            "      --no-rsp-resync   keep frames across stack switches (stackful\n"
+            "                        runtimes such as ucontext, Boost.Context, Go)\n"
             "      --all-modules     trace every mapped ELF module\n"
             "      --module GLOB     also trace mapped modules matching GLOB\n"
             "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
@@ -378,6 +381,8 @@ Options parse_args(int argc, char** argv)
             options.return_mode = value();
             if (options.return_mode != "uretprobe" && options.return_mode != "ret")
                 usage_error("--return-mode must be 'uretprobe' or 'ret'");
+        } else if (arg == "--no-rsp-resync") {
+            options.no_rsp_resync = true;
         } else if (arg == "--all-modules") {
             options.all_modules = true;
         } else if (arg == "--module") {
@@ -1437,6 +1442,7 @@ int main(int argc, char** argv)
                         options.show_args ? &registry.signatures() : nullptr,
                         output, options.max_depth, options.verbose,
                         options.histogram, span_generator.get());
+        stack.set_rsp_resync(!options.no_rsp_resync);
 
         if (is_child) {
             ProcessController::detach(target);

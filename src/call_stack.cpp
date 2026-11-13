@@ -88,8 +88,10 @@ void CallStack::on_event(const TraceEvent& event,
         // A callee's entry rsp is strictly below its caller's, so a recorded
         // frame at or above this rsp cannot be an ancestor: it was unwound by
         // longjmp/exception/tail call, or its return event was lost.  Offline
-        // traces have no rsp (zero) and keep the old behaviour.
-        if (event.sp != 0) {
+        // traces have no rsp (zero) and keep the old behaviour.  Stackful
+        // runtimes switch to unrelated stacks, where the ordering does not
+        // hold, so they can turn this off with --no-rsp-resync.
+        if (rsp_resync_ && event.sp != 0) {
             size_t keep = state.frames.size();
             while (keep > 0 && state.frames[keep - 1].sp != 0 &&
                    state.frames[keep - 1].sp <= event.sp)

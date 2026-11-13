@@ -89,8 +89,35 @@ the body runs on the resumer's stack, so `rsp` keeps nesting normally. They do
 lose nesting across a suspension, because resumption enters the coroutine body
 at a resume point rather than at the instrumented entry, and the suspend is
 observed as a return; work after `co_await` is therefore attributed to the
-resumer. Only stackful coroutines/fibers that switch to a separate stack
-(`ucontext`, Boost.Context, green threads) can look like an unwind.
+resumer.
+
+Stackful coroutines/fibers (`ucontext`, Boost.Context, green threads) switch to
+a separate stack and do violate the assumption. On a single thread the observed
+behaviour is:
+
+- Switching to a *lower* stack nests harmlessly at first, but the suspended
+  frame is dropped the next time the original stack is used. Resumption enters
+  the fiber mid-function, not at the instrumented entry, so the fiber's frame is
+  never re-established and work after the switch is attributed to the resumer.
+  Depth stays bounded.
+- Switching to a *higher* stack is indistinguishable from an unwind: the
+  suspended frames are dropped and their later returns become `stray`.
+
+`uretprobe` return events are also unreliable across a switch: the return
+trampoline does not survive a stack switch, so returns from a suspended fiber
+(and sometimes from its resumer) are lost. `--return-mode=ret` fixes that.
+
+`--no-rsp-resync` disables the entry-`rsp` heuristic and falls back to return
+matching. Suspended frames are then preserved and their returns pair up, at the
+cost of nesting a fiber's calls under its resumer and losing the bounded-depth
+guarantee for jumps to a frame that never returns. For ucontext and
+Boost.Context, `--return-mode=ret --no-rsp-resync` yields complete pairing
+(zero `desync`/`stray`); nesting across a switch is still logically wrong.
+
+The real fix is a shadow stack per stack region: route entries and exits by the
+mapping that contains `sp`, and record `sp` on exit events too (they currently
+carry `0`). That gives each fiber a correct tree, though a fiber still cannot be
+attached to its resumer because resumption is not an entry.
 
 Go goroutines are the important stackful case: their stacks are heap-allocated,
 relocated when they grow, and switched by the Go scheduler. Go binaries are
@@ -107,8 +134,10 @@ Second, even in `ret` mode the shadow stack is per OS thread, not per goroutine.
 Goroutine switches (`Gosched`, channel operations, syscalls, preemption) and
 stack relocation make `rsp` comparisons meaningless: a new stack at a higher
 address looks like an unwind, and frames recorded before a stack copy carry
-stale `rsp` values. Expect false `desync`/`stray` events and incorrect nesting
-across goroutines; deep recursion can be truncated. Correct Go support needs a
+stale `rsp` values. Stack relocation is the dominant problem for deep recursion:
+a 300-frame chain was truncated at depth 153 with 150 `desync` and 148 `stray`,
+and reached its full depth with `--no-rsp-resync` (2 `desync` at exit, no
+`stray`). Goroutine switches remain wrong either way. Correct Go support needs a
 goroutine identity (`g`) and stack-region tracking, which is a larger feature.
 
 ### Filtering and depth

@@ -11,6 +11,7 @@ g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
 g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
+g++ -O0 -g -o "$TMP/ucontext" "$ROOT/examples/ucontext.cpp"
 
 GO_BIN=
 if command -v go >/dev/null 2>&1; then
@@ -461,6 +462,34 @@ grep -q ' : 0 -> main' "$TMP/lj.trace"
 awk '$5 == "->" && $6 == "error_path()" && $4 != 1 { bad = 1 }
      END { exit bad }' "$TMP/lj.trace"
 grep -Eq '[1-9][0-9]* desync' "$TMP/lj.err"
+
+echo "== stackful coroutine (ucontext) =="
+"$BIN" run -o "$TMP/uctx.trace" --regex \
+    --include '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
+    >/dev/null 2>"$TMP/uctx.err"
+# The fiber runs on a separate stack.  Switching back to the main stack looks
+# like an unwind, so the suspended fiber_body frame is dropped and the main
+# stack call is attributed to main.
+grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
+[ "$(grep -c ' : 2 -> leaf()' "$TMP/uctx.trace")" -eq 1 ]
+
+# --no-rsp-resync keeps the suspended frame, so every leaf nests under
+# fiber_body.
+"$BIN" run --no-rsp-resync -o "$TMP/uctx_norsp.trace" --regex \
+    --include '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
+    >/dev/null 2>"$TMP/uctx_norsp.err"
+[ "$(grep -c ' : 2 -> leaf()' "$TMP/uctx_norsp.trace")" -eq 3 ]
+
+# uretprobes lose the fiber's return across the switch, so ret mode is needed
+# for complete pairing.  Together with --no-rsp-resync nothing is desynced.
+if "$BIN" run --return-mode ret --dry-run -- "$TMP/ucontext" >/dev/null 2>&1; then
+    "$BIN" run --return-mode ret --no-rsp-resync -o "$TMP/uctx_ret.trace" \
+        --regex --include '^(main|fiber_body[(][)]|leaf[(][)])$' \
+        -- "$TMP/ucontext" >/dev/null 2>"$TMP/uctx_ret.err"
+    grep -q '0 desync' "$TMP/uctx_ret.err"
+    grep -q '0 stray' "$TMP/uctx_ret.err"
+    grep -q ' : 1 <- fiber_body()' "$TMP/uctx_ret.trace"
+fi
 
 echo "== shared library discovered after load =="
 cat > "$TMP/lib.cpp" <<'EOF'

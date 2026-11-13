@@ -659,7 +659,7 @@ void test_sp_unwind_on_enter()
         CallStack stack(names, output, -1, false);
 
         TraceEvent main_enter = make_event(0, 8, kEventEnter, 1);
-        main_enter.sp = 0x7000;
+        main_enter.sp = 0x7f000;
         TraceEvent a_enter = make_event(1, 8, kEventEnter, 2);
         a_enter.sp = 0x6ff0;
         TraceEvent b_enter = make_event(2, 8, kEventEnter, 3);
@@ -690,7 +690,7 @@ void test_sp_unwind_on_enter()
         CallStack stack(names, output, -1, false);
 
         TraceEvent main_enter = make_event(0, 9, kEventEnter, 1);
-        main_enter.sp = 0x7000;
+        main_enter.sp = 0x7f000;
         TraceEvent a_enter = make_event(1, 9, kEventEnter, 2);
         a_enter.sp = 0x6ff0;
         TraceEvent b_enter = make_event(2, 9, kEventEnter, 3);
@@ -736,6 +736,76 @@ void test_sp_unwind_on_enter()
         CHECK(stack.desyncs() == 0);
         CHECK(stack.live_threads() == 1);
         output.stop();
+        unlink(path.c_str());
+    }
+}
+
+// A stackful runtime switches to an unrelated stack.  With resync on, the
+// suspended frames look unwound; with --no-rsp-resync they are kept and their
+// returns still pair up.
+void test_no_rsp_resync()
+{
+    const auto names = make_names();
+
+    // Default: the higher stack makes the suspended frame look unwound.
+    {
+        const std::string path = temp_path();
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+
+        TraceEvent main_enter = make_event(0, 11, kEventEnter, 1);
+        main_enter.sp = 0x7f000;
+        TraceEvent a_enter = make_event(1, 11, kEventEnter, 2);
+        a_enter.sp = 0x6ff0;
+        TraceEvent b_enter = make_event(2, 11, kEventEnter, 3);
+        b_enter.sp = 0x9000;
+
+        stack.on_event(main_enter);
+        stack.on_event(a_enter);
+        stack.on_event(b_enter);
+
+        CHECK(stack.desyncs() == 1);
+        CHECK(stack.entries() == 3);
+        output.stop();
+        unlink(path.c_str());
+    }
+
+    // Disabled: A survives the switch, B nests below it, and every return
+    // matches by searching down the stack.
+    {
+        const std::string path = temp_path();
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+        stack.set_rsp_resync(false);
+
+        TraceEvent main_enter = make_event(0, 12, kEventEnter, 1);
+        main_enter.sp = 0x7f000;
+        TraceEvent a_enter = make_event(1, 12, kEventEnter, 2);
+        a_enter.sp = 0x6ff0;
+        TraceEvent b_enter = make_event(2, 12, kEventEnter, 3);
+        b_enter.sp = 0x9000;
+
+        stack.on_event(main_enter);
+        stack.on_event(a_enter);
+        stack.on_event(b_enter);
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.entries() == 3);
+
+        stack.on_event(make_event(2, 12, kEventExit, 4));
+        stack.on_event(make_event(1, 12, kEventExit, 5));
+        stack.on_event(make_event(0, 12, kEventExit, 6));
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.stray_returns() == 0);
+        CHECK(stack.returns() == 3);
+        CHECK(stack.live_threads() == 0);
+        output.stop();
+
+        const auto lines = read_lines(path);
+        CHECK(lines.size() == 6);
+        if (lines.size() == 6) {
+            CHECK(lines[2].find(" : 2 -> B(int)") != std::string::npos);
+            CHECK(lines[4].find(" : 1 <- A(int)") != std::string::npos);
+        }
         unlink(path.c_str());
     }
 }
@@ -887,7 +957,7 @@ void test_span_unwind_on_enter()
                     &builder);
 
     TraceEvent main_enter = make_event(0, 13, kEventEnter, 100);
-    main_enter.sp = 0x7000;
+    main_enter.sp = 0x7f000;
     TraceEvent a_enter = make_event(1, 13, kEventEnter, 200);
     a_enter.sp = 0x6ff0;
     TraceEvent b_enter = make_event(2, 13, kEventEnter, 300);
@@ -1209,6 +1279,7 @@ int main()
     test_basic_stack();
     test_desync();
     test_sp_unwind_on_enter();
+    test_no_rsp_resync();
     test_max_depth();
     test_wall_clock();
     test_indent();
