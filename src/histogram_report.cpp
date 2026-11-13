@@ -274,7 +274,9 @@ std::string format_histogram_report(const LatencyStats& stats,
             sort_children(parent, kids);
 
         // Entries are inserted on first DFS visit so the histogram section
-        // follows the same top-to-bottom order as the Tree section.
+        // follows the same top-to-bottom order as the Tree section.  They are
+        // reset for every root so that each root's tree and histograms stay
+        // paired instead of all trees being emitted before all histograms.
         std::vector<HistogramEntry> entries;
         std::unordered_map<HistogramKey, size_t, HistogramKeyHash> entry_index;
         auto record = [&](uint32_t depth, uint64_t function_id,
@@ -300,7 +302,25 @@ std::string format_histogram_report(const LatencyStats& stats,
             }
         };
 
-        out += "Tree:\n";
+        auto render_histograms = [&]() {
+            out += "\nHistograms:\n";
+
+            for (const HistogramEntry& entry : entries) {
+                out += std::to_string(entry.depth);
+                out += ". ";
+                out += entry.name;
+                if (entry.recursive)
+                    out += "  [recursive]";
+                if (entry.incomplete)
+                    out += "  [incomplete]";
+                out += '\n';
+
+                if (entry.has_histogram)
+                    append_histogram_body(out, entry.histogram, "   ");
+                else
+                    out += "   calls=0  [incomplete]\n";
+            }
+        };
 
         std::unordered_set<uint64_t> path;
 
@@ -415,49 +435,40 @@ std::string format_histogram_report(const LatencyStats& stats,
 
         bool first_root = true;
         for (uint64_t root : roots) {
+            const bool live = !thread.live_stack.empty() &&
+                              root == thread.live_stack[0];
+            const auto it = thread.edges.find({kRootFunction, root});
+            if (!live && it == thread.edges.end())
+                continue;
+
             if (!first_root)
                 out += '\n';
             first_root = false;
 
-            if (!thread.live_stack.empty() && root == thread.live_stack[0]) {
+            entries.clear();
+            entry_index.clear();
+            path.clear();
+
+            out += "Tree:\n";
+
+            if (live) {
                 render_live(0, "", false);
-                continue;
-            }
-
-            const auto it = thread.edges.find({kRootFunction, root});
-            if (it == thread.edges.end())
-                continue;
-
-            record(0, root, &it->second, false, false);
-            append_tree_node(out, "", name_of(root), "");
-            const bool inserted = path.insert(root).second;
-            const auto kids = children.find(root);
-            if (kids != children.end()) {
-                for (size_t i = 0; i < kids->second.size(); ++i) {
-                    render_completed(root, kids->second[i], 1, "",
-                                     i + 1 == kids->second.size());
+            } else {
+                record(0, root, &it->second, false, false);
+                append_tree_node(out, "", name_of(root), "");
+                const bool inserted = path.insert(root).second;
+                const auto kids = children.find(root);
+                if (kids != children.end()) {
+                    for (size_t i = 0; i < kids->second.size(); ++i) {
+                        render_completed(root, kids->second[i], 1, "",
+                                         i + 1 == kids->second.size());
+                    }
                 }
+                if (inserted)
+                    path.erase(root);
             }
-            if (inserted)
-                path.erase(root);
-        }
 
-        out += "\nHistograms:\n";
-
-        for (const HistogramEntry& entry : entries) {
-            out += std::to_string(entry.depth);
-            out += ". ";
-            out += entry.name;
-            if (entry.recursive)
-                out += "  [recursive]";
-            if (entry.incomplete)
-                out += "  [incomplete]";
-            out += '\n';
-
-            if (entry.has_histogram)
-                append_histogram_body(out, entry.histogram, "   ");
-            else
-                out += "   calls=0  [incomplete]\n";
+            render_histograms();
         }
 
         if (thread.incomplete != 0) {

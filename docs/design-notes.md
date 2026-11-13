@@ -190,17 +190,19 @@ instead.
 
 The report is rendered after collection stops and appended to the event stream
 by `Output::finish()`, which joins the writer thread first so the trailer cannot
-overtake queued events. Each thread is rendered in two consecutive sections:
-a `Tree:` section with only the call structure, followed by a `Histograms:`
-section with one block per `(depth, function)` pair. Histogram entries follow
+overtake queued events. Each root is rendered as a pair: a `Tree:` section with
+only the call structure, followed immediately by a `Histograms:` section with
+one block per `(depth, function)` pair in that tree. Histogram entries follow
 the same DFS/preorder top-to-bottom order as the tree; the depth number is not
-a sort key. Entries are aggregated across callers at the same depth. This keeps
-the tree compact and avoids repeating histogram bars inside the call graph.
+a sort key. Entries are aggregated across callers at the same depth within a
+root. This keeps the tree compact and avoids repeating histogram bars inside
+the call graph while keeping each root's tree next to its numbers.
 
 The tree is built from immediate caller edges, not full call paths, which keeps
 recursion and diamond-shaped call graphs bounded; a DFS cuts off when a
 function is already on the current path and marks that node `[recursive]`.
-Independent roots in one thread are separated by a blank line. A frame that is
+Roots in one thread are separated by a blank line, and each root repeats the
+`Tree:`/`Histograms:` pair. A frame that is
 still live at shutdown appears in the tree as `name  [incomplete]` and in the
 histogram section as `calls=0  [incomplete]`, so completed calls made inside it
 remain visible. Bucket `k >= 1` covers `[2^(k-1), 2^k)` ns and bucket 0 is

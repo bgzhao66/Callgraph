@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
 g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
+g++ -O0 -g -pthread -o "$TMP/tworoots" "$ROOT/examples/tworoots.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
 g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
 g++ -O0 -g -o "$TMP/ucontext" "$ROOT/examples/ucontext.cpp"
@@ -373,15 +374,15 @@ EOF
     "$BIN" run --show-args -o "$TMP/args.trace" --regex \
         --include '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
         -- "$TMP/args" >/dev/null 2>/dev/null
-    grep -q ' : 1 -> many(int, int, int, int, int, int, int) \[a=1, b=2, c=3, d=4, e=5, f=6, g=7\]' "$TMP/args.trace"
-    grep -Eq " : 1 -> ptr[(]char const[*], bool, char[)] \\[s=0x[0-9a-f]+, flag=true, ch='A'\\]" "$TMP/args.trace"
+    grep -q ' : 1 -> many(int, int, int, int, int, int, int) (a=1, b=2, c=3, d=4, e=5, f=6, g=7)' "$TMP/args.trace"
+    grep -Eq " : 1 -> ptr[(]char const[*], bool, char[)] [(]s=0x[0-9a-f]+, flag=true, ch='A'[)]" "$TMP/args.trace"
     grep -q ' : 1 <- many(int, int, int, int, int, int, int)$' "$TMP/args.trace"
 
     echo "== function arguments with external debug info =="
     "$BIN" run --show-args -o "$TMP/detached-args.trace" --regex \
         --include '^(main|A[(]int[)])$' -- "$TMP/detached" \
         >/dev/null 2>/dev/null
-    grep -q 'A(int) \[x=3\]' "$TMP/detached-args.trace"
+    grep -q 'A(int) (x=3)' "$TMP/detached-args.trace"
 else
     echo "== function arguments skipped (not x86-64) =="
 fi
@@ -430,12 +431,24 @@ hist_line=$(grep -n '^Histograms:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
 # Without the option the report is absent.
 ! grep -q '^=== thread ' "$TMP/simple.trace"
 
-echo "== latency histogram: one section per thread =="
+echo "== latency histogram: one pair per root =="
 "$BIN" run --histogram -o "$TMP/hist_mt.trace" --regex \
     --include '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
     >/dev/null 2>/dev/null
 sections=$(grep -c '^=== thread ' "$TMP/hist_mt.trace" || true)
 [ "$sections" -ge 2 ]
+
+echo "== latency histogram: tree and histograms paired per root =="
+"$BIN" run --histogram -o "$TMP/hist_roots.trace" --regex \
+    --include '^(task_a[(]int[)]|task_b[(]int[)]|leaf[(]int[)])$' -- "$TMP/tworoots" \
+    >/dev/null 2>/dev/null
+[ "$(grep -c '^Tree:$' "$TMP/hist_roots.trace")" -eq 2 ]
+[ "$(grep -c '^Histograms:$' "$TMP/hist_roots.trace")" -eq 2 ]
+[ "$(grep -E '^(Tree|Histograms):$' "$TMP/hist_roots.trace" | tr '\n' ' ')" = \
+  "Tree: Histograms: Tree: Histograms: " ]
+# Each root keeps its own leaf entry: four single-call blocks, not a merged
+# two-call leaf in one thread-wide histogram section.
+[ "$(grep -c '^   calls=1 ' "$TMP/hist_roots.trace")" -eq 4 ]
 
 echo "== exception-safe return mode =="
 if "$BIN" run --return-mode ret --dry-run -- "$TMP/exceptions" >/dev/null 2>&1; then

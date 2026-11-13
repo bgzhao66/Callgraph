@@ -48,7 +48,7 @@ struct FunctionSignature {
 // Assigns GP/SSE/stack locations to parameters.  Safe to call repeatedly.
 void classify_parameters(FunctionSignature& signature);
 
-// Renders the argument suffix, for example " [x=3, p=0x7ffd...]".
+// Renders the argument suffix, for example " (x=3, p=0x7ffd...)".
 // Returns an empty string when the signature has no displayable parameters.
 std::string format_arguments(const FunctionSignature& signature,
                              const cg_event& event);

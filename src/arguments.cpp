@@ -244,7 +244,7 @@ std::string format_arguments(const FunctionSignature& signature,
     if (!signature.has_signature || signature.parameters.empty())
         return {};
 
-    std::string out = " [";
+    std::string out = " (";
     bool first = true;
     size_t unnamed = 0;
 
@@ -277,7 +277,7 @@ std::string format_arguments(const FunctionSignature& signature,
     if (first)
         return {};
 
-    out += ']';
+    out += ')';
     return out;
 }
 

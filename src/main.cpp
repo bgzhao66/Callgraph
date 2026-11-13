@@ -123,7 +123,7 @@ void usage(FILE* out)
             "      --max-depth N     print events with depth <= N (default: unlimited)\n"
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
             "      --show-args       show function arguments after names (needs DWARF)\n"
-            "      --histogram       append a per-thread call tree and latency histograms to the output\n"
+            "      --histogram       append per-root call trees and latency histograms to the output\n"
             "      --probe-batch-size N  functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"

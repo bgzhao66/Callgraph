@@ -157,7 +157,7 @@ Usage:
       --max-depth N     print events with depth <= N (default: unlimited)
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
-      --histogram       append a per-thread call tree and latency histograms to the output
+      --histogram       append per-root call trees and latency histograms to the output
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -248,7 +248,7 @@ With `--show-args`, entry events append the captured parameter values:
 
 ```
 85215.196474365 26570 : 0 -> main
-85215.196489646 26570 : 1 -> C(int) [x=3]
+85215.196489646 26570 : 1 -> C(int) (x=3)
 85215.196498980 26570 : 1 <- C(int)
 85215.196522041 26570 : 0 <- main
 ```
@@ -313,8 +313,8 @@ depth 0).
 ### Latency histogram
 
 `--histogram` appends a report to the same stream as the events (stdout or the
-`-o` file) after the last event line. Each thread has two sections: the call
-tree first, then the per-function histograms:
+`-o` file) after the last event line. Each root invocation gets a pair of
+sections: its call tree first, then the histograms for the calls in that tree:
 
 ```
 === thread 26570 ===
@@ -343,15 +343,15 @@ Histograms:
    [  1.02us,   2.05us)  1  ----------------------------------------
 ```
 
-- One block per thread, sorted by TID.
+- One pair of sections per root, with threads sorted by TID and roots within a
+  thread sorted by total time.
 - The `Tree:` section shows only the call structure, using `tree`-style
-  connectors (`├──`, `└──`, `│`). Independent root trees within one thread are
-  separated by a blank line.
+  connectors (`├──`, `└──`, `│`).
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
-  is relative to the thread's root. Entries follow the same DFS/preorder
-  top-to-bottom order as the `Tree:` section; the depth number is not a sort
-  key. Calls to the same function at the same depth are aggregated across
-  callers; the same function at a different depth is listed separately.
+  is relative to the root. Entries follow the same DFS/preorder top-to-bottom
+  order as the `Tree:` section; the depth number is not a sort key. Calls to
+  the same function at the same depth are aggregated across callers within
+  that root; the same function at a different depth is listed separately.
 - Histogram lines are indented under their `depth. function` heading, with no
   tree connectors. Each entry shows `calls`, `total`, `avg`, `min`, `max`, and
   the non-empty latency buckets.

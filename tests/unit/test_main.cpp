@@ -299,8 +299,22 @@ void test_histogram_roots()
 
     CHECK(report.find("0. A(int)\n   calls=1") != std::string::npos);
     CHECK(report.find("0. B(int)\n   calls=1") != std::string::npos);
-    // Independent root trees are separated by a blank line.
-    CHECK(report.find("\n\nB(int)\n") != std::string::npos);
+
+    // Each root is a Tree/Histograms pair, emitted in root order, so the
+    // second tree starts after the first root's histograms.
+    const size_t first_tree = report.find("Tree:");
+    const size_t first_hist = report.find("Histograms:");
+    const size_t second_tree = report.find("Tree:", first_tree + 1);
+    const size_t second_hist = report.find("Histograms:", first_hist + 1);
+    CHECK(first_tree != std::string::npos);
+    CHECK(first_hist != std::string::npos);
+    CHECK(second_tree != std::string::npos);
+    CHECK(second_hist != std::string::npos);
+    CHECK(first_tree < first_hist);
+    CHECK(first_hist < second_tree);
+    CHECK(second_tree < second_hist);
+    CHECK(report.find("0. A(int)") < second_tree);
+    CHECK(report.find("0. B(int)") > second_tree);
 }
 
 void test_histogram_recursion()
@@ -496,7 +510,7 @@ void test_argument_formatting()
     event.args[3] = 'A';
 
     CHECK(format_arguments(signature, event) ==
-          " [x=3, p=0x1234, flag=true, ch='A']");
+          " (x=3, p=0x1234, flag=true, ch='A')");
 }
 
 void test_argument_signedness()
@@ -509,10 +523,10 @@ void test_argument_signedness()
 
     TraceEvent event = {};
     event.args[0] = 0xfffffffeu;
-    CHECK(format_arguments(signature, event) == " [x=-2]");
+    CHECK(format_arguments(signature, event) == " (x=-2)");
 
     signature.parameters[0].is_signed = false;
-    CHECK(format_arguments(signature, event) == " [x=4294967294]");
+    CHECK(format_arguments(signature, event) == " (x=4294967294)");
 }
 
 void test_argument_stack()
@@ -531,7 +545,7 @@ void test_argument_stack()
     event.stack[0] = 7;
 
     CHECK(format_arguments(signature, event) ==
-          " [a0=1, a1=2, a2=3, a3=4, a4=5, a5=6, a6=7]");
+          " (a0=1, a1=2, a2=3, a3=4, a4=5, a5=6, a6=7)");
 }
 
 void test_argument_artificial()
@@ -550,7 +564,7 @@ void test_argument_artificial()
     event.args[0] = 0xdeadbeef;
     event.args[1] = 9;
 
-    CHECK(format_arguments(signature, event) == " [x=9]");
+    CHECK(format_arguments(signature, event) == " (x=9)");
 }
 
 void test_argument_aggregate()
@@ -564,11 +578,11 @@ void test_argument_aggregate()
     TraceEvent event = {};
     event.args[0] = 1;
     event.args[1] = 2;
-    CHECK(format_arguments(signature, event) == " [s={0x1, 0x2}]");
+    CHECK(format_arguments(signature, event) == " (s={0x1, 0x2})");
 
     signature.parameters[0].contains_float = true;
     classify_parameters(signature);
-    CHECK(format_arguments(signature, event) == " [s=?]");
+    CHECK(format_arguments(signature, event) == " (s=?)");
 }
 
 void test_argument_stack_float()
@@ -614,9 +628,9 @@ void test_call_stack_arguments()
     const auto lines = read_lines(path);
     CHECK(lines.size() == 2);
     if (lines.size() == 2) {
-        CHECK(lines[0].find(" : 0 -> foo [x=42]") != std::string::npos);
+        CHECK(lines[0].find(" : 0 -> foo (x=42)") != std::string::npos);
         CHECK(lines[1].find(" : 0 <- foo") != std::string::npos);
-        CHECK(lines[1].find("[x=42]") == std::string::npos);
+        CHECK(lines[1].find("(x=42)") == std::string::npos);
     }
     unlink(path.c_str());
 }
@@ -1173,46 +1187,50 @@ void test_flame_graph_sink()
 
 void test_text_parser()
 {
-    const std::string path = temp_path();
-    {
-        std::ofstream out(path);
-        out << "2026-11-12T10:00:00.000000000+00:00 10 : 0 -> main\n"
-               "2026-11-12T10:00:00.000001000+00:00 10 : 1 -> A(int) [x=3]\n"
-               "2026-11-12T10:00:00.000002000+00:00 10 : 1 <- A(int)\n"
-               "2026-11-12T10:00:00.000003000+00:00 10 : 0 <- main\n"
-               "=== thread 10 ===\n";
-    }
+    // Both the current `(a=1)` suffix and the older `[a=1]` suffix replay.
+    for (const std::string suffix : {"(x=3)", "[x=3]"}) {
+        const std::string path = temp_path();
+        {
+            std::ofstream out(path);
+            out << "2026-11-12T10:00:00.000000000+00:00 10 : 0 -> main\n"
+                   "2026-11-12T10:00:00.000001000+00:00 10 : 1 -> A(int) ";
+            out << suffix << "\n";
+            out << "2026-11-12T10:00:00.000002000+00:00 10 : 1 <- A(int)\n"
+                   "2026-11-12T10:00:00.000003000+00:00 10 : 0 <- main\n"
+                   "=== thread 10 ===\n";
+        }
 
-    std::vector<std::string> names;
-    std::vector<FunctionMetadata> functions;
-    std::vector<SpanRecord> spans;
-    SpanGeneratorConfig config;
-    config.seed_hi = 5;
-    config.seed_lo = 6;
-    config.timestamps_are_unix = true;
-    config.functions = &functions;
-    SpanGenerator builder(config, [&](SpanRecord&& span) {
-        spans.push_back(std::move(span));
-    });
-    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
-                    &builder);
+        std::vector<std::string> names;
+        std::vector<FunctionMetadata> functions;
+        std::vector<SpanRecord> spans;
+        SpanGeneratorConfig config;
+        config.seed_hi = 5;
+        config.seed_lo = 6;
+        config.timestamps_are_unix = true;
+        config.functions = &functions;
+        SpanGenerator builder(config, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &builder);
 
-    TraceParseOptions options;
-    options.input_show_args = true;
-    uint64_t last_ts = 0;
-    const TraceParseStats stats = parse_text_trace(
-        path, stack, names, functions, nullptr, options, &last_ts);
-    stack.finish_spans(last_ts);
-    unlink(path.c_str());
+        TraceParseOptions options;
+        options.input_show_args = true;
+        uint64_t last_ts = 0;
+        const TraceParseStats stats = parse_text_trace(
+            path, stack, names, functions, nullptr, options, &last_ts);
+        stack.finish_spans(last_ts);
+        unlink(path.c_str());
 
-    CHECK(stats.event_lines == 4);
-    CHECK(stats.ignored_lines == 1);
-    CHECK(names.size() == 2);
-    CHECK(spans.size() == 2);
-    if (spans.size() == 2) {
-        CHECK(spans[0].function.name == "A(int)");
-        CHECK(spans[0].arguments == "[x=3]");
-        CHECK(spans[1].function.name == "main");
+        CHECK(stats.event_lines == 4);
+        CHECK(stats.ignored_lines == 1);
+        CHECK(names.size() == 2);
+        CHECK(spans.size() == 2);
+        if (spans.size() == 2) {
+            CHECK(spans[0].function.name == "A(int)");
+            CHECK(spans[0].arguments == suffix);
+            CHECK(spans[1].function.name == "main");
+        }
     }
 }
 

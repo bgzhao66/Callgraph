@@ -178,11 +178,14 @@ TraceParseStats parse_text_trace(
         }
 
         // --show-args adds a suffix to entry lines only.  Strip it so entry
-        // and return lines map to the same function ID.  The '=' requirement
-        // avoids mistaking a demangled name such as foo[abi:cxx11] for args.
+        // and return lines map to the same function ID.  Accept both the
+        // current `(a=1)` form and the older `[a=1]` form so traces recorded
+        // before the format change still replay.  The '=' requirement avoids
+        // mistaking a demangled name such as operator()(int) for args.
         std::string arguments;
-        if (name.size() > 2 && name.back() == ']') {
-            const size_t arg_pos = name.rfind(" [");
+        if (name.size() > 2 && (name.back() == ')' || name.back() == ']')) {
+            const size_t arg_pos =
+                name.rfind(name.back() == ')' ? " (" : " [");
             if (arg_pos != std::string::npos &&
                 name.find('=', arg_pos) != std::string::npos) {
                 arguments = name.substr(arg_pos + 1);

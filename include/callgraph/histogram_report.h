@@ -7,8 +7,9 @@
 
 namespace callgraph {
 
-// Renders the per-thread latency histogram tree.  The report is a pure
-// function of the collected statistics and the function-name table.
+// Renders the latency histogram report: one tree/histogram pair per root.
+// The report is a pure function of the collected statistics and the
+// function-name table.
 std::string format_histogram_report(const LatencyStats& stats,
                                     const std::vector<std::string>& names);
 
