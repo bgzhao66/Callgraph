@@ -110,9 +110,13 @@ trampoline does not survive a stack switch, so returns from a suspended fiber
 `--no-rsp-resync` disables the entry-`rsp` heuristic and falls back to return
 matching. Suspended frames are then preserved and their returns pair up, at the
 cost of nesting a fiber's calls under its resumer and losing the bounded-depth
-guarantee for jumps to a frame that never returns. For ucontext and
-Boost.Context, `--return-mode=ret --no-rsp-resync` yields complete pairing
-(zero `desync`/`stray`); nesting across a switch is still logically wrong.
+guarantee for jumps to a frame that never returns. That guarantee is the whole
+point of the heuristic: with the flag, a three-iteration `siglongjmp` loop
+started its error path at depths 1, 9 and 17 instead of 1, 1, 1, and a
+PostgreSQL session would accumulate frames for its whole lifetime. The flag is
+therefore for stackful runtimes only. For ucontext and Boost.Context,
+`--return-mode=ret --no-rsp-resync` yields complete pairing (zero
+`desync`/`stray`); nesting across a switch is still logically wrong.
 
 The real fix is a shadow stack per stack region: route entries and exits by the
 mapping that contains `sp`, and record `sp` on exit events too (they currently

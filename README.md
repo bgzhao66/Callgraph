@@ -591,6 +591,14 @@ of attributing a fiber's calls to its resumer. For ucontext and Boost.Context,
 no `desync` or `stray` events; nesting across a switch is still not joined.
 Without the flag, switching back to a higher stack drops the suspended frames.
 
+Do not use the flag for `longjmp`/`siglongjmp`-heavy programs such as
+PostgreSQL: the entry stack-pointer check is what keeps their depth bounded.
+Disabling it lets frames abandoned by a jump accumulate, because a jump target
+that never returns offers no later return to repair the stack. On a three-
+iteration `siglongjmp` loop the error path started at depths 1, 9 and 17
+instead of 1, 1, 1. Use it only for stackful runtimes, where the alternative is
+worse.
+
 ## Architecture
 
 ```

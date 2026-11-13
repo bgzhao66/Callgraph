@@ -463,6 +463,17 @@ awk '$5 == "->" && $6 == "error_path()" && $4 != 1 { bad = 1 }
      END { exit bad }' "$TMP/lj.trace"
 grep -Eq '[1-9][0-9]* desync' "$TMP/lj.err"
 
+# --no-rsp-resync disables that repair: the abandoned frames accumulate, so
+# the error path starts deeper on every iteration.
+"$BIN" run --no-rsp-resync -o "$TMP/lj_norsp.trace" --regex \
+    --include '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
+    >/dev/null 2>"$TMP/lj_norsp.err"
+awk '$5 == "->" && $6 == "error_path()" {
+         if (n++ && $4 <= prev) bad = 1
+         prev = $4
+     }
+     END { exit (n == 3 && !bad) ? 0 : 1 }' "$TMP/lj_norsp.trace"
+
 echo "== stackful coroutine (ucontext) =="
 "$BIN" run -o "$TMP/uctx.trace" --regex \
     --include '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
