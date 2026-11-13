@@ -200,6 +200,12 @@ a sort key. Entries are aggregated across callers at the same depth within a
 root. This keeps the tree compact and avoids repeating histogram bars inside
 the call graph while keeping each root's tree next to its numbers.
 
+Each histogram entry begins with a dashed bar whose length is the entry's
+`total_ns` relative to the root span's duration (the depth-0 entry's inclusive
+time), so the bar shows how much of the tree's elapsed time the node accounts
+for. The bar belongs to the function, not to an individual latency bucket: all
+of that entry's bucket lines share it.
+
 The tree is built from immediate caller edges, not full call paths, which keeps
 recursion and diamond-shaped call graphs bounded; a DFS cuts off when a
 function is already on the current path and marks that node `[recursive]`.

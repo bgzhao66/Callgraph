@@ -327,20 +327,25 @@ main
 
 Histograms:
 0. main
+   ----------------------------------------
    calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
-   [ 16.38us,  32.77us)  1  ----------------------------------------
+   [ 16.38us,  32.77us)  1
 1. C(int)
+   --------------
    calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
-   [  8.19us,  16.38us)  1  ----------------------------------------
+   [  8.19us,  16.38us)  1
 2. B(int)
+   ------
    calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
-   [  4.10us,   8.19us)  1  ----------------------------------------
+   [  4.10us,   8.19us)  1
 3. A(int)
+   --
    calls=1  total=1.77us  avg=1.77us  min=1.77us  max=1.77us
-   [  1.02us,   2.05us)  1  ----------------------------------------
+   [  1.02us,   2.05us)  1
 2. A(int)
+   --
    calls=1  total=1.44us  avg=1.44us  min=1.44us  max=1.44us
-   [  1.02us,   2.05us)  1  ----------------------------------------
+   [  1.02us,   2.05us)  1
 ```
 
 - One pair of sections per root, with threads sorted by TID and roots within a
@@ -353,8 +358,12 @@ Histograms:
   the same function at the same depth are aggregated across callers within
   that root; the same function at a different depth is listed separately.
 - Histogram lines are indented under their `depth. function` heading, with no
-  tree connectors. Each entry shows `calls`, `total`, `avg`, `min`, `max`, and
-  the non-empty latency buckets.
+  tree connectors. Each entry starts with a dashed bar whose length is the
+  function's inclusive time relative to the root span's duration, so the root
+  fills the bar and deeper or shorter functions show a proportionally shorter
+  one. The aggregated entry's time is `total`. Below the bar are its `calls`,
+  `total`, `avg`, `min`, `max`, and the non-empty latency buckets; the bar
+  describes the function, not an individual bucket.
 - Latency is the inclusive time between the function's entry and its matching
   return, including instrumented callees.
 - Histograms use power-of-two buckets: bucket 0 is exactly 0 ns; bucket `k` is

@@ -452,7 +452,11 @@ grep -Fqx '1. C(int)' "$TMP/hist.trace"
 grep -Fqx '└── C(int)' "$TMP/hist.trace"
 grep -q '├── ' "$TMP/hist.trace"
 grep -q '^   calls=1  total=' "$TMP/hist.trace"
-grep -Eq '^   \[ .*\)  [0-9]+  -' "$TMP/hist.trace"
+# One bar per function entry, under its heading, measuring the function's share
+# of the root span; bucket lines carry only the label and count.
+grep -Eq '^   -+$' "$TMP/hist.trace"
+grep -A1 '^0\. main$' "$TMP/hist.trace" | grep -Eq '^   -+$'
+grep -Eq '^   \[ .*\)  [0-9]+$' "$TMP/hist.trace"
 grep -q ' : 0 -> main' "$TMP/hist.trace"
 tree_line=$(grep -n '^Tree:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
 hist_line=$(grep -n '^Histograms:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)

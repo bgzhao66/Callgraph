@@ -79,6 +79,30 @@ std::vector<std::string> make_names()
     return {"main", "A(int)", "B(int)"};
 }
 
+// Histogram entries start with a bar line whose length depends on the root
+// duration.  Assertions about the heading/summary adjacency ignore it.
+std::string without_histogram_bars(const std::string& report)
+{
+    std::string out;
+    size_t pos = 0;
+    while (pos < report.size()) {
+        const size_t end = report.find('\n', pos);
+        const size_t line_end = end == std::string::npos ? report.size() : end;
+        const std::string line = report.substr(pos, line_end - pos);
+        const bool is_bar =
+            line.size() > 3 && line.compare(0, 3, "   ") == 0 &&
+            line.find_first_not_of('-', 3) == std::string::npos;
+        if (!is_bar) {
+            out += line;
+            out += '\n';
+        }
+        if (end == std::string::npos)
+            break;
+        pos = end + 1;
+    }
+    return out;
+}
+
 void test_demangle()
 {
     CHECK(demangle_symbol("_Z1Ai") == "A(int)");
@@ -162,11 +186,59 @@ void test_histogram_report()
     CHECK(report.find("Tree:") != std::string::npos);
     CHECK(report.find("Histograms:") != std::string::npos);
     CHECK(report.find("Tree:") < report.find("Histograms:"));
-    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
-    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. main\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
+          std::string::npos);
     CHECK(report.find("└── A(int)\n") != std::string::npos);
     CHECK(report.find("└── A(int)  calls=") == std::string::npos);
     CHECK(report.find("\n   [ ") != std::string::npos);
+    // The bar sits under the heading and measures the function's share of the
+    // root span: main fills it, A is 3000/5000 of main.
+    CHECK(report.find("0. main\n   ----------------------------------------\n"
+                      "   calls=1") != std::string::npos);
+    CHECK(report.find("1. A(int)\n   ------------------------\n"
+                      "   calls=1") != std::string::npos);
+}
+
+void test_histogram_bar_proportional()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // Root span lasts 800 ns.  A is called twice at depth 1 for 100 ns and
+        // 200 ns, so its aggregated entry is 300 ns: 300/800 of the root.
+        stack.on_event(make_event(0, 10, kEventEnter, 0));
+        stack.on_event(make_event(1, 10, kEventEnter, 100));
+        stack.on_event(make_event(1, 10, kEventExit, 200));
+        stack.on_event(make_event(1, 10, kEventEnter, 300));
+        stack.on_event(make_event(1, 10, kEventExit, 500));
+        stack.on_event(make_event(0, 10, kEventExit, 800));
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("0. main\n   ----------------------------------------\n"
+                      "   calls=1") != std::string::npos);
+    // 300/800 * 40 = 15 dashes; both latency buckets share this one bar.
+    CHECK(report.find("1. A(int)\n   ---------------\n"
+                      "   calls=2") != std::string::npos);
+
+    size_t bars = 0;
+    size_t pos = 0;
+    while ((pos = report.find("\n   --", pos)) != std::string::npos) {
+        ++bars;
+        ++pos;
+    }
+    CHECK(bars == 2);
 }
 
 void test_histogram_incomplete()
@@ -195,7 +267,8 @@ void test_histogram_incomplete()
 
     CHECK(report.find("=== thread 30 ===") != std::string::npos);
     CHECK(report.find("=== thread 31 ===") != std::string::npos);
-    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. main\n   calls=1") !=
+          std::string::npos);
     CHECK(report.find("A(int)  calls=") == std::string::npos);
     CHECK(report.find("0. B(int)  [incomplete]\n   calls=0  [incomplete]") !=
           std::string::npos);
@@ -236,7 +309,8 @@ void test_histogram_live_chain()
           std::string::npos);
     CHECK(report.find("1. A(int)  [incomplete]\n   calls=0") !=
           std::string::npos);
-    CHECK(report.find("2. B(int)\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("2. B(int)\n   calls=1") !=
+          std::string::npos);
     CHECK(report.find("incomplete: 2 call(s)") != std::string::npos);
 
     // B must be nested two levels down in the tree: main -> A -> B.
@@ -271,8 +345,10 @@ void test_histogram_siblings()
     CHECK(report.find("└── A(int)\n") != std::string::npos);
     CHECK(report.find("├── B(int)  calls=") == std::string::npos);
     CHECK(report.find("└── A(int)  calls=") == std::string::npos);
-    CHECK(report.find("1. B(int)\n   calls=1") != std::string::npos);
-    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. B(int)\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
+          std::string::npos);
     // Histogram order follows the tree (B first), not function-name order.
     CHECK(report.find("1. B(int)") < report.find("1. A(int)"));
 }
@@ -299,8 +375,10 @@ void test_histogram_roots()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("0. A(int)\n   calls=1") != std::string::npos);
-    CHECK(report.find("0. B(int)\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. A(int)\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. B(int)\n   calls=1") !=
+          std::string::npos);
 
     // Each root is a Tree/Histograms pair, emitted in root order, so the
     // second tree starts after the first root's histograms.
@@ -347,7 +425,8 @@ void test_histogram_recursion()
         ++pos;
     }
     CHECK(markers == 2);
-    CHECK(report.find("1. A(int)  [recursive]\n   calls=1") !=
+    CHECK(without_histogram_bars(report)
+              .find("1. A(int)  [recursive]\n   calls=1") !=
           std::string::npos);
 }
 
@@ -373,8 +452,10 @@ void test_histogram_max_depth()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
-    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. main\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
+          std::string::npos);
 }
 
 bool looks_like_boot_seconds(const std::string& line)
@@ -1357,6 +1438,7 @@ int main()
     test_errno_string();
     test_latency_histogram();
     test_histogram_report();
+    test_histogram_bar_proportional();
     test_histogram_incomplete();
     test_histogram_live_chain();
     test_histogram_siblings();

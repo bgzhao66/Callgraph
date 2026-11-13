@@ -101,8 +101,12 @@ void merge_histogram(LatencyHistogram& target, const LatencyHistogram& source)
         target.buckets[i] += source.buckets[i];
 }
 
+// One bar per histogram entry.  Its length is the function's inclusive time
+// relative to the root span's duration, so it shows how much of the tree's
+// elapsed time this node accounts for.  Bucket counts share the bar: latency
+// distribution and overall share are separate dimensions.
 void append_histogram_body(std::string& out, const LatencyHistogram& hist,
-                           const std::string& indent)
+                           const std::string& indent, uint64_t root_total_ns)
 {
     if (hist.calls == 0)
         return;
@@ -120,6 +124,23 @@ void append_histogram_body(std::string& out, const LatencyHistogram& hist,
         return;
 
     const UnitScale unit = choose_unit(hist.max_ns);
+
+    size_t bar = 0;
+    if (root_total_ns != 0 && hist.total_ns != 0) {
+        bar = static_cast<size_t>(
+            static_cast<double>(hist.total_ns) /
+            static_cast<double>(root_total_ns) *
+            static_cast<double>(kBarWidth));
+        if (bar == 0)
+            bar = 1;
+        if (bar > kBarWidth)
+            bar = kBarWidth;
+    }
+    if (bar != 0) {
+        out += indent;
+        out.append(bar, '-');
+        out += '\n';
+    }
 
     char header[512];
     snprintf(header, sizeof(header),
@@ -154,21 +175,14 @@ void append_histogram_body(std::string& out, const LatencyHistogram& hist,
         labels.push_back(std::move(label));
     }
 
-    uint64_t max_count = 0;
     size_t count_width = 1;
     for (int i = first; i <= last; ++i) {
-        max_count = std::max(max_count, hist.buckets[i]);
         count_width =
             std::max(count_width, std::to_string(hist.buckets[i]).size());
     }
 
     for (int i = first; i <= last; ++i) {
         const uint64_t count = hist.buckets[i];
-        size_t bar = 0;
-        if (max_count != 0)
-            bar = static_cast<size_t>((count * kBarWidth) / max_count);
-        if (count != 0 && bar == 0)
-            bar = 1;
 
         const std::string& label = labels[static_cast<size_t>(i - first)];
         out += indent;
@@ -176,10 +190,6 @@ void append_histogram_body(std::string& out, const LatencyHistogram& hist,
         out += std::string(label_width - label.size(), ' ');
         out += "  ";
         out += right_justify(std::to_string(count), count_width);
-        if (bar != 0) {
-            out += "  ";
-            out.append(bar, '-');
-        }
         out += '\n';
     }
 }
@@ -305,6 +315,14 @@ std::string format_histogram_report(const LatencyStats& stats,
         auto render_histograms = [&]() {
             out += "\nHistograms:\n";
 
+            // The bar denominator is the root span's duration.  The root entry
+            // is recorded first, so entries.front() is the depth-0 span.  When
+            // the root is still live at shutdown its duration is unknown;
+            // omit bars rather than scale children against an arbitrary entry.
+            uint64_t root_total_ns = 0;
+            if (!entries.empty() && entries.front().has_histogram)
+                root_total_ns = entries.front().histogram.total_ns;
+
             for (const HistogramEntry& entry : entries) {
                 out += std::to_string(entry.depth);
                 out += ". ";
@@ -316,7 +334,8 @@ std::string format_histogram_report(const LatencyStats& stats,
                 out += '\n';
 
                 if (entry.has_histogram)
-                    append_histogram_body(out, entry.histogram, "   ");
+                    append_histogram_body(out, entry.histogram, "   ",
+                                          root_total_ns);
                 else
                     out += "   calls=0  [incomplete]\n";
             }
