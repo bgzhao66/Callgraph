@@ -60,20 +60,6 @@ std::vector<std::string> read_lines(const std::string& path)
     return lines;
 }
 
-std::vector<std::string> split_lines(const std::string& text)
-{
-    std::vector<std::string> lines;
-    size_t start = 0;
-    while (start < text.size()) {
-        size_t end = text.find('\n', start);
-        if (end == std::string::npos)
-            end = text.size();
-        lines.push_back(text.substr(start, end - start));
-        start = end + 1;
-    }
-    return lines;
-}
-
 TraceEvent make_event(uint64_t function_id, uint32_t tid, uint8_t type,
                       uint64_t ts)
 {
@@ -171,24 +157,14 @@ void test_histogram_report()
     CHECK(report.find("=== thread 10 ===") != std::string::npos);
     CHECK(report.find("=== thread 20 ===") != std::string::npos);
     CHECK(report.find("=== thread 10 ===") < report.find("=== thread 20 ==="));
-    CHECK(report.find("main  calls=1") != std::string::npos);
-    CHECK(report.find("A(int)  calls=1") != std::string::npos);
-
-    const auto lines = split_lines(report);
-    bool checked_alignment = false;
-    for (size_t i = 0; i + 1 < lines.size(); ++i) {
-        if (lines[i].rfind("└── A(int)  calls=1", 0) != 0)
-            continue;
-
-        // A is the only child of main; its bucket line shares its margin.
-        const std::string& bucket = lines[i + 1];
-        CHECK(bucket.compare(0, 4, "    ") == 0);
-        CHECK(bucket.size() > 4);
-        CHECK(bucket[4] == '[');
-        checked_alignment = true;
-        break;
-    }
-    CHECK(checked_alignment);
+    CHECK(report.find("Tree:") != std::string::npos);
+    CHECK(report.find("Histograms:") != std::string::npos);
+    CHECK(report.find("Tree:") < report.find("Histograms:"));
+    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
+    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
+    CHECK(report.find("└── A(int)\n") != std::string::npos);
+    CHECK(report.find("└── A(int)  calls=") == std::string::npos);
+    CHECK(report.find("\n   [ ") != std::string::npos);
 }
 
 void test_histogram_incomplete()
@@ -217,9 +193,10 @@ void test_histogram_incomplete()
 
     CHECK(report.find("=== thread 30 ===") != std::string::npos);
     CHECK(report.find("=== thread 31 ===") != std::string::npos);
-    CHECK(report.find("main  calls=1") != std::string::npos);
+    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
     CHECK(report.find("A(int)  calls=") == std::string::npos);
-    CHECK(report.find("B(int)  calls=0  [incomplete]") != std::string::npos);
+    CHECK(report.find("0. B(int)  [incomplete]\n   calls=0  [incomplete]") !=
+          std::string::npos);
 
     size_t incomplete_lines = 0;
     size_t pos = 0;
@@ -253,23 +230,16 @@ void test_histogram_live_chain()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("main  calls=0  [incomplete]") != std::string::npos);
-    CHECK(report.find("A(int)  calls=0  [incomplete]") != std::string::npos);
-    CHECK(report.find("B(int)  calls=1") != std::string::npos);
+    CHECK(report.find("0. main  [incomplete]\n   calls=0  [incomplete]") !=
+          std::string::npos);
+    CHECK(report.find("1. A(int)  [incomplete]\n   calls=0") !=
+          std::string::npos);
+    CHECK(report.find("2. B(int)\n   calls=1") != std::string::npos);
     CHECK(report.find("incomplete: 2 call(s)") != std::string::npos);
 
-    // B must be nested two levels down: main -> A -> B.
-    const auto lines = split_lines(report);
-    bool checked_b = false;
-    for (size_t i = 0; i + 1 < lines.size(); ++i) {
-        if (lines[i].rfind("    └── B(int)  calls=1", 0) != 0)
-            continue;
-        CHECK(lines[i + 1].compare(0, 8, "        ") == 0);
-        CHECK(lines[i + 1].size() > 8);
-        CHECK(lines[i + 1][8] == '[');
-        checked_b = true;
-    }
-    CHECK(checked_b);
+    // B must be nested two levels down in the tree: main -> A -> B.
+    CHECK(report.find("    └── B(int)\n") != std::string::npos);
+    CHECK(report.find("    └── B(int)  calls=") == std::string::npos);
 }
 
 void test_histogram_siblings()
@@ -284,10 +254,10 @@ void test_histogram_siblings()
 
         stack.on_event(make_event(0, 70, kEventEnter, 0));
         stack.on_event(make_event(1, 70, kEventEnter, 10));
-        stack.on_event(make_event(1, 70, kEventExit, 210));  // A: 200 ns
-        stack.on_event(make_event(2, 70, kEventEnter, 220));
-        stack.on_event(make_event(2, 70, kEventExit, 320));  // B: 100 ns
-        stack.on_event(make_event(0, 70, kEventExit, 330));
+        stack.on_event(make_event(1, 70, kEventExit, 110));  // A: 100 ns
+        stack.on_event(make_event(2, 70, kEventEnter, 120));
+        stack.on_event(make_event(2, 70, kEventExit, 420));  // B: 300 ns
+        stack.on_event(make_event(0, 70, kEventExit, 430));
 
         stack.finish_statistics();
         report = format_histogram_report(stack.stats(), names);
@@ -295,21 +265,14 @@ void test_histogram_siblings()
     }
     unlink(path.c_str());
 
-    const auto lines = split_lines(report);
-    bool saw_branch = false;
-    bool saw_last = false;
-    for (size_t i = 0; i + 1 < lines.size(); ++i) {
-        if (lines[i].rfind("├── A(int)  calls=1", 0) == 0) {
-            saw_branch = true;
-            CHECK(lines[i + 1].rfind("│   [", 0) == 0);
-        }
-        if (lines[i].rfind("└── B(int)  calls=1", 0) == 0) {
-            saw_last = true;
-            CHECK(lines[i + 1].rfind("    [", 0) == 0);
-        }
-    }
-    CHECK(saw_branch);
-    CHECK(saw_last);
+    CHECK(report.find("├── B(int)\n") != std::string::npos);
+    CHECK(report.find("└── A(int)\n") != std::string::npos);
+    CHECK(report.find("├── B(int)  calls=") == std::string::npos);
+    CHECK(report.find("└── A(int)  calls=") == std::string::npos);
+    CHECK(report.find("1. B(int)\n   calls=1") != std::string::npos);
+    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
+    // Histogram order follows the tree (B first), not function-name order.
+    CHECK(report.find("1. B(int)") < report.find("1. A(int)"));
 }
 
 void test_histogram_roots()
@@ -334,10 +297,10 @@ void test_histogram_roots()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("A(int)  calls=1") != std::string::npos);
-    CHECK(report.find("B(int)  calls=1") != std::string::npos);
+    CHECK(report.find("0. A(int)\n   calls=1") != std::string::npos);
+    CHECK(report.find("0. B(int)\n   calls=1") != std::string::npos);
     // Independent root trees are separated by a blank line.
-    CHECK(report.find("\n\nB(int)  calls=1") != std::string::npos);
+    CHECK(report.find("\n\nB(int)\n") != std::string::npos);
 }
 
 void test_histogram_recursion()
@@ -367,7 +330,9 @@ void test_histogram_recursion()
         ++markers;
         ++pos;
     }
-    CHECK(markers == 1);
+    CHECK(markers == 2);
+    CHECK(report.find("1. A(int)  [recursive]\n   calls=1") !=
+          std::string::npos);
 }
 
 void test_histogram_max_depth()
@@ -392,8 +357,8 @@ void test_histogram_max_depth()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("main  calls=1") != std::string::npos);
-    CHECK(report.find("A(int)  calls=1") != std::string::npos);
+    CHECK(report.find("0. main\n   calls=1") != std::string::npos);
+    CHECK(report.find("1. A(int)\n   calls=1") != std::string::npos);
 }
 
 bool looks_like_boot_seconds(const std::string& line)

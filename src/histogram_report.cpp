@@ -5,6 +5,8 @@
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace callgraph {
 namespace {
@@ -72,12 +74,35 @@ std::string right_justify(const std::string& text, size_t width)
     return std::string(width - text.size(), ' ') + text;
 }
 
-// `line_prefix` prefixes the function name; `detail_prefix` has the same
-// display width and prefixes the histogram lines, so they line up under the
-// name while the tree's vertical bars stay continuous.
-void append_node(std::string& out, const std::string& line_prefix,
-                 const std::string& detail_prefix, const std::string& name,
-                 const LatencyHistogram& hist, const std::string& note)
+void append_tree_node(std::string& out, const std::string& prefix,
+                      const std::string& name, const std::string& note)
+{
+    out += prefix;
+    out += name;
+    out += note;
+    out += '\n';
+}
+
+void merge_histogram(LatencyHistogram& target, const LatencyHistogram& source)
+{
+    if (source.calls == 0)
+        return;
+
+    if (target.calls == 0) {
+        target = source;
+        return;
+    }
+
+    target.calls += source.calls;
+    target.total_ns += source.total_ns;
+    target.min_ns = std::min(target.min_ns, source.min_ns);
+    target.max_ns = std::max(target.max_ns, source.max_ns);
+    for (int i = 0; i < kLatencyBuckets; ++i)
+        target.buckets[i] += source.buckets[i];
+}
+
+void append_histogram_body(std::string& out, const LatencyHistogram& hist,
+                           const std::string& indent)
 {
     if (hist.calls == 0)
         return;
@@ -96,19 +121,16 @@ void append_node(std::string& out, const std::string& line_prefix,
 
     const UnitScale unit = choose_unit(hist.max_ns);
 
-    out += line_prefix;
-    out += name;
-
     char header[512];
     snprintf(header, sizeof(header),
-             "  calls=%llu  total=%s  avg=%s  min=%s  max=%s",
+             "calls=%llu  total=%s  avg=%s  min=%s  max=%s",
              static_cast<unsigned long long>(hist.calls),
              format_value(hist.total_ns, unit).c_str(),
              format_value(hist.total_ns / hist.calls, unit).c_str(),
              format_value(hist.min_ns, unit).c_str(),
              format_value(hist.max_ns, unit).c_str());
+    out += indent;
     out += header;
-    out += note;
     out += '\n';
 
     size_t value_width = 0;
@@ -149,7 +171,7 @@ void append_node(std::string& out, const std::string& line_prefix,
             bar = 1;
 
         const std::string& label = labels[static_cast<size_t>(i - first)];
-        out += detail_prefix;
+        out += indent;
         out += label;
         out += std::string(label_width - label.size(), ' ');
         out += "  ";
@@ -162,15 +184,32 @@ void append_node(std::string& out, const std::string& line_prefix,
     }
 }
 
-// A frame that is still on the stack at shutdown.  It has no measured latency,
-// but it anchors completed calls made from inside it.
-void append_anchor(std::string& out, const std::string& line_prefix,
-                   const std::string& name)
-{
-    out += line_prefix;
-    out += name;
-    out += "  calls=0  [incomplete]\n";
-}
+struct HistogramKey {
+    uint32_t depth = 0;
+    uint64_t function_id = 0;
+
+    bool operator==(const HistogramKey& other) const = default;
+};
+
+struct HistogramKeyHash {
+    size_t operator()(const HistogramKey& key) const noexcept
+    {
+        uint64_t value = key.function_id * 0x9e3779b97f4a7c15ULL;
+        value ^= static_cast<uint64_t>(key.depth) + 0x9e3779b97f4a7c15ULL +
+                 (value << 6) + (value >> 2);
+        return static_cast<size_t>(value);
+    }
+};
+
+struct HistogramEntry {
+    uint32_t depth = 0;
+    uint64_t function_id = 0;
+    std::string name;
+    LatencyHistogram histogram;
+    bool has_histogram = false;
+    bool recursive = false;
+    bool incomplete = false;
+};
 
 }  // namespace
 
@@ -234,11 +273,42 @@ std::string format_histogram_report(const LatencyStats& stats,
         for (auto& [parent, kids] : children)
             sort_children(parent, kids);
 
+        // Entries are inserted on first DFS visit so the histogram section
+        // follows the same top-to-bottom order as the Tree section.
+        std::vector<HistogramEntry> entries;
+        std::unordered_map<HistogramKey, size_t, HistogramKeyHash> entry_index;
+        auto record = [&](uint32_t depth, uint64_t function_id,
+                          const LatencyHistogram* hist, bool recursive,
+                          bool incomplete) {
+            const HistogramKey key{depth, function_id};
+            auto found = entry_index.find(key);
+            if (found == entry_index.end()) {
+                found = entry_index.emplace(key, entries.size()).first;
+                HistogramEntry entry;
+                entry.depth = depth;
+                entry.function_id = function_id;
+                entry.name = name_of(function_id);
+                entries.push_back(std::move(entry));
+            }
+
+            auto& entry = entries[found->second];
+            entry.recursive = entry.recursive || recursive;
+            entry.incomplete = entry.incomplete || incomplete;
+            if (hist) {
+                merge_histogram(entry.histogram, *hist);
+                entry.has_histogram = hist->calls != 0;
+            }
+        };
+
+        out += "Tree:\n";
+
         std::unordered_set<uint64_t> path;
 
         // Completed subtree.  A cycle cut-off keeps recursion bounded.
-        std::function<void(uint64_t, uint64_t, const std::string&, bool)>
+        std::function<void(uint64_t, uint64_t, uint32_t,
+                           const std::string&, bool)>
             render_completed = [&](uint64_t parent, uint64_t child,
+                                   uint32_t depth,
                                    const std::string& parent_prefix,
                                    bool is_last) {
                 const auto it = thread.edges.find({parent, child});
@@ -251,8 +321,9 @@ std::string format_histogram_report(const LatencyStats& stats,
                     parent_prefix + (is_last ? kBlank : kVertical);
 
                 const bool recursive = path.contains(child);
-                append_node(out, line_prefix, detail_prefix, name_of(child),
-                            it->second, recursive ? "  [recursive]" : "");
+                record(depth, child, &it->second, recursive, false);
+                append_tree_node(out, line_prefix, name_of(child),
+                                 recursive ? "  [recursive]" : "");
                 if (recursive)
                     return;
 
@@ -260,7 +331,8 @@ std::string format_histogram_report(const LatencyStats& stats,
                 const auto kids = children.find(child);
                 if (kids != children.end()) {
                     for (size_t i = 0; i < kids->second.size(); ++i) {
-                        render_completed(child, kids->second[i], detail_prefix,
+                        render_completed(child, kids->second[i], depth + 1,
+                                         detail_prefix,
                                          i + 1 == kids->second.size());
                     }
                 }
@@ -287,11 +359,17 @@ std::string format_histogram_report(const LatencyStats& stats,
                                : thread.live_stack[index - 1];
 
                 const auto edge = thread.edges.find({parent, node});
-                if (edge != thread.edges.end())
-                    append_node(out, line_prefix, detail_prefix, name_of(node),
-                                edge->second, "  [incomplete]");
-                else
-                    append_anchor(out, line_prefix, name_of(node));
+                if (edge != thread.edges.end()) {
+                    record(static_cast<uint32_t>(index), node, &edge->second,
+                           false, true);
+                    append_tree_node(out, line_prefix, name_of(node),
+                                     "  [incomplete]");
+                } else {
+                    record(static_cast<uint32_t>(index), node, nullptr, false,
+                           true);
+                    append_tree_node(out, line_prefix, name_of(node),
+                                     "  [incomplete]");
+                }
 
                 const bool inserted = path.insert(node).second;
 
@@ -313,8 +391,9 @@ std::string format_histogram_report(const LatencyStats& stats,
                     kids.size() + (has_live_child ? 1 : 0);
 
                 for (size_t i = 0; i < kids.size(); ++i) {
-                    render_completed(node, kids[i], detail_prefix,
-                                     i + 1 == total);
+                    render_completed(node, kids[i],
+                                     static_cast<uint32_t>(index + 1),
+                                     detail_prefix, i + 1 == total);
                 }
                 if (has_live_child)
                     render_live(index + 1, detail_prefix, true);
@@ -349,17 +428,36 @@ std::string format_histogram_report(const LatencyStats& stats,
             if (it == thread.edges.end())
                 continue;
 
-            append_node(out, "", "", name_of(root), it->second, "");
+            record(0, root, &it->second, false, false);
+            append_tree_node(out, "", name_of(root), "");
             const bool inserted = path.insert(root).second;
             const auto kids = children.find(root);
             if (kids != children.end()) {
                 for (size_t i = 0; i < kids->second.size(); ++i) {
-                    render_completed(root, kids->second[i], "",
+                    render_completed(root, kids->second[i], 1, "",
                                      i + 1 == kids->second.size());
                 }
             }
             if (inserted)
                 path.erase(root);
+        }
+
+        out += "\nHistograms:\n";
+
+        for (const HistogramEntry& entry : entries) {
+            out += std::to_string(entry.depth);
+            out += ". ";
+            out += entry.name;
+            if (entry.recursive)
+                out += "  [recursive]";
+            if (entry.incomplete)
+                out += "  [incomplete]";
+            out += '\n';
+
+            if (entry.has_histogram)
+                append_histogram_body(out, entry.histogram, "   ");
+            else
+                out += "   calls=0  [incomplete]\n";
         }
 
         if (thread.incomplete != 0) {

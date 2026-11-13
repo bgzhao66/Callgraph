@@ -66,6 +66,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - BPF emits a fixed 128-byte event (`ts`, function cookie, tgid/tid, type, captured args). It does no symbol resolution.
 - Userspace owns ELF/DWARF resolution, module discovery, probe attachment, and per-TID call-stack reconstruction.
 - `CallStack` pairs entry/return events, handles recursion/desync/shutdown, and feeds `SpanSink`.
+- `--histogram` emits a per-thread `Tree:` section followed by `Histograms:` entries labeled `depth. function` in DFS order; do not reintroduce interleaved bucket lines in the tree.
 - `SpanGenerator` turns call events into OTel spans; `OtelExporter` owns batching/queue/retry/transport; `ClockConverter` maps monotonic timestamps to Unix epoch.
 - `TraceParser` + `callgraph export --otel|--flame` replay text traces through the same `CallStack` path.
 - Source file/line attributes are populated from libdwfl in the ELF resolver.

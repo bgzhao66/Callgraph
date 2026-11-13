@@ -381,13 +381,18 @@ echo "== latency histogram =="
     --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q '^=== thread [0-9][0-9]* ===$' "$TMP/hist.trace"
-grep -q 'main  calls=1' "$TMP/hist.trace"
-grep -q 'C(int)  calls=' "$TMP/hist.trace"
-grep -q '└── C(int)  calls=' "$TMP/hist.trace"
+grep -q '^Tree:$' "$TMP/hist.trace"
+grep -q '^Histograms:$' "$TMP/hist.trace"
+grep -Fqx '0. main' "$TMP/hist.trace"
+grep -Fqx '1. C(int)' "$TMP/hist.trace"
+grep -Fqx '└── C(int)' "$TMP/hist.trace"
 grep -q '├── ' "$TMP/hist.trace"
-grep -q '│   \[' "$TMP/hist.trace"
-grep -Eq '^\[ .*\) +[0-9]+  -' "$TMP/hist.trace"
+grep -q '^   calls=1  total=' "$TMP/hist.trace"
+grep -Eq '^   \[ .*\)  [0-9]+  -' "$TMP/hist.trace"
 grep -q ' : 0 -> main' "$TMP/hist.trace"
+tree_line=$(grep -n '^Tree:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
+hist_line=$(grep -n '^Histograms:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
+[ "$tree_line" -lt "$hist_line" ]
 # Without the option the report is absent.
 ! grep -q '^=== thread ' "$TMP/simple.trace"
 

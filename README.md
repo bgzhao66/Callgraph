@@ -157,7 +157,7 @@ Usage:
       --max-depth N     print events with depth <= N (default: unlimited)
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
-      --histogram       append a per-thread latency histogram tree to the output
+      --histogram       append a per-thread call tree and latency histograms to the output
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -313,29 +313,48 @@ depth 0).
 ### Latency histogram
 
 `--histogram` appends a report to the same stream as the events (stdout or the
-`-o` file) after the last event line:
+`-o` file) after the last event line. Each thread has two sections: the call
+tree first, then the per-function histograms:
 
 ```
 === thread 26570 ===
-main  calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
-[ 16.38us,  32.77us)      1  ----------------------------------------
-└── C(int)  calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
-    [  8.19us,  16.38us)      1  ----------------------------------------
-    ├── B(int)  calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
-    │   [  4.10us,   8.19us)      1  ----------------------------------------
-    │   └── A(int)  calls=1  total=1.77us  avg=1.77us  min=1.77us  max=1.77us
-    │       [  1.02us,   2.05us)      1  ----------------------------------------
-    └── A(int)  calls=1  total=1.44us  avg=1.44us  min=1.44us  max=1.44us
-        [  1.02us,   2.05us)      1  ----------------------------------------
+Tree:
+main
+└── C(int)
+    ├── B(int)
+    │   └── A(int)
+    └── A(int)
+
+Histograms:
+0. main
+   calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
+   [ 16.38us,  32.77us)  1  ----------------------------------------
+1. C(int)
+   calls=1  total=9.30us  avg=9.30us  min=9.30us  max=9.30us
+   [  8.19us,  16.38us)  1  ----------------------------------------
+2. B(int)
+   calls=1  total=4.10us  avg=4.10us  min=4.10us  max=4.10us
+   [  4.10us,   8.19us)  1  ----------------------------------------
+3. A(int)
+   calls=1  total=1.77us  avg=1.77us  min=1.77us  max=1.77us
+   [  1.02us,   2.05us)  1  ----------------------------------------
+2. A(int)
+   calls=1  total=1.44us  avg=1.44us  min=1.44us  max=1.44us
+   [  1.02us,   2.05us)  1  ----------------------------------------
 ```
 
-- One section per thread, sorted by TID.
-- Nodes are rendered with `tree`-style connectors (`├──`, `└──`, `│`). Each
-  node's histogram lines align with its name and continue the tree's vertical
-  bars. Independent root trees within one thread are separated by a blank line.
-- Each node is an immediate caller to callee edge, so a function called from two
-  different callers appears under each caller with the calls made from that
-  caller.
+- One block per thread, sorted by TID.
+- The `Tree:` section shows only the call structure, using `tree`-style
+  connectors (`├──`, `└──`, `│`). Independent root trees within one thread are
+  separated by a blank line.
+- The `Histograms:` section lists entries as `<depth>. <function>`, where depth
+  is relative to the thread's root. Entries follow the same DFS/preorder
+  top-to-bottom order as the `Tree:` section; the depth number is not a sort
+  key. Calls to the same function at the same depth are aggregated across
+  callers; the same function at a different depth is listed separately.
+- Histogram lines are indented under their `depth. function` heading, with no
+  tree connectors. Each entry shows `calls`, `total`, `avg`, `min`, `max`, and
+  the non-empty latency buckets.
 - Latency is the inclusive time between the function's entry and its matching
   return, including instrumented callees.
 - Histograms use power-of-two buckets: bucket 0 is exactly 0 ns; bucket `k` is
@@ -343,14 +362,15 @@ main  calls=1  total=25.30us  avg=25.30us  min=25.30us  max=25.30us
   buckets between them.
 - Calls without a matching return (exception unwinding, `longjmp`, lost events,
   or still running when tracing stops) are excluded from the histograms and
-  reported as `incomplete: N call(s)`. A still-live frame with completed
-  children is shown as `name  calls=0  [incomplete]` so those children stay
-  nested under it.
+  reported as `incomplete: N call(s)`. A still-live frame is shown in the tree
+  as `name  [incomplete]` and in the histogram section as
+  `calls=0  [incomplete]`.
 - `--max-depth` and `--indent` do not affect the histogram; `--max-depth` only
   hides event lines. `--include`/`--exclude` still apply at instrumentation
   time, so excluded functions do not appear.
-- A recursive call is printed once more and marked `[recursive]` instead of
-  being expanded forever.
+- A recursive call is expanded once in the tree and marked `[recursive]`; its
+  histogram entry is also marked `[recursive]` instead of being expanded
+  forever.
 
 ## OTEL / Jaeger export
 
@@ -542,7 +562,7 @@ CLI / process controller
         |
    Per-TID call-stack reconstruction
         |
-        +--> Latency statistics + histogram tree (--histogram)
+        +--> Latency statistics + tree/histogram report (--histogram)
         |
         +--> Writer thread -> stdout / file
         |
@@ -553,8 +573,9 @@ The BPF programs are deliberately tiny: they emit `{timestamp, function_id,
 tgid, tid, type}` and do no symbol resolution. Function IDs are per-offset
 cookies; user space owns the ID-to-name table and all stack logic. With
 `--histogram`, the call-stack reconstructor also accumulates per-thread
-caller-to-callee latency histograms; the tree is rendered after the collector
-stops and appended to the same stream by the writer.
+caller-to-callee latency histograms; the tree and histogram sections are
+rendered after the collector stops and appended to the same stream by the
+writer.
 
 Symbol resolution uses the ELF symbol table first (entry points are
 `STT_FUNC` symbols in executable sections). C++ linkage names are demangled
