@@ -56,6 +56,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - The target must retain `.symtab`, or have separate debug info discoverable by build ID / `.gnu_debuglink`. A stripped binary without debug info is not traceable.
 - `--show-args` is x86-64 only and needs DWARF.
 - `--return-mode=uretprobe` can terminate C++ programs that unwind exceptions through traced functions. Use `--return-mode=ret` for those; it is only available when libopcodes is found.
+- Go binaries are detected via `.note.go.buildid`/`.go.buildinfo` and trigger a warning: `uretprobe` can crash the Go runtime during stack growth/GC, and goroutine stack switches make nesting unreliable even in `ret` mode. Go binaries built with `-ldflags="-s -w"` have no symbol table and are rejected.
 - Attach mode starts at the attach point. The first observed frame is a root marked `callgraph.partial_stack=true`; calls before attachment are not seen.
 - Default OTel trace scope is one trace per depth-0 root invocation (`--trace-scope=root`). Thread and process scopes are available for special cases.
 - OTLP/gRPC and OTLP/HTTP protobuf require protobuf/protoc; network export requires libcurl. JSON file export works without either.

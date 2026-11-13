@@ -93,7 +93,10 @@ resumer. Only stackful coroutines/fibers that switch to a separate stack
 (`ucontext`, Boost.Context, green threads) can look like an unwind.
 
 Go goroutines are the important stackful case: their stacks are heap-allocated,
-relocated when they grow, and switched by the Go scheduler. Two problems follow.
+relocated when they grow, and switched by the Go scheduler. Go binaries are
+detected by the `.note.go.buildid` and `.go.buildinfo` sections, which survive
+`-ldflags="-s -w"`; the module registry warns once when one is resolved. Two
+problems follow.
 
 First, `uretprobe` mode can crash the Go runtime. Stack growth and GC walk the
 goroutine stack and validate return PCs; a return address replaced by the

@@ -12,6 +12,14 @@ g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
 g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
 
+GO_BIN=
+if command -v go >/dev/null 2>&1; then
+    printf 'package main\n\nfunc main() {}\n' > "$TMP/gowarn.go"
+    if (cd "$TMP" && go build -o "$TMP/gowarn" gowarn.go) >/dev/null 2>&1; then
+        GO_BIN="$TMP/gowarn"
+    fi
+fi
+
 echo "== dry run =="
 dry=$("$BIN" run --dry-run --regex \
     --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" 2>/dev/null)
@@ -182,6 +190,30 @@ for request in requests:
     assert request["encoding"] == "gzip", request
 assert received_spans == 3, received_spans
 PY
+fi
+
+if [ -n "$GO_BIN" ]; then
+    echo "== Go binary warning =="
+    "$BIN" run --dry-run --regex --include '^main\.main$' -- "$GO_BIN" \
+        >/dev/null 2>"$TMP/gowarn.err"
+    grep -q 'Go binary' "$TMP/gowarn.err"
+    grep -q -- '--return-mode=ret' "$TMP/gowarn.err"
+
+    "$BIN" run --dry-run --return-mode ret --regex \
+        --include '^main\.main$' -- "$GO_BIN" \
+        >/dev/null 2>"$TMP/gowarn_ret.err"
+    grep -q 'nesting unreliable' "$TMP/gowarn_ret.err"
+
+    if (cd "$TMP" && go build -ldflags="-s -w" -o "$TMP/gowarn_stripped" \
+            gowarn.go) >/dev/null 2>&1; then
+        if "$BIN" run --dry-run -- "$TMP/gowarn_stripped" \
+                >/dev/null 2>"$TMP/gowarn_stripped.err"; then
+            echo "expected a stripped Go binary to fail" >&2
+            exit 1
+        fi
+        grep -q 'Go binary without a usable symbol table' \
+            "$TMP/gowarn_stripped.err"
+    fi
 fi
 
 if [ "$(id -u)" -ne 0 ]; then

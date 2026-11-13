@@ -1157,6 +1157,19 @@ public:
                      "traced function. Use --return-mode=ret to avoid this.");
         }
 
+        if (!warned_go_ && module.is_go_binary) {
+            warned_go_ = true;
+            if (options_.return_mode == "uretprobe") {
+                log_warn("target looks like a Go binary; uretprobes can crash "
+                         "the Go runtime during stack growth or GC. Use "
+                         "--return-mode=ret.");
+            } else {
+                log_warn("target looks like a Go binary; goroutine stack "
+                         "switches and growth make nesting unreliable, so "
+                         "depths and spans may be wrong.");
+            }
+        }
+
         modules_.push_back({path, std::move(selected)});
         return true;
     }
@@ -1188,6 +1201,7 @@ private:
     std::vector<PlannedModule> modules_;
     std::unordered_set<std::string> attached_;
     bool warned_exceptions_ = false;
+    bool warned_go_ = false;
 };
 
 class ChildGuard {

@@ -226,6 +226,13 @@ bool has_section(Elf* elf, const char* wanted)
     return false;
 }
 
+// Go keeps these sections even when built with -ldflags="-s -w".
+bool is_go_binary(Elf* elf)
+{
+    return has_section(elf, ".note.go.buildid") ||
+           has_section(elf, ".go.buildinfo");
+}
+
 void add_function(std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset,
                   const std::vector<Segment>& segments, uint64_t vaddr,
                   uint64_t size, const char* raw, int rank,
@@ -253,7 +260,7 @@ void add_function(std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset,
 
 ModuleInfo build_module(
     const std::string& path, const std::string& build_id,
-    bool has_exception_tables,
+    bool has_exception_tables, bool go_binary,
     std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset, int fd,
     bool scan_returns, bool is_64bit)
 {
@@ -265,6 +272,7 @@ ModuleInfo build_module(
     module.path = path;
     module.build_id = build_id;
     module.has_exception_tables = has_exception_tables;
+    module.is_go_binary = go_binary;
     module.functions.reserve(by_offset.size());
 
     for (auto& entry : by_offset) {
@@ -382,9 +390,15 @@ ModuleInfo resolve_with_dwfl(const std::string& path)
         fail("%s has no executable PT_LOAD segment", path.c_str());
 
     const int symbol_count = dwfl_module_getsymtab(module);
-    if (symbol_count <= 0)
+    if (symbol_count <= 0) {
+        if (is_go_binary(elf)) {
+            fail("%s is a Go binary without a usable symbol table; binaries "
+                 "built with -ldflags=\"-s -w\" cannot be traced",
+                 path.c_str());
+        }
         fail("%s has no usable symbol table and no external debug information",
              path.c_str());
+    }
 
     std::map<uint64_t, std::pair<FunctionInfo, int>> by_offset;
 
@@ -451,8 +465,8 @@ ModuleInfo resolve_with_dwfl(const std::string& path)
 
     ModuleInfo result =
         build_module(path, build_id_of(elf),
-                     has_section(elf, ".gcc_except_table"), by_offset, fd,
-                     scan_returns, is_64bit);
+                     has_section(elf, ".gcc_except_table"), is_go_binary(elf),
+                     by_offset, fd, scan_returns, is_64bit);
     if (fd >= 0)
         close(fd);
     annotate_source_info(path, result.functions);
@@ -582,7 +596,8 @@ ModuleInfo ElfResolver::resolve(const std::string& path)
 
     ModuleInfo result =
         build_module(path, build_id_of(file.elf), has_exception_tables,
-                     by_offset, file.fd, is_x86, is_64bit);
+                     is_go_binary(file.elf), by_offset, file.fd, is_x86,
+                     is_64bit);
     annotate_source_info(path, result.functions);
     return result;
 }

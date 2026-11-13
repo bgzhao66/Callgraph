@@ -572,6 +572,11 @@ cannot follow goroutine switches or stack relocation, so nesting across
 `desync`/`stray` events). C++20 coroutines are unaffected by the stack issue:
 their frame is heap-allocated but the body runs on the resumer's stack.
 
+Go binaries are detected through their `.note.go.buildid`/`.go.buildinfo`
+sections, and callgraph prints a warning naming the applicable limitation.
+Go binaries built with `-ldflags="-s -w"` keep those sections but lose the
+symbol table, so they are rejected as untraceable.
+
 ## Architecture
 
 ```
