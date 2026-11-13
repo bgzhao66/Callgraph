@@ -67,6 +67,11 @@ public:
     // than once; only the first call has an effect.
     void finish_statistics();
 
+    // Read-only view of the current frames for a thread, root-first.  The
+    // pointer is valid only until the next CallStack mutation.  Returns null
+    // when the thread has no traced frames.
+    const std::vector<CallFrame>* frames_for(uint32_t tid) const;
+
     // Closes spans for frames that never returned.  Independent of
     // --histogram/collect_latency.
     void finish_spans(uint64_t stop_ts);

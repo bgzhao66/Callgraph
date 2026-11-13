@@ -119,6 +119,13 @@ sudo ./build/callgraph run --return-mode ret -- ./my_app
 # Redirect the event stream to a file (keeps the app's stdout separate)
 sudo ./build/callgraph run -o trace.log -- ./my_app
 
+# Correlate scheduler, futex, and I/O events with the call tree
+sudo ./build/callgraph run --sched --futex --io --kernel-report \
+    -o trace.log -- ./my_app
+
+# All P0 kernel families
+sudo ./build/callgraph run --kernel-events sched,futex,io,block -- ./my_app
+
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
 sudo ./build/callgraph run -T --exporter otlp -- ./my_app
 
@@ -158,6 +165,16 @@ Usage:
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
       --histogram       append per-root call trees and latency histograms to the output
+      --sched           trace scheduler switch/wakeup events
+      --futex           trace futex syscall begin/end events
+      --io              trace read/write/fsync syscall events
+      --block           trace block request events (global)
+      --kernel-events L comma-separated: sched,futex,io,block
+      --kernel-preset P latency, database, cpu, or full
+      --kernel-report   append the per-thread kernel summary
+      --kernel-buffer-size N  kernel ring buffer size (default: 4m)
+      --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)
+      --require-kernel-events  fail if a requested tracepoint is unavailable
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -386,6 +403,68 @@ Histograms:
 - A recursive call is expanded once in the tree and marked `[recursive]`; its
   histogram entry is also marked `[recursive]` instead of being expanded
   forever.
+
+### Kernel events (P0)
+
+`--sched`, `--futex`, `--io`, and `--block` add a second, correlated event
+stream for kernel activity. Kernel events are never represented as function
+entries or returns; they use a separate `@CATEGORY` line:
+
+```text
+327657.794260059 27074 : 1 @FUTEX wait_begin id=2 uaddr=0x6211f656a040 op=0x80 val=2
+327657.794264026 27074 : 1 @SCHED switch_out id=3 next=0 state=S
+327657.893319144 27074 : 1 @SCHED waking id=3 by=27076 cpu=18 prio=120
+327657.893396526 27074 : 1 @SCHED wakeup id=3 by=0 cpu=18 prio=120
+327657.893411034 27074 : 1 @SCHED switch_in id=3 prev=0 offcpu_ns=99147008 runqueue_ns=91890
+327657.893416707 27074 : 1 @FUTEX wait_end id=2 ret=0 duration_ns=99156648
+```
+
+The depth column is the top traced user frame on that TID. `-` means the TID
+has no traced frame; `*` means the record is global (block events). Kernel
+lines are ignored by the function-line parser, so old traces still replay.
+
+Implemented families:
+
+- **Scheduler:** switch, wakeup/waking/wakeup_new, migration, process fork/exit.
+  `CallStack` is not modified; the timeline derives CPU time, off-CPU time,
+  runqueue wait, and the blocking reason from switch/wakeup pairs.
+- **Futex:** `futex` syscall enter/exit. Wait-family operations emit
+  `wait_begin`/`wait_end`; wake operations emit `wake`.
+- **I/O syscalls:** read, write, pread64, pwrite64, fsync, fdatasync, openat,
+  close, and sync_file_range, with fd/count and duration.
+- **Block:** insert, issue, complete, requeue, and error records. Requests are
+  correlated by `(dev, sector, nr_sectors)` to report `queue_ns`, `device_ns`,
+  and `total_ns`; unmatched requests are marked.
+
+`--kernel-report`, and `--histogram` when a kernel family is enabled, appends a
+per-thread `Kernel:` summary:
+
+```text
+Kernel:
+  tid 27074
+    cpu=622.266us runnable=532.629us blocked=254.210ms switches=6 partial=yes
+    blocked(futex=99.055ms io=4.845ms sleep=150.133ms other=176.329us)
+    0. main cpu=44.211us runnable=38.554us blocked=0ns
+    1. work(int) cpu=43.044us runnable=71.817us blocked=100.068ms
+    1. lock_work() cpu=68.063us runnable=154.676us blocked=149.121ms
+```
+
+Time is exclusive to the top frame. `cpu + runnable + blocked` is the observed
+wall interval; `partial=yes` means the beginning or end was not observed
+(usually because the first switch was missed before the target TID was
+learned). Without scheduler events, runstate counters remain zero.
+
+Limitations of the P0 MVP:
+
+- Target TIDs are taken from `/proc/<pid>/task` and learned from the first
+  uprobe event for each thread. A switch that happens before the first uprobe
+  is not attributed, so the first interval can be marked partial.
+- Block events are global; unrelated device traffic can appear. There is no
+  per-device filter yet.
+- Network, memory, PMU, interrupts, and workqueues are not implemented.
+- Kernel lines are not yet replayed by `export --otel`; the offline parser
+  ignores them.
+- Kernel tracing needs root (or the BPF/perf capabilities) and tracefs.
 
 ## OTEL / Jaeger export
 
@@ -751,12 +830,14 @@ it returns; completed child spans may already be present.
 
 ```
 CMakeLists.txt
-bpf/trace.bpf.c, bpf/trace.h    BPF programs and shared event layout
+bpf/trace.bpf.c, bpf/trace.h    function uprobe BPF program and event layout
+bpf/kernel/                     scheduler/futex/I/O/block tracepoint BPF
 include/callgraph/              headers
 src/                            resolver, modules, probes, collector, stack, output,
                                 clock converter, span generator, OTLP encoders,
-                                exporter, offline parser
-examples/                       simple, recursive, multithread, exceptions, loop, lib
+                                exporter, offline parser, kernel timeline
+examples/                       simple, recursive, multithread, exceptions, loop, lib,
+                                kernel (scheduler/futex/I/O)
 tests/                          unit and integration tests
 tools/install-deps.sh           distro-aware build dependency installer
 tools/legacy/                   earlier bpftrace generator (Python)
@@ -764,7 +845,7 @@ third_party/libbpf/             vendored libbpf v1.5.0
 third_party/opentelemetry-proto/ vendored OTLP protobuf definitions
 docs/design-notes.md            design decisions and phase plan
 docs/otel-export-design.md      OTEL/Jaeger export design
-docs/kernel-event-design.md     kernel event tracing design (proposal)
+docs/kernel-event-design.md     kernel event tracing design (P0 implemented)
 ```
 
 ## Legacy prototype

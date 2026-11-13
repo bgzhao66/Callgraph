@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <string>
 #include <unordered_map>
@@ -14,6 +15,8 @@
 #include "callgraph/event.h"
 #include "callgraph/flame_graph.h"
 #include "callgraph/histogram_report.h"
+#include "callgraph/kernel_event.h"
+#include "callgraph/kernel_timeline.h"
 #include "callgraph/latency_stats.h"
 #include "callgraph/otel_exporter.h"
 #include "callgraph/otlp_json.h"
@@ -60,6 +63,13 @@ std::vector<std::string> read_lines(const std::string& path)
     while (std::getline(in, line))
         lines.push_back(line);
     return lines;
+}
+
+std::string read_file(const std::string& path)
+{
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
 }
 
 TraceEvent make_event(uint64_t function_id, uint32_t tid, uint8_t type,
@@ -1470,6 +1480,250 @@ void test_trace_metadata_roundtrip()
     }
 }
 
+void test_kernel_scheduler()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+    std::string trace;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+
+        KernelEvent start = {};
+        start.ts = 0;
+        start.tid = 20;
+        start.peer_tid = 10;
+        start.kind = kKernelSchedSwitch;
+        start.category = kKernelCatSched;
+        start.a = 0;
+        timeline.on_kernel_event(start, stack);
+
+        TraceEvent enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(enter, stack);
+        stack.on_event(enter);
+
+        KernelEvent out = {};
+        out.ts = 1000;
+        out.tid = 10;
+        out.peer_tid = 20;
+        out.kind = kKernelSchedSwitch;
+        out.category = kKernelCatSched;
+        out.a = 1;  // TASK_INTERRUPTIBLE
+        timeline.on_kernel_event(out, stack);
+
+        KernelEvent wake = {};
+        wake.ts = 5000;
+        wake.tid = 10;
+        wake.peer_tid = 20;
+        wake.kind = kKernelSchedWakeup;
+        wake.category = kKernelCatSched;
+        wake.a = 120;
+        wake.c = 3;
+        timeline.on_kernel_event(wake, stack);
+
+        KernelEvent in = {};
+        in.ts = 6000;
+        in.tid = 20;
+        in.peer_tid = 10;
+        in.kind = kKernelSchedSwitch;
+        in.category = kKernelCatSched;
+        in.a = 0;
+        timeline.on_kernel_event(in, stack);
+
+        TraceEvent exit = make_event(0, 10, kEventExit, 7000);
+        timeline.on_function_event(exit, stack);
+        stack.on_event(exit);
+        timeline.finish(7000, stack);
+
+        report = timeline.format_report(names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@SCHED switch_out") != std::string::npos);
+    CHECK(trace.find("state=S") != std::string::npos);
+    CHECK(trace.find("@SCHED wakeup") != std::string::npos);
+    CHECK(trace.find("@SCHED switch_in") != std::string::npos);
+    CHECK(trace.find("offcpu_ns=5000") != std::string::npos);
+    CHECK(trace.find("runqueue_ns=1000") != std::string::npos);
+    CHECK(report.find("0. main cpu=2.000us runnable=1.000us "
+                      "blocked=4.000us") != std::string::npos);
+    CHECK(report.find("partial=yes") != std::string::npos);
+}
+
+void test_kernel_futex_and_io()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+
+        TraceEvent enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(enter, stack);
+        stack.on_event(enter);
+
+        KernelEvent futex_begin = {};
+        futex_begin.ts = 100;
+        futex_begin.tid = 10;
+        futex_begin.kind = kKernelFutexEnter;
+        futex_begin.category = kKernelCatFutex;
+        futex_begin.a = 202;
+        futex_begin.b = 0x1234;
+        futex_begin.c = 0;  // FUTEX_WAIT
+        futex_begin.d = 1;
+        timeline.on_kernel_event(futex_begin, stack);
+
+        KernelEvent switch_out = {};
+        switch_out.ts = 200;
+        switch_out.tid = 10;
+        switch_out.peer_tid = 20;
+        switch_out.kind = kKernelSchedSwitch;
+        switch_out.category = kKernelCatSched;
+        switch_out.a = 1;
+        timeline.on_kernel_event(switch_out, stack);
+
+        KernelEvent wake = {};
+        wake.ts = 1200;
+        wake.tid = 10;
+        wake.peer_tid = 20;
+        wake.kind = kKernelSchedWakeup;
+        wake.category = kKernelCatSched;
+        timeline.on_kernel_event(wake, stack);
+
+        KernelEvent switch_in = {};
+        switch_in.ts = 1500;
+        switch_in.tid = 20;
+        switch_in.peer_tid = 10;
+        switch_in.kind = kKernelSchedSwitch;
+        switch_in.category = kKernelCatSched;
+        switch_in.a = 0;
+        timeline.on_kernel_event(switch_in, stack);
+
+        KernelEvent futex_end = {};
+        futex_end.ts = 1600;
+        futex_end.tid = 10;
+        futex_end.kind = kKernelFutexExit;
+        futex_end.category = kKernelCatFutex;
+        futex_end.a = 202;
+        futex_end.b = 0;
+        timeline.on_kernel_event(futex_end, stack);
+
+        KernelEvent read_begin = {};
+        read_begin.ts = 1700;
+        read_begin.tid = 10;
+        read_begin.kind = CG_KEV_READ_ENTER;
+        read_begin.category = kKernelCatIo;
+        read_begin.a = 0;
+        read_begin.b = 3;
+        read_begin.d = 64;
+        timeline.on_kernel_event(read_begin, stack);
+
+        KernelEvent read_end = {};
+        read_end.ts = 1900;
+        read_end.tid = 10;
+        read_end.kind = CG_KEV_READ_EXIT;
+        read_end.category = kKernelCatIo;
+        read_end.a = 0;
+        read_end.b = 64;
+        timeline.on_kernel_event(read_end, stack);
+
+        TraceEvent exit = make_event(0, 10, kEventExit, 2000);
+        timeline.on_function_event(exit, stack);
+        stack.on_event(exit);
+        timeline.finish(2000, stack);
+
+        report = timeline.format_report(names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@FUTEX wait_begin") != std::string::npos);
+    CHECK(trace.find("@FUTEX wait_end") != std::string::npos);
+    CHECK(trace.find("duration_ns=1500") != std::string::npos);
+    CHECK(trace.find("@IO read_begin") != std::string::npos);
+    CHECK(trace.find("fd=3 count=64") != std::string::npos);
+    CHECK(trace.find("@IO read_end") != std::string::npos);
+    CHECK(trace.find("duration_ns=200") != std::string::npos);
+    CHECK(report.find("blocked(futex=1.000us") != std::string::npos);
+}
+
+void test_kernel_block_correlation()
+{
+    const std::string path = temp_path();
+    std::string trace;
+    {
+        Output output(path);
+        CallStack stack(make_names(), output, -1, false, false);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+
+        KernelEvent insert = {};
+        insert.ts = 100;
+        insert.kind = CG_KEV_BLOCK_INSERT;
+        insert.category = kKernelCatBlock;
+        insert.a = (8u << 20);  // 8:0
+        insert.b = 1000;
+        insert.c = 8;
+        insert.d = 4096;
+        timeline.on_kernel_event(insert, stack);
+
+        KernelEvent issue = insert;
+        issue.ts = 200;
+        issue.kind = CG_KEV_BLOCK_ISSUE;
+        timeline.on_kernel_event(issue, stack);
+
+        KernelEvent complete = insert;
+        complete.ts = 500;
+        complete.kind = CG_KEV_BLOCK_COMPLETE;
+        complete.d = 0;
+        complete.e = 0;
+        timeline.on_kernel_event(complete, stack);
+
+        timeline.finish(500, stack);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@BLOCK rq_insert dev=8:0") != std::string::npos);
+    CHECK(trace.find("@BLOCK rq_issue dev=8:0") != std::string::npos);
+    CHECK(trace.find("queue_ns=100") != std::string::npos);
+    CHECK(trace.find("@BLOCK rq_complete dev=8:0") != std::string::npos);
+    CHECK(trace.find("device_ns=300") != std::string::npos);
+    CHECK(trace.find("total_ns=400") != std::string::npos);
+}
+
+void test_kernel_output_global()
+{
+    const std::string path = temp_path();
+    {
+        Output output(path);
+        output.emit_kernel(123, 0, kKernelDepthGlobal, "BLOCK", "rq_issue",
+                           "dev=8:0 sector=1");
+        output.emit_kernel(124, 42, kKernelDepthNone, "SCHED", "exit",
+                           "prio=120");
+        output.stop();
+    }
+    const std::string trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("0 : * @BLOCK rq_issue dev=8:0 sector=1") !=
+          std::string::npos);
+    CHECK(trace.find("42 : - @SCHED exit prio=120") != std::string::npos);
+}
+
 }  // namespace
 
 int main()
@@ -1486,6 +1740,10 @@ int main()
     test_histogram_roots();
     test_histogram_recursion();
     test_histogram_max_depth();
+    test_kernel_scheduler();
+    test_kernel_futex_and_io();
+    test_kernel_block_correlation();
+    test_kernel_output_global();
     test_basic_stack();
     test_desync();
     test_sp_unwind_on_enter();

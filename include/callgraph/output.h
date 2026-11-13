@@ -37,15 +37,23 @@ public:
 
     void emit(uint64_t ts, uint32_t tid, uint32_t depth,
               const char* arrow, const std::string& name);
+    void emit_kernel(uint64_t ts, uint32_t tid, int depth,
+                     const char* category, const std::string& event,
+                     const std::string& attributes = {});
     void stop();
     // Stops the writer and appends a trailer (for example the histogram
     // report) directly to the stream, after every queued event line.
     void finish(const std::string& trailer = {});
 
     uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
+    uint64_t dropped_kernel() const
+    {
+        return dropped_kernel_.load(std::memory_order_relaxed);
+    }
 
 private:
     void worker();
+    void enqueue_line(std::string line, bool kernel);
     std::string format_timestamp(uint64_t ts_ns) const;
 
     FILE* fp_ = nullptr;
@@ -63,6 +71,7 @@ private:
 
     std::thread thread_;
     std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> dropped_kernel_{0};
 
     static constexpr size_t kMaxQueuedBytes = 64ull << 20;
 };

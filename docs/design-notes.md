@@ -325,13 +325,17 @@ flame path reuses `TraceParser` and `CallStack`, does not need a timestamp
 anchor, and records each function exit's current root-to-function stack.
 Incomplete frames are marked with a trailing `[incomplete]` pseudo-frame.
 
-## Future work: kernel event correlation
+## Kernel event correlation (P0 MVP)
 
-`docs/kernel-event-design.md` records a proposal for correlating user-space
-function calls with scheduler, futex, I/O, block, memory, network, and PMU
-events. It is design-only: no `--kernel-*` flag or kernel BPF object exists
-yet. The existing function event format and `CallStack` remain the source of
-truth for call trees.
+`docs/kernel-event-design.md` records the kernel-event design. P0 is
+implemented as a separate BPF object and ring buffer, with userspace
+`KernelTimeline` accounting: scheduler switch/wakeup, futex syscalls,
+read/write/fsync-style syscalls, and block request records. Target TIDs are
+taken from `/proc` and learned from uprobe events. Network, memory, PMU,
+interrupts, and offline kernel-line replay remain future work.
+
+The function event format and `CallStack` remain the source of truth for call
+trees; kernel lines use a separate `@CATEGORY` format and never change depth.
 
 ## Phase status
 

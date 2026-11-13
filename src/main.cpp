@@ -31,6 +31,8 @@
 #include "callgraph/event_collector.h"
 #include "callgraph/flame_graph.h"
 #include "callgraph/histogram_report.h"
+#include "callgraph/kernel_probe_manager.h"
+#include "callgraph/kernel_timeline.h"
 #include "callgraph/module_manager.h"
 #include "callgraph/otel_exporter.h"
 #include "callgraph/otlp_json.h"
@@ -67,6 +69,15 @@ struct Options {
     size_t indent_step = 0;
     bool show_args = false;
     bool histogram = false;
+    bool sched = false;
+    bool futex = false;
+    bool io = false;
+    bool block = false;
+    bool kernel_report = false;
+    bool require_kernel_events = false;
+    size_t kernel_buffer_size = 4ull << 20;
+    uint64_t kernel_merge_window_ns = 1000000;
+    std::string kernel_preset;
     size_t probe_batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
     bool dry_run = false;
@@ -124,6 +135,16 @@ void usage(FILE* out)
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
             "      --show-args       show function arguments after names (needs DWARF)\n"
             "      --histogram       append per-root call trees and latency histograms to the output\n"
+            "      --sched           trace scheduler switch/wakeup events\n"
+            "      --futex           trace futex syscall begin/end events\n"
+            "      --io              trace read/write/fsync syscall events\n"
+            "      --block           trace block request events (global)\n"
+            "      --kernel-events L comma-separated: sched,futex,io,block\n"
+            "      --kernel-preset P latency, database, cpu, or full\n"
+            "      --kernel-report   append the per-thread kernel summary\n"
+            "      --kernel-buffer-size N  kernel ring buffer size (default: 4m)\n"
+            "      --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)\n"
+            "      --require-kernel-events  fail if a requested tracepoint is unavailable\n"
             "      --probe-batch-size N  functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
@@ -323,6 +344,32 @@ size_t parse_size(const std::string& text, const std::string& option)
     return static_cast<size_t>(value);
 }
 
+uint64_t parse_duration_ns(const std::string& text, const std::string& option)
+{
+    char* end = nullptr;
+    errno = 0;
+    unsigned long long value = strtoull(text.c_str(), &end, 0);
+    if (errno != 0 || end == text.c_str())
+        usage_error("invalid value for %s: '%s'", option.c_str(), text.c_str());
+
+    if (strncmp(end, "ns", 2) == 0) {
+        end += 2;
+    } else if (strncmp(end, "us", 2) == 0) {
+        value *= 1000ULL;
+        end += 2;
+    } else if (strncmp(end, "ms", 2) == 0) {
+        value *= 1000000ULL;
+        end += 2;
+    } else if (*end == 's') {
+        value *= 1000000000ULL;
+        ++end;
+    }
+
+    if (*end != '\0')
+        usage_error("invalid value for %s: '%s'", option.c_str(), text.c_str());
+    return static_cast<uint64_t>(value);
+}
+
 Options parse_args(int argc, char** argv)
 {
     Options options;
@@ -369,6 +416,24 @@ Options parse_args(int argc, char** argv)
             return argv[++i];
         };
         auto mark_export_option = [&] { options.export_option_used = true; };
+        auto add_kernel_family = [&](const std::string& name) {
+            if (name == "sched") {
+                options.sched = true;
+            } else if (name == "futex") {
+                options.futex = true;
+            } else if (name == "io") {
+                options.io = true;
+            } else if (name == "block") {
+                options.block = true;
+            } else if (name == "all") {
+                options.sched = true;
+                options.futex = true;
+                options.io = true;
+                options.block = true;
+            } else {
+                usage_error("unknown kernel event family '%s'", name.c_str());
+            }
+        };
 
         if (arg == "-o" || arg == "--output") {
             options.output = value();
@@ -401,6 +466,40 @@ Options parse_args(int argc, char** argv)
             options.show_args = true;
         } else if (arg == "--histogram") {
             options.histogram = true;
+        } else if (arg == "--sched") {
+            options.sched = true;
+        } else if (arg == "--futex") {
+            options.futex = true;
+        } else if (arg == "--io") {
+            options.io = true;
+        } else if (arg == "--block") {
+            options.block = true;
+        } else if (arg == "--kernel-events") {
+            const std::string list = value();
+            size_t start = 0;
+            while (start <= list.size()) {
+                const size_t comma = list.find(',', start);
+                const std::string name =
+                    list.substr(start, comma == std::string::npos
+                                           ? std::string::npos
+                                           : comma - start);
+                if (name.empty())
+                    usage_error("--kernel-events contains an empty family");
+                add_kernel_family(name);
+                if (comma == std::string::npos)
+                    break;
+                start = comma + 1;
+            }
+        } else if (arg == "--kernel-preset") {
+            options.kernel_preset = value();
+        } else if (arg == "--kernel-report") {
+            options.kernel_report = true;
+        } else if (arg == "--kernel-buffer-size") {
+            options.kernel_buffer_size = parse_size(value(), arg);
+        } else if (arg == "--kernel-merge-window") {
+            options.kernel_merge_window_ns = parse_duration_ns(value(), arg);
+        } else if (arg == "--require-kernel-events") {
+            options.require_kernel_events = true;
         } else if (arg == "--probe-batch-size") {
             options.probe_batch_size = parse_size(value(), arg);
         } else if (arg == "--ringbuf-size") {
@@ -491,6 +590,39 @@ Options parse_args(int argc, char** argv)
         usage_error("run requires a program (use -- before it)");
     if (options.command == "attach" && options.pid <= 0)
         usage_error("attach requires -p PID");
+
+    if (!options.kernel_preset.empty()) {
+        if (options.kernel_preset == "latency" ||
+            options.kernel_preset == "database") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
+            options.block = true;
+        } else if (options.kernel_preset == "cpu") {
+            options.sched = true;
+        } else if (options.kernel_preset == "full") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
+            options.block = true;
+        } else {
+            usage_error("--kernel-preset must be 'latency', 'database', "
+                        "'cpu', or 'full'");
+        }
+    }
+    const bool kernel_any =
+        options.sched || options.futex || options.io || options.block;
+    if (options.kernel_report && !kernel_any)
+        usage_error("--kernel-report requires a kernel event family");
+    if (options.require_kernel_events && !kernel_any)
+        usage_error("--require-kernel-events requires a kernel event family");
+    if (options.kernel_buffer_size < 4096 ||
+        (options.kernel_buffer_size &
+         (options.kernel_buffer_size - 1)) != 0)
+        usage_error("--kernel-buffer-size must be a power of two and >= 4096");
+    if (options.kernel_merge_window_ns == 0)
+        usage_error("--kernel-merge-window must be > 0");
+
     if (options.max_depth < -1)
         usage_error("--max-depth must be >= -1");
     if (options.probe_batch_size == 0)
@@ -1243,6 +1375,23 @@ void print_version()
         printf("kernel %s\n", uts.release);
 }
 
+std::vector<uint32_t> target_tids(pid_t pid)
+{
+    std::vector<uint32_t> tids;
+    const std::string path = "/proc/" + std::to_string(pid) + "/task";
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(path, error)) {
+        const std::string name = entry.path().filename().string();
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long value = strtoul(name.c_str(), &end, 10);
+        if (errno == 0 && end != name.c_str() && *end == '\0' &&
+            value <= UINT32_MAX)
+            tids.push_back(static_cast<uint32_t>(value));
+    }
+    return tids;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1343,6 +1492,37 @@ int main(int argc, char** argv)
                             options.verbose);
         probes.load();
         probes.set_capture_arguments(options.show_args);
+
+        KernelSelection kernel_selection;
+        kernel_selection.sched = options.sched;
+        kernel_selection.futex = options.futex;
+        kernel_selection.io = options.io;
+        kernel_selection.block = options.block;
+
+        std::unique_ptr<KernelProbeManager> kernel_probes;
+        std::unique_ptr<KernelTimeline> kernel_timeline;
+        if (kernel_selection.any()) {
+            const std::vector<uint32_t> tids = target_tids(target);
+            kernel_probes = std::make_unique<KernelProbeManager>(
+                options.kernel_buffer_size, options.verbose);
+            kernel_probes->load();
+            kernel_probes->set_system_wide(false);
+            kernel_probes->set_target_tids(tids);
+            kernel_probes->attach(kernel_selection,
+                                 options.require_kernel_events);
+            kernel_timeline = std::make_unique<KernelTimeline>(
+                output, options.max_depth, options.verbose);
+            kernel_timeline->set_target_tids(tids);
+            if (options.block)
+                log_warn("block tracepoints are global; unrelated device "
+                         "traffic may be included");
+            log_info("kernel events: %llu tracepoint(s) attached, %llu "
+                     "unavailable",
+                     static_cast<unsigned long long>(
+                         kernel_probes->attached_events()),
+                     static_cast<unsigned long long>(
+                         kernel_probes->missing_events()));
+        }
 
         const bool ret_mode = options.return_mode == "ret";
         ModuleRegistry registry(options, filter, &probes, ret_mode);
@@ -1468,22 +1648,46 @@ int main(int argc, char** argv)
         };
 
         uint64_t last_calibration_ns = ClockConverter::now_monotonic_ns();
+        uint64_t last_target_refresh_ns = last_calibration_ns;
         auto collector_tick = [&]() {
             refresh_modules();
             const uint64_t now = ClockConverter::now_monotonic_ns();
+            if (kernel_probes && now - last_target_refresh_ns >= 250000000ULL) {
+                const std::vector<uint32_t> tids = target_tids(target);
+                kernel_probes->set_target_tids(tids);
+                kernel_timeline->set_target_tids(tids);
+                last_target_refresh_ns = now;
+            }
             if (now - last_calibration_ns >= 30000000000ULL) {
                 clock_converter.recalibrate();
                 last_calibration_ns = now;
             }
         };
 
-        EventCollector collector(probes.events_fd(), stack);
+        EventCollector collector(
+            probes.events_fd(), stack,
+            kernel_probes ? kernel_probes->events_fd() : -1,
+            kernel_timeline.get(), options.kernel_merge_window_ns,
+            [&](uint32_t tid) {
+                if (kernel_probes)
+                    kernel_probes->add_target_tid(tid);
+                if (kernel_timeline)
+                    kernel_timeline->add_target_tid(tid);
+            });
         collector.run(target, is_child ? target : -1, collector_tick);
 
         std::string report;
+        if (kernel_timeline) {
+            kernel_timeline->finish(ClockConverter::now_monotonic_ns(), stack);
+        }
         if (options.histogram) {
             stack.finish_statistics();
             report = format_histogram_report(stack.stats(), registry.names());
+        }
+        if (options.kernel_report ||
+            (options.histogram && kernel_timeline)) {
+            if (kernel_timeline)
+                report += kernel_timeline->format_report(registry.names());
         }
 
         if (span_generator)
@@ -1523,6 +1727,10 @@ int main(int argc, char** argv)
 
         const uint64_t lost = probes.lost_events();
         const uint64_t events = stack.entries() + stack.returns();
+        const uint64_t kernel_lost =
+            kernel_probes ? kernel_probes->lost_events() : 0;
+        const uint64_t kernel_events =
+            kernel_timeline ? kernel_timeline->kernel_events() : 0;
 
         fprintf(stderr,
                 "callgraph: %" PRIu64 " events, %" PRIu64 " entries, "
@@ -1530,9 +1738,22 @@ int main(int argc, char** argv)
                 " desync, %" PRIu64 " stray, %" PRIu64 " dropped\n",
                 events, stack.entries(), stack.returns(), lost, stack.desyncs(),
                 stack.stray_returns(), output.dropped());
+        if (kernel_probes) {
+            fprintf(stderr,
+                    "callgraph: %" PRIu64 " kernel events, %" PRIu64
+                    " kernel seen, %" PRIu64
+                    " kernel lost, %" PRIu64 " kernel dropped, %" PRIu64
+                    " kernel tracepoints\n",
+                    kernel_events, collector.kernel_events_seen(), kernel_lost,
+                    output.dropped_kernel(),
+                    kernel_probes->attached_events());
+        }
 
         if (lost != 0)
             log_warn("ring buffer overflowed: the trace is incomplete");
+        if (kernel_lost != 0)
+            log_warn("kernel ring buffer overflowed: kernel attribution is "
+                     "incomplete");
         if (probes.attach_failures() != 0)
             log_warn("%" PRIu64 " probe(s) failed to attach",
                      probes.attach_failures());

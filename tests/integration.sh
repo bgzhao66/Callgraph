@@ -10,6 +10,7 @@ g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
 g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
 g++ -O0 -g -pthread -o "$TMP/tworoots" "$ROOT/examples/tworoots.cpp"
+g++ -O0 -g -pthread -o "$TMP/kernel" "$ROOT/examples/kernel.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
 g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
 g++ -O0 -g -o "$TMP/ucontext" "$ROOT/examples/ucontext.cpp"
@@ -263,6 +264,20 @@ grep -q ' : 3 -> A(int)' "$TMP/simple.trace"
 grep -q ' : 3 <- A(int)' "$TMP/simple.trace"
 grep -q ' : 0 <- main' "$TMP/simple.trace"
 grep -q '0 lost' "$TMP/simple.err"
+
+echo "== kernel events: scheduler, futex, I/O =="
+"$BIN" run --sched --futex --io --kernel-report \
+    -o "$TMP/kernel.trace" --regex \
+    --include '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel.err"
+grep -q '@SCHED switch_out' "$TMP/kernel.trace"
+grep -q '@SCHED switch_in' "$TMP/kernel.trace"
+grep -q '@FUTEX wait_begin' "$TMP/kernel.trace"
+grep -q '@FUTEX wait_end' "$TMP/kernel.trace"
+grep -q '@IO fsync_begin' "$TMP/kernel.trace"
+grep -q '@IO fsync_end' "$TMP/kernel.trace"
+grep -q '^Kernel:$' "$TMP/kernel.trace"
+grep -q 'blocked(' "$TMP/kernel.trace"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \

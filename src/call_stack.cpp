@@ -240,6 +240,12 @@ void CallStack::finish_statistics()
     }
 }
 
+const std::vector<CallFrame>* CallStack::frames_for(uint32_t tid) const
+{
+    const auto it = threads_.find(tid);
+    return it == threads_.end() ? nullptr : &it->second.frames;
+}
+
 void CallStack::finish_spans(uint64_t stop_ts)
 {
     if (!sink_ || spans_finished_)

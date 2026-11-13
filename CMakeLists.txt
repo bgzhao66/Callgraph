@@ -104,6 +104,41 @@ add_custom_command(
 )
 
 # ---------------------------------------------------------------------------
+# Kernel-event BPF program: separate object so it is loaded only for
+# --sched/--futex/--io/--block and cannot break the function tracer.
+# ---------------------------------------------------------------------------
+set(KERNEL_BPF_OBJ ${CMAKE_BINARY_DIR}/kernel.bpf.o)
+add_custom_command(
+  OUTPUT ${KERNEL_BPF_OBJ}
+  COMMAND ${CLANG_EXECUTABLE} -g -O2 -target bpf
+          ${BPF_ARCH_DEFINE}
+          -I${LIBBPF_PREFIX}/include
+          -I/usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
+          -I${CMAKE_CURRENT_SOURCE_DIR}/bpf
+          -c ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/trace.bpf.c
+          -o ${KERNEL_BPF_OBJ}
+  DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/trace.bpf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel_event.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/common.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/sched.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/syscall.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/block.bpf.h
+  COMMENT "Compiling kernel-event BPF program"
+  VERBATIM
+)
+
+set(KERNEL_BPF_BLOB ${CMAKE_BINARY_DIR}/kernel_bpf_blob.h)
+add_custom_command(
+  OUTPUT ${KERNEL_BPF_BLOB}
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bpf.sh
+          ${KERNEL_BPF_OBJ} ${KERNEL_BPF_BLOB} bpf_kernel_bpf_o
+  DEPENDS ${KERNEL_BPF_OBJ} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bpf.sh
+  COMMENT "Embedding kernel-event BPF program"
+  VERBATIM
+)
+
+# ---------------------------------------------------------------------------
 # User-space tracer.
 # ---------------------------------------------------------------------------
 # OTLP protobuf messages.  gRPC and OTLP/HTTP+protobuf use the generated
@@ -153,7 +188,10 @@ add_executable(callgraph
   src/arguments.cpp
   src/module_manager.cpp
   src/probe_manager.cpp
+  src/kernel_probe_manager.cpp
   src/call_stack.cpp
+  src/kernel_event.cpp
+  src/kernel_timeline.cpp
   src/latency_stats.cpp
   src/histogram_report.cpp
   src/output.cpp
@@ -170,6 +208,7 @@ add_executable(callgraph
   src/flame_graph.cpp
   ${OTLP_PROTO_SRCS}
   ${BPF_BLOB}
+  ${KERNEL_BPF_BLOB}
 )
 
 target_include_directories(callgraph PRIVATE
@@ -223,6 +262,8 @@ if(BUILD_TESTING)
     src/common.cpp
     src/arguments.cpp
     src/call_stack.cpp
+    src/kernel_event.cpp
+    src/kernel_timeline.cpp
     src/latency_stats.cpp
     src/histogram_report.cpp
     src/output.cpp

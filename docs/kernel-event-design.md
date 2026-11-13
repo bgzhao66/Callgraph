@@ -1,9 +1,10 @@
 # Kernel event tracing design
 
-Status: **proposal, not implemented.** This document adapts the
-combined user-space/kernel-event design to the current `callgraph`
-architecture. No `--kernel-*` flag, BPF program, or output format described
-here exists yet.
+Status: **P0 MVP implemented; P1/P2 are proposals.** Implemented today:
+scheduler, futex, I/O syscalls, and block records, with a userspace
+`KernelTimeline` report. Network, memory, PMU, IRQ/workqueue, and offline
+kernel-line replay are not implemented. Sections below describe the full
+target design; Section 16 records the P0 deviations.
 
 ## 1. Summary
 
@@ -1504,3 +1505,46 @@ These need a decision before or during Phase 0/1:
 10. Should kernel text lines be emitted by default when a family is enabled,
     or only with `--kernel-report`? The design assumes raw lines are the
     default artifact.
+
+## 16. P0 implementation notes
+
+The first implementation deliberately narrows the full design:
+
+- **Two BPF objects.** `bpf/trace.bpf.c` is untouched; `bpf/kernel/trace.bpf.c`
+  is loaded only for `--sched/--futex/--io/--block`. Kernel records use a
+  separate ring buffer, and `EventCollector` merges both streams by timestamp
+  with a bounded reorder window.
+- **Stateless BPF.** The kernel object only filters target TIDs and emits
+  fixed 96-byte records. All scheduler/syscall/interval state is in
+  `KernelTimeline`, so the same accounting path can later serve offline
+  replay.
+- **Runtime tracefs offsets.** `KernelProbeManager` parses the `format` file
+  for each enabled tracepoint and fills a `tp_config` array map. BPF reads
+  4- or 8-byte fields at those offsets; no `vmlinux.h` or per-kernel structs.
+- **Target TIDs.** Userspace takes `/proc/<pid>/task` tids and also learns
+  kernel-visible TIDs from function uprobe events. The latter is necessary
+  when the userspace and BPF PID namespaces differ. A switch that happens
+  before the first uprobe is unobserved, so the first interval is marked
+  `partial=yes`.
+- **Accounting.** `KernelTimeline` accounts at every function and kernel event
+  boundary. Counters are aggregated by `(tid, depth, function_id)` rather than
+  per invocation in the MVP; this bounds memory for long attach sessions.
+  The report is per thread, not per root.
+- **Families.** Scheduler (`switch`, `wakeup`, `waking`, `wakeup_new`,
+  `migrate`, `fork`, `exit`), futex enter/exit, the read/write/pread/pwrite/
+  fsync/fdatasync/openat/close/sync_file_range syscalls, and block
+  insert/issue/complete/requeue/error. Block requests are correlated by
+  `(dev, sector, nr_sector)` and report queue/device/total time.
+- **Attribution.** Scheduler and syscall events are direct; block events are
+  global. The timeline never charges a block completion to the running
+  thread. The report prints `partial=yes` when the observed interval does not
+  cover the whole story.
+- **CLI.** Implemented: `--sched`, `--futex`, `--io`, `--block`,
+  `--kernel-events`, `--kernel-preset`, `--kernel-report`,
+  `--kernel-buffer-size`, `--kernel-merge-window`,
+  `--require-kernel-events`. `--children`, `--tid`, and `--system-wide` are
+  not implemented yet.
+- **Deferred.** Network, memory, PMU, IRQ/workqueue, per-root kernel reports,
+  OTel span events for kernel records, and offline kernel-line replay. The
+  text parser currently ignores `@CATEGORY` lines, so function-only export
+  remains correct.

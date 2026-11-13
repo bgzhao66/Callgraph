@@ -116,15 +116,61 @@ void Output::emit(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
     line.append(name);
     line.push_back('\n');
 
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (stop_ || queued_bytes_ + line.size() > kMaxQueuedBytes) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        queued_bytes_ += line.size();
-        queue_.push_back(std::move(line));
+    enqueue_line(std::move(line), false);
+}
+
+void Output::emit_kernel(uint64_t ts, uint32_t tid, int depth,
+                         const char* category, const std::string& event,
+                         const std::string& attributes)
+{
+    const std::string stamp = format_timestamp(ts);
+    const std::string depth_text =
+        depth == -2 ? "*" : depth == -1 ? "-" : std::to_string(depth);
+
+    char suffix[128];
+    const int suffix_length =
+        snprintf(suffix, sizeof(suffix), " %u : %s @%s ", tid,
+                 depth_text.c_str(), category);
+
+    size_t indent = 0;
+    if (indent_step_ != 0 && depth > 0) {
+        constexpr size_t kMaxIndent = 4096;
+        if (indent_step_ > kMaxIndent / static_cast<size_t>(depth))
+            indent = kMaxIndent;
+        else
+            indent = static_cast<size_t>(depth) * indent_step_;
     }
+
+    std::string line;
+    line.reserve(stamp.size() + static_cast<size_t>(suffix_length) + indent +
+                 event.size() + attributes.size() + 2);
+    line.append(stamp);
+    line.append(suffix, static_cast<size_t>(suffix_length));
+    line.append(indent, ' ');
+    line.append(event);
+    if (!attributes.empty()) {
+        line.push_back(' ');
+        line.append(attributes);
+    }
+    line.push_back('\n');
+
+    enqueue_line(std::move(line), true);
+}
+
+void Output::enqueue_line(std::string line, bool kernel)
+{
+    std::lock_guard<std::mutex> lock(mu_);
+    const size_t soft_limit = kMaxQueuedBytes - kMaxQueuedBytes / 4;
+    if (stop_ || queued_bytes_ + line.size() > kMaxQueuedBytes ||
+        (kernel && queued_bytes_ > soft_limit)) {
+        if (kernel)
+            dropped_kernel_.fetch_add(1, std::memory_order_relaxed);
+        else
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    queued_bytes_ += line.size();
+    queue_.push_back(std::move(line));
     cv_.notify_one();
 }
 
