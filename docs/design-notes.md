@@ -92,6 +92,22 @@ observed as a return; work after `co_await` is therefore attributed to the
 resumer. Only stackful coroutines/fibers that switch to a separate stack
 (`ucontext`, Boost.Context, green threads) can look like an unwind.
 
+Go goroutines are the important stackful case: their stacks are heap-allocated,
+relocated when they grow, and switched by the Go scheduler. Two problems follow.
+
+First, `uretprobe` mode can crash the Go runtime. Stack growth and GC walk the
+goroutine stack and validate return PCs; a return address replaced by the
+uprobe trampoline is rejected with `unexpected return pc` / `unknown caller pc`.
+Use `--return-mode=ret` for Go binaries.
+
+Second, even in `ret` mode the shadow stack is per OS thread, not per goroutine.
+Goroutine switches (`Gosched`, channel operations, syscalls, preemption) and
+stack relocation make `rsp` comparisons meaningless: a new stack at a higher
+address looks like an unwind, and frames recorded before a stack copy carry
+stale `rsp` values. Expect false `desync`/`stray` events and incorrect nesting
+across goroutines; deep recursion can be truncated. Correct Go support needs a
+goroutine identity (`g`) and stack-region tracking, which is a larger feature.
+
 ### Filtering and depth
 
 Filters are applied when probes are installed, not when events are printed.

@@ -562,6 +562,16 @@ repairs a lost return event at the next sibling call. Offline text traces do
 not contain stack pointers, so `export --otel`/`--flame` replay keeps the
 return-matching behaviour.
 
+Go goroutines are stackful and need special care. Their stacks are
+heap-allocated, grow by copying, and are switched by the Go scheduler. The
+default `uretprobe` mode can crash the Go runtime during stack growth or GC,
+because the runtime validates return PCs and sees the uretprobe trampoline; use
+`--return-mode=ret` for Go binaries. Even then, the per-thread shadow stack
+cannot follow goroutine switches or stack relocation, so nesting across
+`Gosched`/channel operations and deep recursion is unreliable (expect extra
+`desync`/`stray` events). C++20 coroutines are unaffected by the stack issue:
+their frame is heap-allocated but the body runs on the resumer's stack.
+
 ## Architecture
 
 ```
