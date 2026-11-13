@@ -37,7 +37,12 @@ size_t EdgeKeyHash::operator()(const EdgeKey& key) const noexcept
 void LatencyStats::record(uint32_t tid, uint64_t parent, uint64_t child,
                           uint64_t ns)
 {
-    threads_[tid].edges[{parent, child}].add(ns);
+    ThreadLatency& thread = threads_[tid];
+    const EdgeKey key{parent, child};
+    auto [it, inserted] = thread.edges.try_emplace(key);
+    if (inserted)
+        thread.edge_sequence.emplace(key, thread.next_sequence++);
+    it->second.add(ns);
 }
 
 void LatencyStats::mark_incomplete(uint32_t tid, uint64_t count)

@@ -311,9 +311,10 @@ std::string format_histogram_report(const LatencyStats& stats,
             children[edge.parent].push_back(edge.child);
         }
 
-        auto edge_total = [&](uint64_t parent, uint64_t child) -> uint64_t {
-            const auto it = thread.edges.find({parent, child});
-            return it == thread.edges.end() ? 0 : it->second.total_ns;
+        auto edge_sequence = [&](uint64_t parent,
+                                 uint64_t child) -> uint64_t {
+            const auto it = thread.edge_sequence.find({parent, child});
+            return it == thread.edge_sequence.end() ? UINT64_MAX : it->second;
         };
         auto name_of = [&](uint64_t id) -> std::string {
             return id < names.size() ? names[id] : std::string("<unknown>");
@@ -321,10 +322,10 @@ std::string format_histogram_report(const LatencyStats& stats,
         auto sort_children = [&](uint64_t parent,
                                  std::vector<uint64_t>& kids) {
             std::sort(kids.begin(), kids.end(), [&](uint64_t a, uint64_t b) {
-                const uint64_t total_a = edge_total(parent, a);
-                const uint64_t total_b = edge_total(parent, b);
-                if (total_a != total_b)
-                    return total_a > total_b;
+                const uint64_t seq_a = edge_sequence(parent, a);
+                const uint64_t seq_b = edge_sequence(parent, b);
+                if (seq_a != seq_b)
+                    return seq_a < seq_b;
 
                 const std::string name_a = name_of(a);
                 const std::string name_b = name_of(b);

@@ -212,7 +212,10 @@ of that entry's bucket lines share it.
 The tree is built from immediate caller edges, not full call paths, which keeps
 recursion and diamond-shaped call graphs bounded; a DFS cuts off when a
 function is already on the current path and marks that node `[recursive]`.
-Roots in one thread are separated by a blank line, and each root repeats the
+Siblings, including roots, are emitted in first-call order: `LatencyStats`
+assigns each edge a sequence number on its first completed call, and sibling
+calls on one thread cannot overlap, so completion order is call order. Roots in
+one thread are separated by a blank line, and each root repeats the
 `Tree:`/`Histograms:` pair. A frame that is
 still live at shutdown appears in the tree as `name  [incomplete]` and in the
 histogram section as `calls=0  [incomplete]`, so completed calls made inside it

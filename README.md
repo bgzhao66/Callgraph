@@ -349,12 +349,13 @@ Histograms:
 ```
 
 - One pair of sections per root, with threads sorted by TID and roots within a
-  thread sorted by total time.
+  thread in the order they were first called.
 - The `Tree:` section shows the call structure, using `tree`-style connectors
-  (`├──`, `└──`, `│`). Each node ends with its inclusive total time (the
-  duration of that caller→callee edge, including callees), right-aligned in a
-  single column; one unit is chosen for the whole tree. A node still running
-  at shutdown has no measured duration and shows none.
+  (`├──`, `└──`, `│`). Sibling nodes appear in call order (the order they first
+  occurred), not sorted by duration. Each node ends with its inclusive total
+  time (the duration of that caller→callee edge, including callees),
+  right-aligned in a single column; one unit is chosen for the whole tree. A
+  node still running at shutdown has no measured duration and shows none.
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
   is relative to the root. Entries follow the same DFS/preorder top-to-bottom
   order as the `Tree:` section; the depth number is not a sort key. Calls to

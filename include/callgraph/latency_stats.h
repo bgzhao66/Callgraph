@@ -40,6 +40,11 @@ struct EdgeKeyHash {
 struct ThreadLatency {
     // Histogram per immediate caller -> callee edge.
     std::unordered_map<EdgeKey, LatencyHistogram, EdgeKeyHash> edges;
+    // Sequence in which each edge was first recorded.  Sibling calls on one
+    // thread cannot overlap, so completion order is also call order; the tree
+    // uses it to list siblings in the order they occurred.
+    std::unordered_map<EdgeKey, uint64_t, EdgeKeyHash> edge_sequence;
+    uint64_t next_sequence = 0;
     // Frames still live at shutdown, root-first.  They anchor completed child
     // subtrees whose caller never returned.
     std::vector<uint64_t> live_stack;

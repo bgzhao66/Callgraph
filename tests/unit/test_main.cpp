@@ -349,16 +349,17 @@ void test_histogram_siblings()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("├── B(int)  300ns") != std::string::npos);
-    CHECK(report.find("└── A(int)  100ns") != std::string::npos);
-    CHECK(report.find("├── B(int)  calls=") == std::string::npos);
-    CHECK(report.find("└── A(int)  calls=") == std::string::npos);
-    CHECK(without_histogram_bars(report).find("1. B(int)\n   calls=1") !=
-          std::string::npos);
+    // Siblings follow call order (A occurred before B), not duration.
+    CHECK(report.find("├── A(int)  100ns") != std::string::npos);
+    CHECK(report.find("└── B(int)  300ns") != std::string::npos);
+    CHECK(report.find("├── A(int)  calls=") == std::string::npos);
+    CHECK(report.find("└── B(int)  calls=") == std::string::npos);
     CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
           std::string::npos);
-    // Histogram order follows the tree (B first), not function-name order.
-    CHECK(report.find("1. B(int)") < report.find("1. A(int)"));
+    CHECK(without_histogram_bars(report).find("1. B(int)\n   calls=1") !=
+          std::string::npos);
+    // Histogram order follows the tree, even though B was slower.
+    CHECK(report.find("1. A(int)") < report.find("1. B(int)"));
 }
 
 void test_histogram_roots()
@@ -387,6 +388,8 @@ void test_histogram_roots()
           std::string::npos);
     CHECK(without_histogram_bars(report).find("0. B(int)\n   calls=1") !=
           std::string::npos);
+    // Roots are emitted in call order: A occurred before B.
+    CHECK(report.find("0. A(int)") < report.find("0. B(int)"));
 
     // Each root is a Tree/Histograms pair, emitted in root order, so the
     // second tree starts after the first root's histograms.
