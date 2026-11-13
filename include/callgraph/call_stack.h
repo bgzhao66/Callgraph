@@ -49,8 +49,13 @@ public:
               int max_depth, bool verbose, bool collect_latency = false,
               SpanSink* sink = nullptr);
 
+    // Offline text traces carry an explicit depth column.  When it is present,
+    // an entry at depth d closes any frames at depth >= d first, so a call at
+    // the same depth as the current top is a sibling root rather than a child.
+    // Live tracing passes -1 and derives depth from the stack.
     void on_event(const TraceEvent& event,
-                  const std::string& arguments_override = {});
+                  const std::string& arguments_override = {},
+                  int depth_hint = -1);
 
     // The entry-rsp heuristic assumes one monotonically descending stack per
     // thread.  Runtimes that switch stacks (ucontext, Boost.Context, Go

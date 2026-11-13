@@ -78,7 +78,9 @@ equal to the new `rsp`: they cannot be ancestors of the new call and must have
 been unwound. The dropped frames are closed as `desync` at the new event's
 timestamp, the same way as frames skipped by a matching return. This also
 repairs a lost return event at the next sibling call. Offline text traces have
-no `rsp` (`0`), so replay keeps the old return-matching behaviour.
+no `rsp` (`0`), but they carry an explicit depth column: replay closes frames
+at or above the new entry's depth before pushing, so a depth-0 call after
+another depth-0 call becomes a new root instead of a child.
 
 The check assumes all instrumented calls on a thread use the same stack. A
 handler running on a separate `sigaltstack` with a lower address simply nests

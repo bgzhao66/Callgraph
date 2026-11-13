@@ -77,6 +77,35 @@ assert len(doc["resourceSpans"][0]["scopeSpans"][0]["spans"]) == 0
 PY
 fi
 
+echo "== OTLP offline depth: same-depth entries are siblings =="
+cat > "$TMP/depth.trace" <<'EOF'
+2026-11-12T10:00:00.000000000+00:00 100 : 0 -> pq_getmsgstring
+2026-11-12T10:00:00.000001000+00:00 100 : 0 -> pg_client_to_server
+2026-11-12T10:00:00.000002000+00:00 100 : 0 -> pg_any_to_server
+2026-11-12T10:00:00.000003000+00:00 100 : 1 -> pg_verify_mbstr
+2026-11-12T10:00:00.000004000+00:00 100 : 1 <- pg_verify_mbstr
+2026-11-12T10:00:00.000005000+00:00 100 : 0 <- pg_any_to_server
+2026-11-12T10:00:00.000006000+00:00 100 : 0 -> pq_getmsgend
+2026-11-12T10:00:00.000007000+00:00 100 : 0 <- pq_getmsgend
+EOF
+"$BIN" export --otel --input "$TMP/depth.trace" --output "$TMP/depth.json" \
+    --trace-id-seed 7 2>/dev/null
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TMP/depth.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
+by_name = {s["name"]: s for s in spans}
+# A depth-0 entry after another depth-0 entry is a sibling root, not a child.
+for name in ("pq_getmsgstring", "pg_client_to_server", "pg_any_to_server",
+             "pq_getmsgend"):
+    assert by_name[name].get("parentSpanId") is None, (name, by_name[name])
+# A depth+1 call still nests under its caller.
+assert by_name["pg_verify_mbstr"]["parentSpanId"] == \
+       by_name["pg_any_to_server"]["spanId"], by_name
+PY
+fi
+
 echo "== OTLP offline boot-second anchor =="
 cat > "$TMP/boot.trace" <<'EOF'
 100.000000000 7 : 0 -> main

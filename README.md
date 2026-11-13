@@ -483,7 +483,10 @@ remote, or suspend-affected traces.
 Text conversion limitations: it has no stable function IDs (same-demangled-name
 static functions in different modules can merge), and `--show-args` suffixes
 are stripped and preserved as `callgraph.arguments` only when
-`--input-show-args` is given. Native export avoids both limitations.
+`--input-show-args` is given. Native export avoids both limitations.  The text
+depth column is authoritative for nesting: an entry at the same depth as the
+current top closes that frame first, so consecutive depth-0 calls are siblings
+rather than parent and child.
 
 See `docs/otel-export-design.md` for the full OTel mapping and edge-case semantics.
 
@@ -559,8 +562,9 @@ This is what keeps the reported depth bounded when a program repeatedly
 error path: without it, frames below the jump target accumulate forever because
 the jump target (such as `PostgresMain`) never returns. The same mechanism
 repairs a lost return event at the next sibling call. Offline text traces do
-not contain stack pointers, so `export --otel`/`--flame` replay keeps the
-return-matching behaviour.
+not contain stack pointers, but they do carry the depth column;
+`export --otel`/`--flame` replay closes frames at or above a new entry's depth,
+so two consecutive depth-0 calls become siblings instead of parent and child.
 
 Go goroutines are stackful and need special care. Their stacks are
 heap-allocated, grow by copying, and are switched by the Go scheduler. The

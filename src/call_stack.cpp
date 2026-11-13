@@ -73,7 +73,8 @@ size_t CallStack::close_skipped_frames(uint32_t tid,
 }
 
 void CallStack::on_event(const TraceEvent& event,
-                         const std::string& arguments_override)
+                         const std::string& arguments_override,
+                         int depth_hint)
 {
     if (event.func_id >= names_.size()) {
         ++bad_events_;
@@ -84,6 +85,25 @@ void CallStack::on_event(const TraceEvent& event,
 
     if (event.type == kEventEnter) {
         auto& state = threads_[event.tid];
+
+        // Offline text traces carry the tracer's depth, which is more
+        // authoritative than the reconstructed stack.  An entry at depth d
+        // cannot be nested under a frame at depth >= d: those frames either
+        // returned without a matching exit line or belong to another branch.
+        // Examples are pq_getmsgstring() followed by pg_client_to_server()
+        // at depth 0: the second call is a new root, not a callee of the
+        // first.
+        if (depth_hint >= 0 &&
+            static_cast<size_t>(depth_hint) < state.frames.size()) {
+            const size_t unwound = close_skipped_frames(
+                event.tid, state.frames, static_cast<size_t>(depth_hint),
+                event.ts);
+            if (unwound != 0 && verbose_) {
+                log_verbose("tid %u: entry of %s at depth %d closed %zu "
+                            "frame(s)",
+                            event.tid, name.c_str(), depth_hint, unwound);
+            }
+        }
 
         // A callee's entry rsp is strictly below its caller's, so a recorded
         // frame at or above this rsp cannot be an ancestor: it was unwound by

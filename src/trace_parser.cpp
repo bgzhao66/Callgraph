@@ -1,6 +1,7 @@
 #include "callgraph/trace_parser.h"
 
 #include <cerrno>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
@@ -169,6 +170,17 @@ TraceParseStats parse_text_trace(
             continue;
         }
         const uint32_t tid = static_cast<uint32_t>(tid_value);
+
+        const std::string depth_text = match[3].str();
+        const unsigned long long depth_value =
+            strtoull(depth_text.c_str(), &end, 10);
+        if (end == depth_text.c_str() || *end != '\0' ||
+            depth_value > static_cast<unsigned long long>(INT_MAX)) {
+            ++stats.bad_lines;
+            continue;
+        }
+        const int depth = static_cast<int>(depth_value);
+
         const bool enter = match[4].str() == "->";
 
         std::string name = trim_leading_spaces(match[5].str());
@@ -213,7 +225,9 @@ TraceParseStats parse_text_trace(
         event.tgid = 0;
         event.func_id = id_it->second;
         event.type = enter ? kEventEnter : kEventExit;
-        stack.on_event(event, options.input_show_args ? arguments : std::string{});
+        stack.on_event(event,
+                       options.input_show_args ? arguments : std::string{},
+                       depth);
 
         *last_ts = ts;
         ++stats.event_lines;

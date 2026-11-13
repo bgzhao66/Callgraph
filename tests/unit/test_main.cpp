@@ -1,8 +1,10 @@
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <fstream>
 #include <regex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <unistd.h>
@@ -1234,6 +1236,73 @@ void test_text_parser()
     }
 }
 
+void test_text_parser_depth()
+{
+    const std::string path = temp_path();
+    {
+        std::ofstream out(path);
+        out << "2026-11-12T20:53:55.235475704-08:00 26142 : 0 -> pq_getmsgstring\n"
+               "2026-11-12T20:53:55.235479997-08:00 26142 : 0 -> pg_client_to_server\n"
+               "2026-11-12T20:53:55.235482354-08:00 26142 : 0 -> pg_any_to_server\n"
+               "2026-11-12T20:53:55.235484331-08:00 26142 : 1 -> pg_verify_mbstr\n"
+               "2026-11-12T20:53:55.235489634-08:00 26142 : 1 <- pg_verify_mbstr\n"
+               "2026-11-12T20:53:55.235489964-08:00 26142 : 0 <- pg_any_to_server\n"
+               "2026-11-12T20:53:55.235490584-08:00 26142 : 0 -> pq_getmsgend\n"
+               "2026-11-12T20:53:55.235492084-08:00 26142 : 0 <- pq_getmsgend\n"
+               "2026-11-12T20:53:55.235494293-08:00 26142 : 0 -> exec_simple_query\n";
+    }
+
+    std::vector<std::string> names;
+    std::vector<FunctionMetadata> functions;
+    std::vector<SpanRecord> spans;
+    SpanGeneratorConfig config;
+    config.seed_hi = 5;
+    config.seed_lo = 6;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    SpanGenerator builder(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &builder);
+
+    TraceParseOptions options;
+    uint64_t last_ts = 0;
+    const TraceParseStats stats = parse_text_trace(
+        path, stack, names, functions, nullptr, options, &last_ts);
+    stack.finish_spans(last_ts);
+    unlink(path.c_str());
+
+    CHECK(stats.event_lines == 9);
+    CHECK(stats.entries == 6);
+    CHECK(stats.exits == 3);
+    CHECK(spans.size() == 6);
+
+    std::unordered_map<std::string, const SpanRecord*> by_name;
+    for (const SpanRecord& span : spans)
+        by_name[span.function.name] = &span;
+    auto parent_of = [&](const std::string& name) -> uint64_t {
+        const auto it = by_name.find(name);
+        return it == by_name.end() ? UINT64_MAX
+                                   : it->second->context.parent_span_id;
+    };
+    auto span_id_of = [&](const std::string& name) -> uint64_t {
+        const auto it = by_name.find(name);
+        return it == by_name.end() ? UINT64_MAX : it->second->context.span_id;
+    };
+
+    // The trace says these entries are all at depth 0, so consecutive ones are
+    // siblings: the next depth-0 call must not become the previous one's child.
+    CHECK(parent_of("pq_getmsgstring") == 0);
+    CHECK(parent_of("pg_client_to_server") == 0);
+    CHECK(parent_of("pg_any_to_server") == 0);
+    CHECK(parent_of("pq_getmsgend") == 0);
+    CHECK(parent_of("exec_simple_query") == 0);
+
+    // A real depth+1 callee still nests under its caller.
+    CHECK(parent_of("pg_verify_mbstr") == span_id_of("pg_any_to_server"));
+}
+
 void test_trace_metadata_roundtrip()
 {
     const std::string path = temp_path();
@@ -1315,6 +1384,7 @@ int main()
     test_otlp_encoding();
     test_flame_graph_sink();
     test_text_parser();
+    test_text_parser_depth();
     test_trace_metadata_roundtrip();
 
     if (failures != 0) {

@@ -71,7 +71,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - `CallStack` pairs entry/return events, handles recursion/desync/shutdown, and feeds `SpanSink`. Entry `rsp` lets it drop frames unwound by `longjmp`, exceptions, tail calls, or lost returns; offline text traces carry `rsp=0` and skip that check.
 - `--histogram` emits a `Tree:`/`Histograms:` pair per root (one root's call tree immediately followed by its histogram entries labeled `depth. function` in DFS order); do not reintroduce interleaved bucket lines in the tree.
 - `SpanGenerator` turns call events into OTel spans; `OtelExporter` owns batching/queue/retry/transport; `ClockConverter` maps monotonic timestamps to Unix epoch.
-- `TraceParser` + `callgraph export --otel|--flame` replay text traces through the same `CallStack` path.
+- `TraceParser` + `callgraph export --otel|--flame` replay text traces through the same `CallStack` path; the text depth column closes frames at or above each entry's depth.
 - Source file/line attributes are populated from libdwfl in the ELF resolver.
 
 ## OpenCode session tooling
