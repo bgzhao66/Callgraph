@@ -193,8 +193,11 @@ instead.
 The report is rendered after collection stops and appended to the event stream
 by `Output::finish()`, which joins the writer thread first so the trailer cannot
 overtake queued events. Each root is rendered as a pair: a `Tree:` section with
-only the call structure, followed immediately by a `Histograms:` section with
-one block per `(depth, function)` pair in that tree. Histogram entries follow
+the call structure and each node's inclusive total, followed immediately by a
+`Histograms:` section with one block per `(depth, function)` pair in that tree.
+Tree totals are the per-edge (caller→callee) durations and are right-aligned in
+one column using a single unit for the whole tree; histogram entries aggregate
+the same function at the same depth across callers. Histogram entries follow
 the same DFS/preorder top-to-bottom order as the tree; the depth number is not
 a sort key. Entries are aggregated across callers at the same depth within a
 root. This keeps the tree compact and avoids repeating histogram bars inside

@@ -190,7 +190,9 @@ void test_histogram_report()
           std::string::npos);
     CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
           std::string::npos);
-    CHECK(report.find("└── A(int)\n") != std::string::npos);
+    // Tree nodes end with their inclusive edge total, aligned in one column.
+    CHECK(report.find("main        5.00us") != std::string::npos);
+    CHECK(report.find("└── A(int)  3.00us") != std::string::npos);
     CHECK(report.find("└── A(int)  calls=") == std::string::npos);
     CHECK(report.find("\n   [ ") != std::string::npos);
     // The bar sits under the heading and measures the function's share of the
@@ -231,6 +233,9 @@ void test_histogram_bar_proportional()
     // 300/800 * 40 = 15 dashes; both latency buckets share this one bar.
     CHECK(report.find("1. A(int)\n   ---------------\n"
                       "   calls=2") != std::string::npos);
+    // Tree nodes carry the same inclusive totals, aligned in one column.
+    CHECK(report.find("main        800ns") != std::string::npos);
+    CHECK(report.find("└── A(int)  300ns") != std::string::npos);
 
     size_t bars = 0;
     size_t pos = 0;
@@ -313,8 +318,11 @@ void test_histogram_live_chain()
           std::string::npos);
     CHECK(report.find("incomplete: 2 call(s)") != std::string::npos);
 
-    // B must be nested two levels down in the tree: main -> A -> B.
-    CHECK(report.find("    └── B(int)\n") != std::string::npos);
+    // B must be nested two levels down in the tree: main -> A -> B.  The live
+    // main/A frames have no measured total, so only B carries a time; check
+    // that the padded tree line ends with it.
+    CHECK(std::regex_search(report,
+                            std::regex("    └── B\\(int\\) +100ns")));
     CHECK(report.find("    └── B(int)  calls=") == std::string::npos);
 }
 
@@ -341,8 +349,8 @@ void test_histogram_siblings()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("├── B(int)\n") != std::string::npos);
-    CHECK(report.find("└── A(int)\n") != std::string::npos);
+    CHECK(report.find("├── B(int)  300ns") != std::string::npos);
+    CHECK(report.find("└── A(int)  100ns") != std::string::npos);
     CHECK(report.find("├── B(int)  calls=") == std::string::npos);
     CHECK(report.find("└── A(int)  calls=") == std::string::npos);
     CHECK(without_histogram_bars(report).find("1. B(int)\n   calls=1") !=

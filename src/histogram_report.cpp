@@ -74,13 +74,67 @@ std::string right_justify(const std::string& text, size_t width)
     return std::string(width - text.size(), ' ') + text;
 }
 
-void append_tree_node(std::string& out, const std::string& prefix,
-                      const std::string& name, const std::string& note)
+struct TreeLine {
+    std::string text;
+    uint64_t total_ns = 0;
+    bool has_total = false;
+};
+
+void append_tree_node(std::vector<TreeLine>& lines, const std::string& prefix,
+                      const std::string& name, const std::string& note,
+                      uint64_t total_ns, bool has_total)
 {
-    out += prefix;
-    out += name;
-    out += note;
-    out += '\n';
+    TreeLine line;
+    line.text = prefix + name + note;
+    line.total_ns = total_ns;
+    line.has_total = has_total;
+    lines.push_back(std::move(line));
+}
+
+// Terminal columns, not bytes: the tree connectors are multi-byte UTF-8 but
+// each renders as one column.  Counting code points is enough here.
+size_t display_width(const std::string& text)
+{
+    size_t width = 0;
+    for (const unsigned char ch : text) {
+        if ((ch & 0xC0) != 0x80)
+            ++width;
+    }
+    return width;
+}
+
+// Tree lines are flushed after the whole tree is known so the totals line up
+// in one column.  A single unit is chosen for the tree so the column stays
+// comparable even when individual nodes span different unit ranges.
+void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
+{
+    uint64_t max_total = 0;
+    size_t text_width = 0;
+    for (const TreeLine& line : lines) {
+        text_width = std::max(text_width, display_width(line.text));
+        if (line.has_total)
+            max_total = std::max(max_total, line.total_ns);
+    }
+
+    const UnitScale unit = choose_unit(max_total);
+
+    size_t value_width = 0;
+    for (const TreeLine& line : lines) {
+        if (line.has_total)
+            value_width = std::max(
+                value_width, format_value(line.total_ns, unit).size());
+    }
+
+    for (const TreeLine& line : lines) {
+        out += line.text;
+        if (line.has_total) {
+            out.append(text_width - display_width(line.text), ' ');
+            out += "  ";
+            out += right_justify(format_value(line.total_ns, unit),
+                                 value_width);
+        }
+        out += '\n';
+    }
 }
 
 void merge_histogram(LatencyHistogram& target, const LatencyHistogram& source)
@@ -289,6 +343,8 @@ std::string format_histogram_report(const LatencyStats& stats,
         // paired instead of all trees being emitted before all histograms.
         std::vector<HistogramEntry> entries;
         std::unordered_map<HistogramKey, size_t, HistogramKeyHash> entry_index;
+        // Tree lines are buffered per root so node totals can be aligned.
+        std::vector<TreeLine> tree_lines;
         auto record = [&](uint32_t depth, uint64_t function_id,
                           const LatencyHistogram* hist, bool recursive,
                           bool incomplete) {
@@ -361,8 +417,9 @@ std::string format_histogram_report(const LatencyStats& stats,
 
                 const bool recursive = path.contains(child);
                 record(depth, child, &it->second, recursive, false);
-                append_tree_node(out, line_prefix, name_of(child),
-                                 recursive ? "  [recursive]" : "");
+                append_tree_node(tree_lines, line_prefix, name_of(child),
+                                 recursive ? "  [recursive]" : "",
+                                 it->second.total_ns, true);
                 if (recursive)
                     return;
 
@@ -401,13 +458,14 @@ std::string format_histogram_report(const LatencyStats& stats,
                 if (edge != thread.edges.end()) {
                     record(static_cast<uint32_t>(index), node, &edge->second,
                            false, true);
-                    append_tree_node(out, line_prefix, name_of(node),
-                                     "  [incomplete]");
+                    append_tree_node(tree_lines, line_prefix, name_of(node),
+                                     "  [incomplete]", edge->second.total_ns,
+                                     true);
                 } else {
                     record(static_cast<uint32_t>(index), node, nullptr, false,
                            true);
-                    append_tree_node(out, line_prefix, name_of(node),
-                                     "  [incomplete]");
+                    append_tree_node(tree_lines, line_prefix, name_of(node),
+                                     "  [incomplete]", 0, false);
                 }
 
                 const bool inserted = path.insert(node).second;
@@ -466,6 +524,7 @@ std::string format_histogram_report(const LatencyStats& stats,
 
             entries.clear();
             entry_index.clear();
+            tree_lines.clear();
             path.clear();
 
             out += "Tree:\n";
@@ -474,7 +533,8 @@ std::string format_histogram_report(const LatencyStats& stats,
                 render_live(0, "", false);
             } else {
                 record(0, root, &it->second, false, false);
-                append_tree_node(out, "", name_of(root), "");
+                append_tree_node(tree_lines, "", name_of(root), "",
+                                 it->second.total_ns, true);
                 const bool inserted = path.insert(root).second;
                 const auto kids = children.find(root);
                 if (kids != children.end()) {
@@ -487,6 +547,7 @@ std::string format_histogram_report(const LatencyStats& stats,
                     path.erase(root);
             }
 
+            append_tree_lines(out, tree_lines);
             render_histograms();
         }
 

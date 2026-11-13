@@ -319,11 +319,11 @@ sections: its call tree first, then the histograms for the calls in that tree:
 ```
 === thread 26570 ===
 Tree:
-main
-└── C(int)
-    ├── B(int)
-    │   └── A(int)
-    └── A(int)
+main                25.30us
+└── C(int)           9.30us
+    ├── B(int)       4.10us
+    │   └── A(int)   1.77us
+    └── A(int)       1.44us
 
 Histograms:
 0. main
@@ -350,8 +350,11 @@ Histograms:
 
 - One pair of sections per root, with threads sorted by TID and roots within a
   thread sorted by total time.
-- The `Tree:` section shows only the call structure, using `tree`-style
-  connectors (`├──`, `└──`, `│`).
+- The `Tree:` section shows the call structure, using `tree`-style connectors
+  (`├──`, `└──`, `│`). Each node ends with its inclusive total time (the
+  duration of that caller→callee edge, including callees), right-aligned in a
+  single column; one unit is chosen for the whole tree. A node still running
+  at shutdown has no measured duration and shows none.
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
   is relative to the root. Entries follow the same DFS/preorder top-to-bottom
   order as the `Tree:` section; the depth number is not a sort key. Calls to
