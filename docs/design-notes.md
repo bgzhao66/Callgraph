@@ -84,6 +84,14 @@ The check assumes all instrumented calls on a thread use the same stack. A
 handler running on a separate `sigaltstack` with a lower address simply nests
 without pruning; one at a higher address would be treated as an unwind.
 
+C++20 coroutines do not trigger this check: their frame is heap-allocated and
+the body runs on the resumer's stack, so `rsp` keeps nesting normally. They do
+lose nesting across a suspension, because resumption enters the coroutine body
+at a resume point rather than at the instrumented entry, and the suspend is
+observed as a return; work after `co_await` is therefore attributed to the
+resumer. Only stackful coroutines/fibers that switch to a separate stack
+(`ucontext`, Boost.Context, green threads) can look like an unwind.
+
 ### Filtering and depth
 
 Filters are applied when probes are installed, not when events are printed.
