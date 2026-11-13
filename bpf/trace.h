@@ -20,6 +20,13 @@ struct cg_event {
     __u8  type;
     __u8  pad[7];
 
+    /*
+     * User stack pointer at entry, zero on exit or when unavailable.  A
+     * callee's entry rsp is strictly below its caller's, so userspace uses it
+     * to detect frames unwound by longjmp/exception/tail calls.
+     */
+    __u64 sp;
+
     /* Captured on entry; zeroed on exit. */
     __u64 args[CG_MAX_GP_ARGS];
     __u64 stack[CG_MAX_STACK_ARGS];

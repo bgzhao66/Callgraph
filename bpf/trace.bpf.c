@@ -83,6 +83,18 @@ static __always_inline void capture_arguments(void *ctx, struct cg_event *e)
 #endif
 }
 
+/* User stack pointer at the first instruction; zero if unavailable. */
+static __always_inline __u64 entry_sp(void *ctx)
+{
+#ifdef CALLGRAPH_BPF_X86_64
+    const struct cg_pt_regs *regs = (const struct cg_pt_regs *)ctx;
+    return regs->rsp;
+#else
+    (void)ctx;
+    return 0;
+#endif
+}
+
 static __always_inline int emit_event(void *ctx, __u8 type)
 {
     __u64 id = bpf_get_current_pid_tgid();
@@ -103,11 +115,14 @@ static __always_inline int emit_event(void *ctx, __u8 type)
     e->tgid = (__u32)(id >> 32);
     e->tid = (__u32)id;
     e->type = type;
+    e->sp = 0;
     __builtin_memset(e->pad, 0, sizeof(e->pad));
     __builtin_memset(e->args, 0, sizeof(e->args));
     __builtin_memset(e->stack, 0, sizeof(e->stack));
 
     if (type == CG_EVENT_ENTER) {
+        e->sp = entry_sp(ctx);
+
         __u8 *capture = bpf_map_lookup_elem(&config, &key);
         if (capture && *capture)
             capture_arguments(ctx, e);

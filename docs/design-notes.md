@@ -52,11 +52,37 @@ Two return modes are provided:
   returns, unsafe for exception-based unwinding.
 - `ret`: ordinary uprobes on disassembled `ret` instructions. No return
   address modification, so unwinding is safe. Frames unwound by an exception
-  produce no return event and are later reported as `desync`.
+  produce no return event; they are dropped when the next entry on that thread
+  reveals a shallower stack pointer (see below) or when an older return arrives.
 
 The resolver warns when `.gcc_except_table` is present and `uretprobe` is
 selected. `ret` mode requires libopcodes (`binutils-dev`) and is x86-only for
 now.
+
+### Non-local control flow and rsp resynchronisation
+
+An entry/return shadow stack alone cannot track `longjmp`/`siglongjmp`. Every
+frame between the jump target and the error site is abandoned without executing
+a return, so no `uretprobe`/`ret` event fires. Searching down the stack on a
+later return only repairs this if some frame below the abandoned ones eventually
+returns. When the jump target is a long-lived frame (for example PostgreSQL's
+`PostgresMain`, which `sigsetjmp`s once and stays live for the whole session),
+no such return ever arrives and the abandoned frames accumulate, making the
+reported depth grow without bound.
+
+The BPF program therefore records the user stack pointer (`rsp`) at each entry.
+At the first instruction of a function, `rsp` points at the return address, so a
+callee's entry `rsp` is strictly below its caller's (equal only for a tail call).
+On every entry, `CallStack` drops recorded frames whose `rsp` is greater than or
+equal to the new `rsp`: they cannot be ancestors of the new call and must have
+been unwound. The dropped frames are closed as `desync` at the new event's
+timestamp, the same way as frames skipped by a matching return. This also
+repairs a lost return event at the next sibling call. Offline text traces have
+no `rsp` (`0`), so replay keeps the old return-matching behaviour.
+
+The check assumes all instrumented calls on a thread use the same stack. A
+handler running on a separate `sigaltstack` with a lower address simply nests
+without pruning; one at a higher address would be treated as an unwind.
 
 ### Filtering and depth
 
@@ -75,7 +101,8 @@ the reconstructed depth.
 `--show-args` appends entry-time parameter values to `->` lines. The BPF program
 captures the six SysV x86-64 integer/pointer registers (`rdi`, `rsi`, `rdx`,
 `rcx`, `r8`, `r9`) and six 64-bit words from the user stack at `rsp + 8`; the
-event grows from 32 to 128 bytes. Exit events carry zeroed argument slots.
+event grows from 32 to 136 bytes (the extra word is the entry `rsp`). Exit
+events carry zeroed argument slots.
 
 Parameter names, order, and types come from DWARF, resolved through libdwfl so
 that build-id and `.gnu_debuglink` debug files work. Each parameter is placed

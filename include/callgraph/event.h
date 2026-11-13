@@ -9,6 +9,6 @@ using TraceEvent = cg_event;
 constexpr uint8_t kEventEnter = CG_EVENT_ENTER;
 constexpr uint8_t kEventExit = CG_EVENT_EXIT;
 
-static_assert(sizeof(TraceEvent) == 128, "unexpected event size");
+static_assert(sizeof(TraceEvent) == 136, "unexpected event size");
 
 }  // namespace callgraph

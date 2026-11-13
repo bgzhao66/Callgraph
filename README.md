@@ -545,6 +545,23 @@ Trade-offs:
 Use `ret` for C++ programs that use exceptions, and `uretprobe` for C or
 exception-free programs where the lower probe count matters.
 
+### Non-local control flow (`longjmp`, exceptions, tail calls)
+
+An entry/return pair cannot be observed when control leaves a function without
+executing its return, as with `longjmp`/`siglongjmp`, exception unwinding, or a
+tail call. Every entry event records the user stack pointer (`rsp`). Because a
+callee always enters below its caller, the reconstructor drops any recorded
+frame at or above the new call's `rsp` before pushing it. Those frames are
+reported as `desync`, just like frames skipped by a matching return.
+
+This is what keeps the reported depth bounded when a program repeatedly
+`longjmp`s out of deep call trees, for example PostgreSQL's `PG_TRY`/`ereport`
+error path: without it, frames below the jump target accumulate forever because
+the jump target (such as `PostgresMain`) never returns. The same mechanism
+repairs a lost return event at the next sibling call. Offline text traces do
+not contain stack pointers, so `export --otel`/`--flame` replay keeps the
+return-matching behaviour.
+
 ## Architecture
 
 ```
@@ -570,12 +587,13 @@ CLI / process controller
 ```
 
 The BPF programs are deliberately tiny: they emit `{timestamp, function_id,
-tgid, tid, type}` and do no symbol resolution. Function IDs are per-offset
-cookies; user space owns the ID-to-name table and all stack logic. With
-`--histogram`, the call-stack reconstructor also accumulates per-thread
-caller-to-callee latency histograms; the tree and histogram sections are
-rendered after the collector stops and appended to the same stream by the
-writer.
+tgid, tid, type, entry_rsp}` and do no symbol resolution. Function IDs are
+per-offset cookies; user space owns the ID-to-name table and all stack logic.
+The entry stack pointer lets the reconstructor detect frames unwound by
+`longjmp`, exceptions, tail calls, or lost return events. With `--histogram`,
+the call-stack reconstructor also accumulates per-thread caller-to-callee
+latency histograms; the tree and histogram sections are rendered after the
+collector stops and appended to the same stream by the writer.
 
 Symbol resolution uses the ELF symbol table first (entry points are
 `STT_FUNC` symbols in executable sections). C++ linkage names are demangled
@@ -601,8 +619,8 @@ callgraph: N events, N entries, N returns, N lost, N desync, N stray, N dropped
 ```
 
 - `lost`: ring-buffer reservation failures (the trace is incomplete)
-- `desync`: frames skipped by a return (exception, `longjmp`, tail call, lost
-  event)
+- `desync`: frames skipped by a return, or dropped at an entry whose stack
+  pointer shows they were unwound (exception, `longjmp`, tail call, lost event)
 - `stray`: returns with no matching frame (e.g. attach started mid-stack)
 - `dropped`: output lines dropped because the writer queue was full
 

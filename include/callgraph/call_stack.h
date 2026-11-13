@@ -18,6 +18,8 @@ struct CallFrame {
     uint64_t function_id;
     uint64_t start_ts;
     uint64_t span_token = 0;
+    // User stack pointer at entry.  Zero when unknown (offline text traces).
+    uint64_t sp = 0;
 };
 
 struct ThreadState {
@@ -70,6 +72,12 @@ public:
 private:
     void emit_line(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
                    const std::string& name);
+
+    // Closes frames [keep, frames.size()) from the top down, treating them as
+    // calls that never returned.  Resizes the stack to keep.  Returns the
+    // number of frames closed.
+    size_t close_skipped_frames(uint32_t tid, std::vector<CallFrame>& frames,
+                                size_t keep, uint64_t ts);
 
     const std::vector<std::string>& names_;
     const std::vector<FunctionSignature>* signatures_;

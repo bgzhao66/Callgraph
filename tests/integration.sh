@@ -10,6 +10,7 @@ g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
 g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
+g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
 
 echo "== dry run =="
 dry=$("$BIN" run --dry-run --regex \
@@ -415,6 +416,19 @@ if "$BIN" run --return-mode ret --dry-run -- "$TMP/exceptions" >/dev/null 2>&1; 
 else
     echo "libopcodes not available; skipping ret mode"
 fi
+
+echo "== longjmp resynchronisation =="
+"$BIN" run -o "$TMP/lj.trace" --regex \
+    --include '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
+    >/dev/null 2>"$TMP/lj.err"
+grep -q ' : 0 -> main' "$TMP/lj.trace"
+# Each attempt must start error_path() at depth 1.  Without rsp-based
+# unwinding, the frames abandoned by the previous longjmp would push it
+# deeper on every iteration.
+[ "$(grep -c ' : 1 -> error_path()' "$TMP/lj.trace")" -eq 3 ]
+awk '$5 == "->" && $6 == "error_path()" && $4 != 1 { bad = 1 }
+     END { exit bad }' "$TMP/lj.trace"
+grep -Eq '[1-9][0-9]* desync' "$TMP/lj.err"
 
 echo "== shared library discovered after load =="
 cat > "$TMP/lib.cpp" <<'EOF'

@@ -648,6 +648,98 @@ void test_desync()
     unlink(path.c_str());
 }
 
+void test_sp_unwind_on_enter()
+{
+    const auto names = make_names();
+
+    // Normal nesting: each callee enters at a lower rsp, so nothing is dropped.
+    {
+        const std::string path = temp_path();
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+
+        TraceEvent main_enter = make_event(0, 8, kEventEnter, 1);
+        main_enter.sp = 0x7000;
+        TraceEvent a_enter = make_event(1, 8, kEventEnter, 2);
+        a_enter.sp = 0x6ff0;
+        TraceEvent b_enter = make_event(2, 8, kEventEnter, 3);
+        b_enter.sp = 0x6fe0;
+
+        stack.on_event(main_enter);
+        stack.on_event(a_enter);
+        stack.on_event(b_enter);
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.live_threads() == 1);
+
+        stack.on_event(make_event(2, 8, kEventExit, 4));
+        stack.on_event(make_event(1, 8, kEventExit, 5));
+        stack.on_event(make_event(0, 8, kEventExit, 6));
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.returns() == 3);
+        CHECK(stack.live_threads() == 0);
+        output.stop();
+        unlink(path.c_str());
+    }
+
+    // longjmp back to main, then main calls A again from the same site.  The
+    // stale A and B are below the new call site, so both must be dropped and
+    // the new A must start at depth 1.
+    {
+        const std::string path = temp_path();
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+
+        TraceEvent main_enter = make_event(0, 9, kEventEnter, 1);
+        main_enter.sp = 0x7000;
+        TraceEvent a_enter = make_event(1, 9, kEventEnter, 2);
+        a_enter.sp = 0x6ff0;
+        TraceEvent b_enter = make_event(2, 9, kEventEnter, 3);
+        b_enter.sp = 0x6fe0;
+        TraceEvent a_again = make_event(1, 9, kEventEnter, 4);
+        a_again.sp = 0x6ff0;
+
+        stack.on_event(main_enter);
+        stack.on_event(a_enter);
+        stack.on_event(b_enter);
+        stack.on_event(a_again);
+
+        CHECK(stack.desyncs() == 2);
+        CHECK(stack.entries() == 4);
+
+        stack.on_event(make_event(1, 9, kEventExit, 5));
+        stack.on_event(make_event(0, 9, kEventExit, 6));
+        CHECK(stack.returns() == 2);
+        CHECK(stack.live_threads() == 0);
+        output.stop();
+
+        const auto lines = read_lines(path);
+        CHECK(lines.size() == 6);
+        if (lines.size() == 6) {
+            CHECK(lines[0].find(" : 0 -> main") != std::string::npos);
+            CHECK(lines[1].find(" : 1 -> A(int)") != std::string::npos);
+            CHECK(lines[2].find(" : 2 -> B(int)") != std::string::npos);
+            CHECK(lines[3].find(" : 1 -> A(int)") != std::string::npos);
+            CHECK(lines[4].find(" : 1 <- A(int)") != std::string::npos);
+            CHECK(lines[5].find(" : 0 <- main") != std::string::npos);
+        }
+        unlink(path.c_str());
+    }
+
+    // Offline text traces carry sp == 0 and must not be pruned.
+    {
+        const std::string path = temp_path();
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+        stack.on_event(make_event(0, 10, kEventEnter, 1));
+        stack.on_event(make_event(1, 10, kEventEnter, 2));
+        stack.on_event(make_event(2, 10, kEventEnter, 3));
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.live_threads() == 1);
+        output.stop();
+        unlink(path.c_str());
+    }
+}
+
 void test_max_depth()
 {
     const auto names = make_names();
@@ -767,6 +859,64 @@ void test_span_generator()
         CHECK(live[1].function.name == "main");
         CHECK(live[1].incomplete);
         CHECK(live[1].end_unix_ns == 500);
+    }
+}
+
+void test_span_unwind_on_enter()
+{
+    const std::vector<std::string> names = {"main", "A(int)", "B(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.scope = TraceScope::Root;
+    config.seed_hi = 1;
+    config.seed_lo = 2;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+
+    std::vector<SpanRecord> closed;
+    SpanGenerator builder(config, [&](SpanRecord&& span) {
+        closed.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &builder);
+
+    TraceEvent main_enter = make_event(0, 13, kEventEnter, 100);
+    main_enter.sp = 0x7000;
+    TraceEvent a_enter = make_event(1, 13, kEventEnter, 200);
+    a_enter.sp = 0x6ff0;
+    TraceEvent b_enter = make_event(2, 13, kEventEnter, 300);
+    b_enter.sp = 0x6fe0;
+    TraceEvent a_again = make_event(1, 13, kEventEnter, 400);
+    a_again.sp = 0x6ff0;
+
+    stack.on_event(main_enter);
+    stack.on_event(a_enter);
+    stack.on_event(b_enter);
+    stack.on_event(a_again);  // unwinds B and the stale A
+    stack.on_event(make_event(1, 13, kEventExit, 500));
+    stack.on_event(make_event(0, 13, kEventExit, 600));
+
+    CHECK(closed.size() == 4);
+    if (closed.size() == 4) {
+        CHECK(closed[0].function.name == "B(int)");
+        CHECK(closed[0].incomplete);
+        CHECK(closed[0].reason == SpanCloseReason::Desync);
+        CHECK(closed[0].end_unix_ns == 400);
+        CHECK(closed[1].function.name == "A(int)");
+        CHECK(closed[1].incomplete);
+        CHECK(closed[1].reason == SpanCloseReason::Desync);
+        CHECK(closed[2].function.name == "A(int)");
+        CHECK(!closed[2].incomplete);
+        CHECK(closed[2].reason == SpanCloseReason::Return);
+        CHECK(closed[2].end_unix_ns == 500);
+        CHECK(closed[3].function.name == "main");
+        CHECK(closed[3].reason == SpanCloseReason::Return);
     }
 }
 
@@ -1058,6 +1208,7 @@ int main()
     test_histogram_max_depth();
     test_basic_stack();
     test_desync();
+    test_sp_unwind_on_enter();
     test_max_depth();
     test_wall_clock();
     test_indent();
@@ -1069,6 +1220,7 @@ int main()
     test_argument_stack_float();
     test_call_stack_arguments();
     test_span_generator();
+    test_span_unwind_on_enter();
     test_span_trace_scope();
     test_root_sampling();
     test_otlp_encoding();
