@@ -325,6 +325,14 @@ flame path reuses `TraceParser` and `CallStack`, does not need a timestamp
 anchor, and records each function exit's current root-to-function stack.
 Incomplete frames are marked with a trailing `[incomplete]` pseudo-frame.
 
+## Future work: kernel event correlation
+
+`docs/kernel-event-design.md` records a proposal for correlating user-space
+function calls with scheduler, futex, I/O, block, memory, network, and PMU
+events. It is design-only: no `--kernel-*` flag or kernel BPF object exists
+yet. The existing function event format and `CallStack` remain the source of
+truth for call trees.
+
 ## Phase status
 
 | Phase | Status |

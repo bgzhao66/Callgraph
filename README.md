@@ -764,6 +764,7 @@ third_party/libbpf/             vendored libbpf v1.5.0
 third_party/opentelemetry-proto/ vendored OTLP protobuf definitions
 docs/design-notes.md            design decisions and phase plan
 docs/otel-export-design.md      OTEL/Jaeger export design
+docs/kernel-event-design.md     kernel event tracing design (proposal)
 ```
 
 ## Legacy prototype
