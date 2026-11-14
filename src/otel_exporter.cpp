@@ -34,6 +34,13 @@ size_t span_cost(const SpanRecord& span)
            span.function.module_build_id.size() + span.arguments.size();
 }
 
+void add_drop(std::array<std::atomic<uint64_t>, kOtelDropReasonCount>& counts,
+              OtelDropReason reason, uint64_t amount = 1)
+{
+    counts[static_cast<size_t>(reason)].fetch_add(amount,
+                                                  std::memory_order_relaxed);
+}
+
 std::string grpc_body(const std::string& payload)
 {
     std::string body;
@@ -93,6 +100,33 @@ size_t grpc_header_callback(char* buffer, size_t size, size_t count,
 
 }  // namespace
 
+const char* otel_drop_reason_name(OtelDropReason reason)
+{
+    switch (reason) {
+    case OtelDropReason::QueueSpansFull:
+        return "queue-spans-full";
+    case OtelDropReason::QueueBytesFull:
+        return "queue-bytes-full";
+    case OtelDropReason::NoSink:
+        return "no-sink";
+    case OtelDropReason::BatchEncodeFailed:
+        return "encode-failed";
+    case OtelDropReason::SendFailed:
+        return "send-failed";
+    case OtelDropReason::WriteFailed:
+        return "write-failed";
+    }
+    return "unknown";
+}
+
+uint64_t OtelDropStats::total() const
+{
+    uint64_t total = 0;
+    for (uint64_t count : counts)
+        total += count;
+    return total;
+}
+
 bool otlp_http_available()
 {
 #ifdef CALLGRAPH_HAVE_CURL
@@ -103,7 +137,10 @@ bool otlp_http_available()
 }
 
 struct OtelExporter::HttpWorker {
-    explicit HttpWorker(const OtelConfig& config) : config_(config)
+    HttpWorker(const OtelConfig& config,
+               std::array<std::atomic<uint64_t>, kOtelDropReasonCount>&
+                   drop_counts)
+        : config_(config), drop_counts_(drop_counts)
     {
         thread_ = std::thread(&HttpWorker::run, this);
     }
@@ -118,9 +155,14 @@ struct OtelExporter::HttpWorker {
         const size_t cost = span_cost(span);
         {
             std::lock_guard<std::mutex> lock(mu_);
-            if (queue_.size() >= config_.queue_spans ||
-                queued_bytes_ + cost > config_.batch_bytes * 8) {
+            if (queue_.size() >= config_.queue_spans) {
                 dropped_.fetch_add(1, std::memory_order_relaxed);
+                add_drop(drop_counts_, OtelDropReason::QueueSpansFull);
+                return;
+            }
+            if (queued_bytes_ + cost > config_.batch_bytes * 8) {
+                dropped_.fetch_add(1, std::memory_order_relaxed);
+                add_drop(drop_counts_, OtelDropReason::QueueBytesFull);
                 return;
             }
             queued_bytes_ += cost;
@@ -164,6 +206,7 @@ private:
     bool post(const std::string& body, const char* content_type, bool grpc);
 
     OtelConfig config_;
+    std::array<std::atomic<uint64_t>, kOtelDropReasonCount>& drop_counts_;
     std::mutex mu_;
     std::condition_variable cv_;
     std::deque<SpanRecord> queue_;
@@ -239,8 +282,11 @@ bool OtelExporter::HttpWorker::send(const std::vector<SpanRecord>& batch)
         break;
     }
 
-    if (body.empty() && !batch.empty())
+    if (body.empty() && !batch.empty()) {
+        add_drop(drop_counts_, OtelDropReason::BatchEncodeFailed,
+                 batch.size());
         return false;
+    }
 
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (post(body, content_type, grpc))
@@ -252,6 +298,8 @@ bool OtelExporter::HttpWorker::send(const std::vector<SpanRecord>& batch)
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
+
+    add_drop(drop_counts_, OtelDropReason::SendFailed, batch.size());
 
     if (!warned_) {
         warned_ = true;
@@ -392,7 +440,7 @@ OtelExporter::OtelExporter(OtelConfig config) : config_(std::move(config))
                 fail("OTLP/gRPC requires libcurl with HTTP/2 support");
         }
 #endif
-        http_ = std::make_unique<HttpWorker>(config_);
+        http_ = std::make_unique<HttpWorker>(config_, drop_counts_);
     }
 }
 
@@ -410,7 +458,16 @@ void OtelExporter::export_span(SpanRecord&& span)
         http_->enqueue(std::move(span));
     } else if (!has_output()) {
         dropped_.fetch_add(1, std::memory_order_relaxed);
+        add_drop(drop_counts_, OtelDropReason::NoSink);
     }
+}
+
+OtelDropStats OtelExporter::drop_stats() const
+{
+    OtelDropStats stats;
+    for (size_t i = 0; i < kOtelDropReasonCount; ++i)
+        stats.counts[i] = drop_counts_[i].load(std::memory_order_relaxed);
+    return stats;
 }
 
 void OtelExporter::write_file()
@@ -424,6 +481,8 @@ void OtelExporter::write_file()
         log_warn("cannot open OTLP output %s: %s", config_.output_path.c_str(),
                  errno_string(errno).c_str());
         failed_.fetch_add(file_spans_.size(), std::memory_order_relaxed);
+        add_drop(drop_counts_, OtelDropReason::WriteFailed,
+                 file_spans_.size());
         return;
     }
     const size_t written = fwrite(body.data(), 1, body.size(), file);
@@ -431,6 +490,8 @@ void OtelExporter::write_file()
         log_warn("OTLP output write failed for %s: %s",
                  config_.output_path.c_str(), errno_string(errno).c_str());
         failed_.fetch_add(file_spans_.size(), std::memory_order_relaxed);
+        add_drop(drop_counts_, OtelDropReason::WriteFailed,
+                 file_spans_.size());
     } else {
         exported_.fetch_add(file_spans_.size(), std::memory_order_relaxed);
     }

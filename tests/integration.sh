@@ -134,6 +134,55 @@ assert len(doc["resourceSpans"][0]["scopeSpans"][0]["spans"]) == 0
 PY
 fi
 
+echo "== OTLP drop reasons =="
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$BIN" "$TMP" <<'PY'
+import http.server, os, re, subprocess, sys, threading, time
+
+binary, tmp = sys.argv[1:3]
+trace = os.path.join(tmp, "drop.trace")
+with open(trace, "w") as f:
+    f.write("2026-11-14T00:00:00.000000000+00:00 1 : 0 -> root\n")
+    for i in range(40):
+        stamp = f"2026-11-14T00:00:00.{i + 1:09d}+00:00"
+        f.write(f"{stamp} 1 : 1 -> child{i}\n")
+        f.write(f"{stamp} 1 : 1 <- child{i}\n")
+    f.write("2026-11-14T00:00:01.000000000+00:00 1 : 0 <- root\n")
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(n)
+        time.sleep(0.1)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"{}")
+    def log_message(self, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+    result = subprocess.run(
+        [binary, "export", "--otel", "--input", trace,
+         "--endpoint", f"http://127.0.0.1:{server.server_port}",
+         "--queue-spans", "1", "--batch-size", "1",
+         "--flush-interval", "10", "--timeout-ms", "1000"],
+        capture_output=True, text=True, timeout=60)
+finally:
+    server.shutdown()
+    thread.join(timeout=5)
+    server.server_close()
+
+assert result.returncode == 0, result.stderr
+assert "OTLP drop reasons:" in result.stderr, result.stderr
+assert re.search(r"queue-spans-full=[1-9][0-9]*", result.stderr), result.stderr
+assert re.search(r"(\d+) dropped", result.stderr), result.stderr
+PY
+fi
+
 echo "== OTLP offline depth: same-depth entries are siblings =="
 cat > "$TMP/depth.trace" <<'EOF'
 2026-11-12T10:00:00.000000000+00:00 100 : 0 -> pq_getmsgstring

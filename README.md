@@ -922,6 +922,16 @@ failed span writes:
 callgraph: OTLP 5 span(s) exported, 0 dropped, 0 failed
 ```
 
+If spans were dropped, a second line breaks the count down by reason:
+
+```
+callgraph: OTLP drop reasons: queue-bytes-full=123 send-failed=4
+```
+
+The reasons are `queue-spans-full`, `queue-bytes-full`, `no-sink`,
+`encode-failed`, `send-failed`, and `write-failed`. Offline export reports
+`dropped` and the same reason breakdown.
+
 ## Troubleshooting
 
 **`failed to load BPF object: Operation not permitted`** — run as root or grant

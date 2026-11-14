@@ -922,6 +922,25 @@ bool is_http_url(const std::string& endpoint)
            endpoint.rfind("https://", 0) == 0;
 }
 
+void print_otel_drop_stats(const OtelExporter& exporter)
+{
+    const OtelDropStats stats = exporter.drop_stats();
+    if (stats.total() == 0)
+        return;
+
+    std::string reasons;
+    for (size_t i = 0; i < kOtelDropReasonCount; ++i) {
+        if (stats.counts[i] == 0)
+            continue;
+        if (!reasons.empty())
+            reasons.push_back(' ');
+        reasons += otel_drop_reason_name(static_cast<OtelDropReason>(i));
+        reasons.push_back('=');
+        reasons += std::to_string(stats.counts[i]);
+    }
+    fprintf(stderr, "callgraph: OTLP drop reasons: %s\n", reasons.c_str());
+}
+
 void fill_host_otel_config(OtelConfig& config)
 {
     struct utsname uts = {};
@@ -1232,9 +1251,10 @@ int run_otel_export(const ExportOptions& options)
     fprintf(stderr,
             "callgraph: converted %" PRIu64 " events (%" PRIu64
             " entries, %" PRIu64 " returns), %" PRIu64 " OTLP span(s), "
-            "%" PRIu64 " failed\n",
+            "%" PRIu64 " dropped, %" PRIu64 " failed\n",
             stats.event_lines, stats.entries, stats.exits,
-            exporter.exported(), exporter.failed());
+            exporter.exported(), exporter.dropped(), exporter.failed());
+    print_otel_drop_stats(exporter);
 
     return exporter.failed() != 0 && options.fail_on_error ? 1 : 0;
 }
@@ -1876,6 +1896,7 @@ int main(int argc, char** argv)
                     "%" PRIu64 " dropped, %" PRIu64 " failed\n",
                     exporter->exported(), exporter->dropped(),
                     exporter->failed());
+            print_otel_drop_stats(*exporter);
         }
         if (span_generator && span_generator->spans_sampled_out() != 0) {
             fprintf(stderr, "callgraph: sampled out %" PRIu64 " span(s)\n",

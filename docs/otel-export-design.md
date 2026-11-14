@@ -273,7 +273,9 @@ Function tracing can produce very high span rates. The exporter provides:
 - batching (`--batch-size`, `--flush-interval`);
 - a bounded span queue;
 - retry with backoff;
-- dropped/failed counters;
+- dropped/failed counters, broken down by reason (`queue-spans-full`,
+  `queue-bytes-full`, `no-sink`, `encode-failed`, `send-failed`,
+  `write-failed`);
 - instrumentation filters (`--include`, `--exclude`);
 - root-trace sampling (`--sample-rate 0..1`).
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,26 @@ enum class OtlpProtocol {
     JsonHttp,
     ProtobufHttp,
     Grpc,
+};
+
+enum class OtelDropReason {
+    QueueSpansFull,
+    QueueBytesFull,
+    NoSink,
+    BatchEncodeFailed,
+    SendFailed,
+    WriteFailed,
+};
+
+constexpr size_t kOtelDropReasonCount =
+    static_cast<size_t>(OtelDropReason::WriteFailed) + 1;
+
+const char* otel_drop_reason_name(OtelDropReason reason);
+
+struct OtelDropStats {
+    std::array<uint64_t, kOtelDropReasonCount> counts{};
+
+    uint64_t total() const;
 };
 
 struct OtelConfig {
@@ -62,6 +83,7 @@ public:
     uint64_t exported() const { return exported_.load(std::memory_order_relaxed); }
     uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
     uint64_t failed() const { return failed_.load(std::memory_order_relaxed); }
+    OtelDropStats drop_stats() const;
     bool has_endpoint() const { return !config_.endpoint.empty(); }
     bool has_output() const { return !config_.output_path.empty(); }
 
@@ -71,12 +93,13 @@ private:
     OtelConfig config_;
     std::vector<SpanRecord> file_spans_;
 
-    struct HttpWorker;
-    std::unique_ptr<HttpWorker> http_;
-
     std::atomic<uint64_t> exported_{0};
     std::atomic<uint64_t> dropped_{0};
     std::atomic<uint64_t> failed_{0};
+    std::array<std::atomic<uint64_t>, kOtelDropReasonCount> drop_counts_{};
+
+    struct HttpWorker;
+    std::unique_ptr<HttpWorker> http_;
     bool finished_ = false;
 };
 

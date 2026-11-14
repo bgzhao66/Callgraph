@@ -1268,6 +1268,27 @@ void test_span_trace_scope()
         CHECK(thread[0].context.trace_id == thread[1].context.trace_id);
 }
 
+void test_otel_drop_stats()
+{
+    CHECK(std::string(otel_drop_reason_name(OtelDropReason::QueueSpansFull)) ==
+          "queue-spans-full");
+    CHECK(std::string(otel_drop_reason_name(OtelDropReason::QueueBytesFull)) ==
+          "queue-bytes-full");
+    CHECK(std::string(otel_drop_reason_name(OtelDropReason::NoSink)) ==
+          "no-sink");
+    CHECK(std::string(otel_drop_reason_name(
+              OtelDropReason::BatchEncodeFailed)) == "encode-failed");
+    CHECK(std::string(otel_drop_reason_name(OtelDropReason::SendFailed)) ==
+          "send-failed");
+    CHECK(std::string(otel_drop_reason_name(OtelDropReason::WriteFailed)) ==
+          "write-failed");
+
+    OtelDropStats stats;
+    stats.counts[static_cast<size_t>(OtelDropReason::QueueSpansFull)] = 2;
+    stats.counts[static_cast<size_t>(OtelDropReason::SendFailed)] = 3;
+    CHECK(stats.total() == 5);
+}
+
 void test_otlp_encoding()
 {
     SpanRecord span;
@@ -2125,6 +2146,7 @@ int main()
     test_span_trace_scope();
     test_root_sampling();
     test_otlp_encoding();
+    test_otel_drop_stats();
     test_flame_graph_sink();
     test_text_parser();
     test_text_parser_depth();
