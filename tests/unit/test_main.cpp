@@ -200,9 +200,10 @@ void test_histogram_report()
           std::string::npos);
     CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=
           std::string::npos);
-    // Tree nodes end with their inclusive edge total, aligned in one column.
-    CHECK(report.find("main        5.00us") != std::string::npos);
-    CHECK(report.find("└── A(int)  3.00us") != std::string::npos);
+    // Tree nodes end with their inclusive edge total, joined to the label by a
+    // middle-dot leader and aligned in per-unit columns.
+    CHECK(report.find("main······· 5.00us") != std::string::npos);
+    CHECK(report.find("└── A(int)· 3.00us") != std::string::npos);
     CHECK(report.find("└── A(int)  calls=") == std::string::npos);
     CHECK(report.find("\n   [ ") != std::string::npos);
     // The bar sits under the heading and measures the function's share of the
@@ -243,9 +244,9 @@ void test_histogram_bar_proportional()
     // 300/800 * 40 = 15 dashes; both latency buckets share this one bar.
     CHECK(report.find("1. A(int)\n   ---------------\n"
                       "   calls=2") != std::string::npos);
-    // Tree nodes carry the same inclusive totals, aligned in one column.
-    CHECK(report.find("main        800ns") != std::string::npos);
-    CHECK(report.find("└── A(int)  300ns") != std::string::npos);
+    // Tree nodes carry the same inclusive totals, aligned in per-unit columns.
+    CHECK(report.find("main······· 800ns") != std::string::npos);
+    CHECK(report.find("└── A(int)· 300ns") != std::string::npos);
 
     size_t bars = 0;
     size_t pos = 0;
@@ -279,10 +280,10 @@ void test_histogram_tree_units()
     }
     unlink(path.c_str());
 
-    CHECK(report.find("main        8.40ms") != std::string::npos);
+    CHECK(report.find("main······· 8.40ms") != std::string::npos);
     // Each unit has its own column, so the finer ns value is indented past the
     // ms column instead of sharing its right edge.
-    CHECK(report.find("└── A(int)        100ns") != std::string::npos);
+    CHECK(report.find("└── A(int)······· 100ns") != std::string::npos);
     // The long root must not force a coarser unit on the short child.
     CHECK(report.find("0.00ms") == std::string::npos);
 }
@@ -314,9 +315,9 @@ void test_histogram_tree_unit_columns()
 
     // Equal units share a column, so the two ms values start at the same
     // display column; the finer ns value is indented past the ms column.
-    CHECK(report.find("main            20.00ms") != std::string::npos);
-    CHECK(report.find("└── A(int)      10.00ms") != std::string::npos);
-    CHECK(report.find("    └── B(int)         800ns") != std::string::npos);
+    CHECK(report.find("main··········· 20.00ms") != std::string::npos);
+    CHECK(report.find("└── A(int)····· 10.00ms") != std::string::npos);
+    CHECK(report.find("    └── B(int)········ 800ns") != std::string::npos);
 }
 
 void test_histogram_incomplete()
@@ -395,7 +396,7 @@ void test_histogram_live_chain()
     // main/A frames have no measured total, so only B carries a time; check
     // that the padded tree line ends with it.
     CHECK(std::regex_search(report,
-                            std::regex("    └── B\\(int\\) +100ns")));
+                            std::regex("    └── B\\(int\\).* 100ns")));
     CHECK(report.find("    └── B(int)  calls=") == std::string::npos);
 }
 
@@ -423,8 +424,8 @@ void test_histogram_siblings()
     unlink(path.c_str());
 
     // Siblings follow call order (A occurred before B), not duration.
-    CHECK(report.find("├── A(int)  100ns") != std::string::npos);
-    CHECK(report.find("└── B(int)  300ns") != std::string::npos);
+    CHECK(report.find("├── A(int)· 100ns") != std::string::npos);
+    CHECK(report.find("└── B(int)· 300ns") != std::string::npos);
     CHECK(report.find("├── A(int)  calls=") == std::string::npos);
     CHECK(report.find("└── B(int)  calls=") == std::string::npos);
     CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=1") !=

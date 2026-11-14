@@ -110,10 +110,14 @@ size_t display_width(const std::string& text)
 // Each node picks the unit that suits its own duration, and each unit gets its
 // own fixed-width column (s, ms, us, ns from left to right).  Equal units
 // therefore always start in the same column, while a finer unit is indented
-// past the coarser columns it follows.
+// past the coarser columns it follows.  A leader of middle dots connects each
+// node to its total without competing with the tree connectors.
 void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
 {
     constexpr int kUnitCount = 4;
+    // U+00B7 MIDDLE DOT: one display column, vertically centered, and lighter
+    // than a period.
+    constexpr const char* kLeaderDot = "\xC2\xB7";
 
     size_t text_width = 0;
     std::array<size_t, kUnitCount> column_width{};
@@ -138,15 +142,26 @@ void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
             offset += column_width[i];
     }
 
+    auto append_leader = [&](size_t width) {
+        if (width == 0)
+            return;
+        // Keep one space before the total so the leader never touches it.
+        for (size_t i = 0; i + 1 < width; ++i)
+            out += kLeaderDot;
+        out.push_back(' ');
+    };
+
     for (const TreeLine& line : lines) {
         out += line.text;
         if (line.has_total) {
             const UnitScale unit = choose_unit(line.total_ns);
-            out.append(text_width - display_width(line.text), ' ');
-            out += "  ";
-            out.append(column_offset[unit.rank], ' ');
-            out += right_justify(format_value(line.total_ns, unit),
-                                 column_width[unit.rank]);
+            const std::string value = format_value(line.total_ns, unit);
+            const size_t leader =
+                text_width - display_width(line.text) + 2 +
+                column_offset[unit.rank] +
+                (column_width[unit.rank] - value.size());
+            append_leader(leader);
+            out += value;
         }
         out += '\n';
     }

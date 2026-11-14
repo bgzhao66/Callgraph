@@ -375,8 +375,9 @@ Histograms:
   child under a long root is not rounded down to `0.00`. Units are laid out in
   fixed columns ordered `s`, `ms`, `us`, `ns`: values with the same unit start
   in the same column, and a finer unit is indented past the coarser columns
-  before it. A node still running at shutdown has no measured duration and
-  shows none.
+  before it. A light leader of middle dots (`·`) connects each label to its
+  total. A node still running at shutdown has no measured duration and shows
+  none.
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
   is relative to the root. Entries follow the same DFS/preorder top-to-bottom
   order as the `Tree:` section; the depth number is not a sort key. Calls to
