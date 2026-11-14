@@ -871,8 +871,9 @@ After the core families:
 | `IO` | `writeback:*`, filesystem `fsync` probes | causal |
 | `LOCK` | selected `lock:*` tracepoints | diagnostic, not latency |
 
-These are not enabled by `--events` presets except `full`. Some can
-produce very high event volumes and are documented as such.
+These are not enabled by the other presets; `full` will include them once
+implemented. Some can produce very high event volumes and are documented as
+such.
 
 ## 7. Discovery and BPF implementation
 
@@ -1036,7 +1037,8 @@ unchanged. `--kernel` alone selects the `latency` preset. In the unified
 its family shortcuts and modifiers are indented beneath it.
 
 ```text
-# Default families (latency preset: sched, futex, io, block)
+# Default scopes (latency preset: sched, futex, io, block, net syscalls,
+# direct reclaim; no page-fault points or global TCP retransmits)
 callgraph attach -p 4242 --kernel
 
 # Scheduler only
@@ -1050,8 +1052,9 @@ callgraph attach -p 4242 --kernel --io --block
 
 # Presets
 callgraph attach -p 4242 --kernel --preset latency
-callgraph attach -p 4242 --kernel --preset database
-callgraph attach -p 4242 --kernel --preset cpu
+callgraph attach -p 4242 --kernel --preset proxy
+callgraph attach -p 4242 --kernel --preset storage
+callgraph attach -p 4242 --kernel --preset computation
 callgraph attach -p 4242 --kernel --preset full
 
 # Explicit family list
@@ -1074,7 +1077,7 @@ callgraph attach --kernel --system-wide --sched
 | `--kernel` | master switch; enables kernel tracing and defaults to `latency` |
 | `--events LIST` | comma-separated `sched,futex,io,block,net,mm,pmu,irq,work` or `all` |
 | `--sched`, `--futex`, `--io`, `--block`, `--network`, `--memory` | family sugar |
-| `--preset NAME` | `latency`, `database`, `cpu`, `full` |
+| `--preset NAME` | `latency`, `proxy`, `storage`, `computation`, `full` |
 | `--tid TID` | restrict to explicit TIDs (repeatable/comma-separated) |
 | `--children` | follow child processes as well as threads |
 | `--system-wide` | bypass target filtering; no user-stack attribution |
@@ -1122,19 +1125,42 @@ Validation:
 - `--dry-run` lists selected functions and available kernel events without
   attaching.
 
-Presets:
+Presets select fine-grained scopes, not just whole families. The public
+family flags stay coarse: `--memory` means reclaim + faults, and `--network`
+means network syscalls + TCP retransmits.
 
-| Preset | Families |
-| --- | --- |
-| `latency` | sched, futex, io, block, mm |
-| `database` | sched, futex, io, block, mm |
-| `cpu` | sched, pmu |
-| `full` | sched, futex, io, block, net, mm, irq, work |
+| Preset | Intended workload | sched | futex | io | block | reclaim | faults | net | tcp |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `latency` (default) | generic request latency | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | — |
+| `proxy` | proxies, gateways, load balancers | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
+| `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| `computation` | CPU-bound workers, batch, numeric | ✓ | ✓ | — | — | ✓ | ✓ | — | — |
+| `full` | everything implemented | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-`latency` and `database` are intentionally the same for the MVP; they can
-diverge once filesystem-specific probes are added. `cpu` currently enables
-only sched because the PMU collector is deferred, and `full` enables the
-implemented families (irq/work are still future work).
+Rationale:
+
+- `latency` covers every scope that produces a wait: runqueue/off-CPU, lock
+  waits, syscall I/O, block service time, direct reclaim, and network
+  syscalls. It excludes page-fault points and global TCP retransmits because
+  they are high-volume and either not intervals or not attributable to a
+  function. This keeps the default stream bounded and keeps `partial`
+  reasoning clean.
+- `proxy` adds global TCP retransmits and drops block. It keeps io because
+  socket `read`/`write` and `epoll_wait` interleave with proxying, and keeps
+  sched/futex/reclaim because proxies still suffer scheduling, lock, and
+  allocator stalls.
+- `storage` keeps io, block, sched, futex, and reclaim. It drops network and
+  page-fault points.
+- `computation` keeps sched, futex, reclaim, and page faults. It drops syscall
+  I/O, block, and network. PMU counters will join this preset when implemented.
+- `full` enables every implemented scope, including the global/high-volume
+  ones. Future PMU, IRQ, and workqueue scopes join here.
+
+Presets are additive with explicit family flags and `--events`: explicit
+`--memory` adds faults even under `latency`, and explicit `--network` adds TCP
+retransmits even under `latency`. Presets never disable an explicitly
+requested scope and never change `--trace-scope`; that option remains `root`
+unless set.
 
 ## 9. Output and reports
 
@@ -1604,6 +1630,9 @@ The first implementation deliberately narrows the full design:
 - **CLI.** Implemented: `--kernel` plus the secondary `--sched`, `--futex`,
   `--io`, `--block`, `--network`, `--memory`, `--events`, `--preset`,
   `--report`, `--merge-window`, and `--require-events` options.
+  `--preset` accepts `latency` (default), `proxy`, `storage`,
+  `computation`, and `full`; presets expand to the fine-grained scopes in
+  Section 8 and stay additive with explicit family flags.
   `--ringbuf-size` sizes both the function and kernel ring buffers.
   `--children`, `--tid`, and `--system-wide` are not implemented yet.
 - **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, OTel span events

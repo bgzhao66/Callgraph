@@ -25,10 +25,14 @@ struct KernelSelection {
     bool block = false;
     bool memory = false;
     bool network = false;
+    // Fine-grained scopes selected by presets.
+    bool page_faults = false;
+    bool tcp = false;
 
     bool any() const
     {
-        return sched || futex || io || block || memory || network;
+        return sched || futex || io || block || memory || network ||
+               page_faults || tcp;
     }
 };
 

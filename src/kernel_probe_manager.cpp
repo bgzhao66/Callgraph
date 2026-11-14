@@ -26,8 +26,10 @@ enum FamilyBit {
     kFamilyFutex = 1u << 1,
     kFamilyIo = 1u << 2,
     kFamilyBlock = 1u << 3,
-    kFamilyMm = 1u << 4,
-    kFamilyNet = 1u << 5,
+    kFamilyReclaim = 1u << 4,
+    kFamilyFaults = 1u << 5,
+    kFamilyNet = 1u << 6,
+    kFamilyTcp = 1u << 7,
 };
 
 std::string trim(std::string text)
@@ -49,9 +51,13 @@ bool selected(const KernelSelection& selection, uint32_t family)
         return true;
     if ((family & kFamilyBlock) && selection.block)
         return true;
-    if ((family & kFamilyMm) && selection.memory)
+    if ((family & kFamilyReclaim) && selection.memory)
+        return true;
+    if ((family & kFamilyFaults) && selection.memory && selection.page_faults)
         return true;
     if ((family & kFamilyNet) && selection.network)
+        return true;
+    if ((family & kFamilyTcp) && selection.network && selection.tcp)
         return true;
     return false;
 }
@@ -156,16 +162,16 @@ const KernelProbeManager::EventSpec kEvents[] = {
      {"dev", "sector", "nr_sector", "error"}},
 
     {"cg_page_fault_user", "exceptions", "page_fault_user",
-     CG_KEV_PAGE_FAULT_USER, CG_KCAT_MM, kFamilyMm,
+     CG_KEV_PAGE_FAULT_USER, CG_KCAT_MM, kFamilyFaults,
      {"address", "ip", "error_code"}},
     {"cg_page_fault_kernel", "exceptions", "page_fault_kernel",
-     CG_KEV_PAGE_FAULT_KERNEL, CG_KCAT_MM, kFamilyMm,
+     CG_KEV_PAGE_FAULT_KERNEL, CG_KCAT_MM, kFamilyFaults,
      {"address", "ip", "error_code"}},
     {"cg_direct_reclaim_begin", "vmscan", "mm_vmscan_direct_reclaim_begin",
-     CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, kFamilyMm,
+     CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, kFamilyReclaim,
      {"order", "gfp_flags"}},
     {"cg_direct_reclaim_end", "vmscan", "mm_vmscan_direct_reclaim_end",
-     CG_KEV_DIRECT_RECLAIM_END, CG_KCAT_MM, kFamilyMm,
+     CG_KEV_DIRECT_RECLAIM_END, CG_KCAT_MM, kFamilyReclaim,
      {"nr_reclaimed"}},
 
     {"cg_sys_enter_socket", "syscalls", "sys_enter_socket",
@@ -223,7 +229,7 @@ const KernelProbeManager::EventSpec kEvents[] = {
      CG_KEV_NET_POLL_EXIT, CG_KCAT_NET, kFamilyNet,
      {"__syscall_nr", "ret"}},
     {"cg_tcp_retransmit", "tcp", "tcp_retransmit_skb",
-     CG_KEV_TCP_RETRANSMIT, CG_KCAT_NET, kFamilyNet,
+     CG_KEV_TCP_RETRANSMIT, CG_KCAT_NET, kFamilyTcp,
      {"state", "sport", "dport", "family", "saddr", "daddr", "err"}},
 };
 

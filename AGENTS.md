@@ -46,6 +46,7 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - Network exporters use `--endpoint`; `otlp-json` uses `--export-file`.
 - `--batch-size` is the OTLP batch size. `--probe-batch-size` is the `uprobe_multi` attachment batch. Do not conflate them.
 - `--max-depth` and `--indent` are display-only and do not affect exported spans.
+- Kernel presets are `latency` (default), `proxy`, `storage`, `computation`, and `full`. They select fine-grained scopes: `latency` covers sched/futex/io/block/network-syscalls/direct-reclaim; `proxy` adds global TCP retransmits and drops block; `storage` keeps io/block and drops network; `computation` keeps sched/futex/reclaim/page-faults; `full` enables everything. `--memory` still means reclaim + faults, `--network` still means network syscalls + TCP retransmits, and presets are additive. Presets never change `--trace-scope`.
 - `--no-rsp-resync` disables the entry-`rsp` unwind heuristic for stackful runtimes (`ucontext`, Boost.Context, Go); pair it with `--return-mode=ret`.
 - The same `--exporter` options work in both `run` and `attach` mode.
 - `callgraph export --otel` converts text traces to OTLP/JSON and does not need root; `callgraph export --flame` emits folded stacks.

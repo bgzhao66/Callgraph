@@ -77,6 +77,10 @@ struct Options {
     bool block = false;
     bool memory = false;
     bool network = false;
+    // Fine-grained scopes selected by presets.  The public --memory and
+    // --network flags enable both of their sub-scopes.
+    bool page_faults = false;
+    bool tcp = false;
     bool kernel_report = false;
     bool require_kernel_events = false;
     uint64_t kernel_merge_window_ns = 1000000;
@@ -228,7 +232,8 @@ void usage(FILE* out)
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
         {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
-        {"--preset P", "latency (default), database, cpu, or full", 1},
+        {"--preset P",
+         "latency (default), proxy, storage, computation, or full", 1},
         {"--report", "append the per-thread kernel summary", 1},
         {"--merge-window D",
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
@@ -315,6 +320,8 @@ void usage(FILE* out)
             "\n"
             "  Correlated kernel events:\n"
             "    sudo callgraph run --kernel --preset latency -- ./demo\n"
+            "    sudo callgraph run --kernel --preset proxy -- ./proxy\n"
+            "    sudo callgraph run --kernel --preset storage -- ./db\n"
             "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
             "    sudo callgraph run --kernel --memory --network -- ./demo\n"
             "\n"
@@ -499,15 +506,19 @@ Options parse_args(int argc, char** argv)
                 options.block = true;
             } else if (name == "net" || name == "network") {
                 options.network = true;
+                options.tcp = true;
             } else if (name == "mm" || name == "memory") {
                 options.memory = true;
+                options.page_faults = true;
             } else if (name == "all") {
                 options.sched = true;
                 options.futex = true;
                 options.io = true;
                 options.block = true;
                 options.network = true;
+                options.tcp = true;
                 options.memory = true;
+                options.page_faults = true;
             } else {
                 usage_error("unknown kernel event family '%s'", name.c_str());
             }
@@ -561,9 +572,11 @@ Options parse_args(int argc, char** argv)
         } else if (arg == "--network") {
             note_kernel_option("--network");
             options.network = true;
+            options.tcp = true;
         } else if (arg == "--memory") {
             note_kernel_option("--memory");
             options.memory = true;
+            options.page_faults = true;
         } else if (arg == "--events") {
             note_kernel_option("--events");
             const std::string list = value();
@@ -695,31 +708,52 @@ Options parse_args(int argc, char** argv)
         options.kernel_preset = "latency";
     }
 
+    // Presets enable fine-grained scopes.  They are additive: an explicit
+    // --memory/--network (or --events mm/net) still adds its sub-scope.
     if (!options.kernel_preset.empty()) {
-        if (options.kernel_preset == "latency" ||
-            options.kernel_preset == "database") {
-            options.sched = true;
-            options.futex = true;
-            options.io = true;
-            options.block = true;
-            options.memory = true;
-        } else if (options.kernel_preset == "cpu") {
-            options.sched = true;
-        } else if (options.kernel_preset == "full") {
+        if (options.kernel_preset == "latency") {
             options.sched = true;
             options.futex = true;
             options.io = true;
             options.block = true;
             options.memory = true;
             options.network = true;
+        } else if (options.kernel_preset == "proxy") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
+            options.memory = true;
+            options.network = true;
+            options.tcp = true;
+        } else if (options.kernel_preset == "storage") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
+            options.block = true;
+            options.memory = true;
+        } else if (options.kernel_preset == "computation") {
+            options.sched = true;
+            options.futex = true;
+            options.memory = true;
+            options.page_faults = true;
+        } else if (options.kernel_preset == "full") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
+            options.block = true;
+            options.memory = true;
+            options.page_faults = true;
+            options.network = true;
+            options.tcp = true;
         } else {
-            usage_error("--preset must be 'latency', 'database', "
-                        "'cpu', or 'full'");
+            usage_error("--preset must be 'latency', 'proxy', 'storage', "
+                        "'computation', or 'full'");
         }
     }
     const bool kernel_any = options.sched || options.futex || options.io ||
                             options.block || options.memory ||
-                            options.network;
+                            options.network || options.page_faults ||
+                            options.tcp;
     if (options.kernel_report && !kernel_any)
         usage_error("--report requires a kernel event family");
     if (options.require_kernel_events && !kernel_any)
@@ -1598,6 +1632,8 @@ int main(int argc, char** argv)
         kernel_selection.block = options.block;
         kernel_selection.memory = options.memory;
         kernel_selection.network = options.network;
+        kernel_selection.page_faults = options.page_faults;
+        kernel_selection.tcp = options.tcp;
 
         std::unique_ptr<KernelProbeManager> kernel_probes;
         std::unique_ptr<KernelTimeline> kernel_timeline;

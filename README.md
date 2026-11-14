@@ -193,7 +193,7 @@ Kernel event options (--kernel):
           --network         trace socket syscalls and TCP retransmits
           --memory          trace page faults and direct reclaim
           --events L        comma-separated: sched,futex,io,block,net,mm
-          --preset P        latency (default), database, cpu, or full
+          --preset P        latency (default), proxy, storage, computation, or full
           --report          append the per-thread kernel summary
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
           --require-events  fail if a requested tracepoint is unavailable
@@ -273,6 +273,8 @@ Examples:
 
   Correlated kernel events:
     sudo callgraph run --kernel --preset latency -- ./demo
+    sudo callgraph run --kernel --preset proxy -- ./proxy
+    sudo callgraph run --kernel --preset storage -- ./db
     sudo callgraph run --kernel --sched --futex --report -- ./demo
     sudo callgraph run --kernel --memory --network -- ./demo
 
@@ -512,9 +514,9 @@ Histograms:
 `--events`, `--preset`, `--report`, `--merge-window`, and `--require-events`
 refine it, as do the `--sched`, `--futex`, `--io`, `--block`, `--network`, and
 `--memory` family shortcuts; none of them work without `--kernel`. With no
-family or preset, `--kernel` selects the `latency` preset (sched, futex, io,
-block, mm). Kernel events are never represented as function entries or returns;
-they use a separate `@CATEGORY` line:
+family or preset, `--kernel` selects the `latency` preset. Kernel events are
+never represented as function entries or returns; they use a separate
+`@CATEGORY` line:
 
 ```text
 327657.794260059 27074 : 1 @FUTEX wait_begin id=2 uaddr=0x6211f656a040 op=0x80 val=2
@@ -529,6 +531,21 @@ The depth column is the top traced user frame on that TID. `-` means the TID
 has no traced frame; `*` means the record is global (block events and TCP
 retransmits). Kernel lines are ignored by the function-line parser, so old
 traces still replay.
+
+Presets select fine-grained scopes:
+
+| Preset | Covers | Excludes |
+| --- | --- | --- |
+| `latency` (default) | scheduler, futex, I/O syscalls, block, direct reclaim, network syscalls | page-fault points, global TCP retransmits |
+| `proxy` | scheduler, futex, I/O syscalls, direct reclaim, network syscalls, global TCP retransmits | block |
+| `storage` | scheduler, futex, I/O syscalls, block, direct reclaim | network, page-fault points |
+| `computation` | scheduler, futex, direct reclaim, page-fault points | I/O syscalls, block, network |
+| `full` | every implemented scope | — |
+
+`--memory` still adds both direct reclaim and page-fault points, and
+`--network` still adds both socket syscalls and global TCP retransmits; presets
+are additive with explicit family flags. Presets do not change
+`--trace-scope`, which stays `root` unless set.
 
 Implemented families:
 

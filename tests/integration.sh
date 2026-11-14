@@ -54,7 +54,7 @@ echo "$dry" | grep -q 'A(int)'
 
 echo "== kernel CLI gating =="
 for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
-           "--events sched" "--events net" "--preset cpu" "--report" \
+           "--events sched" "--events net" "--preset storage" "--report" \
            "--merge-window 1ms" "--require-events"; do
     # shellcheck disable=SC2086
     if "$BIN" run $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
@@ -63,9 +63,16 @@ for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
     fi
 done
 "$BIN" run --kernel --dry-run -- "$TMP/simple" >/dev/null 2>&1
-"$BIN" run --kernel --events sched --preset cpu --report \
+"$BIN" run --kernel --events sched --preset storage --report \
     --merge-window 1ms --require-events --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1
+for preset in database cpu; do
+    if "$BIN" run --kernel --preset "$preset" --dry-run -- "$TMP/simple" \
+        >/dev/null 2>&1; then
+        echo "expected removed preset '$preset' to fail" >&2
+        exit 1
+    fi
+done
 if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected the old --kernel-events name to fail" >&2
@@ -335,6 +342,42 @@ grep -q '@NET connect_begin' "$TMP/kernel-mm.trace"
 grep -q '@NET sendto_begin' "$TMP/kernel-mm.trace"
 grep -q '@NET sendto_end' "$TMP/kernel-mm.trace"
 grep -q '^Kernel:$' "$TMP/kernel-mm.trace"
+
+echo "== kernel preset scopes =="
+preset_include='^(main|fsync_work[(][)]|memory_work[(][)]|network_work[(][)])$'
+"$BIN" run --kernel --preset latency -o "$TMP/preset-latency.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-latency.err"
+grep -q '@SCHED switch' "$TMP/preset-latency.trace"
+grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
+! grep -q '@MM page_fault' "$TMP/preset-latency.trace"
+! grep -q '@NET tcp_retransmit' "$TMP/preset-latency.trace"
+
+"$BIN" run --kernel --preset proxy -o "$TMP/preset-net.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-net.err"
+grep -q '@NET socket_begin' "$TMP/preset-net.trace"
+! grep -q '@BLOCK' "$TMP/preset-net.trace"
+
+"$BIN" run --kernel --preset storage -o "$TMP/preset-storage.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-storage.err"
+grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
+! grep -q '@NET' "$TMP/preset-storage.trace"
+
+"$BIN" run --kernel --preset computation \
+    -o "$TMP/preset-computation.trace" --regex \
+    --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-computation.err"
+grep -q '@MM page_fault' "$TMP/preset-computation.trace"
+! grep -q '@NET' "$TMP/preset-computation.trace"
+! grep -q '@IO' "$TMP/preset-computation.trace"
+
+"$BIN" run --kernel --preset full -o "$TMP/preset-full.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-full.err"
+grep -q '@MM page_fault' "$TMP/preset-full.trace"
+grep -q '@NET socket_begin' "$TMP/preset-full.trace"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
