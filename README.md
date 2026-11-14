@@ -370,11 +370,13 @@ Histograms:
 - The `Tree:` section shows the call structure, using `tree`-style connectors
   (`├──`, `└──`, `│`). Sibling nodes appear in call order (the order they first
   occurred), not sorted by duration. Each node ends with its inclusive total
-  time (the duration of that caller→callee edge, including callees),
-  right-aligned in a single column. Every node uses the unit that suits its own
-  duration (`ns`, `us`, `ms`, `s`), so a short child under a long root is not
-  rounded down to `0.00`. A node still running at shutdown has no measured
-  duration and shows none.
+  time (the duration of that caller→callee edge, including callees). Every node
+  uses the unit that suits its own duration (`ns`, `us`, `ms`, `s`), so a short
+  child under a long root is not rounded down to `0.00`. Units are laid out in
+  fixed columns ordered `s`, `ms`, `us`, `ns`: values with the same unit start
+  in the same column, and a finer unit is indented past the coarser columns
+  before it. A node still running at shutdown has no measured duration and
+  shows none.
 - The `Histograms:` section lists entries as `<depth>. <function>`, where depth
   is relative to the root. Entries follow the same DFS/preorder top-to-bottom
   order as the `Tree:` section; the depth number is not a sort key. Calls to

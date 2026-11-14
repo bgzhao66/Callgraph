@@ -195,9 +195,11 @@ by `Output::finish()`, which joins the writer thread first so the trailer cannot
 overtake queued events. Each root is rendered as a pair: a `Tree:` section with
 the call structure and each node's inclusive total, followed immediately by a
 `Histograms:` section with one block per `(depth, function)` pair in that tree.
-Tree totals are the per-edge (caller→callee) durations and are right-aligned in
-one column; each duration uses its own best-fit unit, so a short child of a long
-root does not print as `0.00`. Histogram entries aggregate the same function at
+Tree totals are the per-edge (caller→callee) durations. Each duration uses its
+own best-fit unit, so a short child of a long root does not print as `0.00`.
+Each unit gets a fixed-width column ordered `s`, `ms`, `us`, `ns`; values with
+the same unit therefore start in the same column, and finer units are indented
+past the coarser columns. Histogram entries aggregate the same function at
 the same depth across callers. Histogram entries follow
 the same DFS/preorder top-to-bottom order as the tree; the depth number is not
 a sort key. Entries are aggregated across callers at the same depth within a

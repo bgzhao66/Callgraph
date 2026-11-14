@@ -280,9 +280,43 @@ void test_histogram_tree_units()
     unlink(path.c_str());
 
     CHECK(report.find("main        8.40ms") != std::string::npos);
-    CHECK(report.find("└── A(int)   100ns") != std::string::npos);
+    // Each unit has its own column, so the finer ns value is indented past the
+    // ms column instead of sharing its right edge.
+    CHECK(report.find("└── A(int)        100ns") != std::string::npos);
     // The long root must not force a coarser unit on the short child.
     CHECK(report.find("0.00ms") == std::string::npos);
+}
+
+void test_histogram_tree_unit_columns()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        // Same-unit nodes must share a column even when the numbers differ in
+        // width, and a finer unit is indented past the coarser column.
+        stack.on_event(make_event(0, 91, kEventEnter, 0));
+        stack.on_event(make_event(1, 91, kEventEnter, 0));
+        stack.on_event(make_event(2, 91, kEventEnter, 100));
+        stack.on_event(make_event(2, 91, kEventExit, 900));        // 800ns
+        stack.on_event(make_event(1, 91, kEventExit, 10000000));   // 10.00ms
+        stack.on_event(make_event(0, 91, kEventExit, 20000000));   // 20.00ms
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    // Equal units share a column, so the two ms values start at the same
+    // display column; the finer ns value is indented past the ms column.
+    CHECK(report.find("main            20.00ms") != std::string::npos);
+    CHECK(report.find("└── A(int)      10.00ms") != std::string::npos);
+    CHECK(report.find("    └── B(int)         800ns") != std::string::npos);
 }
 
 void test_histogram_incomplete()
@@ -1734,6 +1768,7 @@ int main()
     test_histogram_report();
     test_histogram_bar_proportional();
     test_histogram_tree_units();
+    test_histogram_tree_unit_columns();
     test_histogram_incomplete();
     test_histogram_live_chain();
     test_histogram_siblings();

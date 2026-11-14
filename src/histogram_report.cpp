@@ -1,6 +1,7 @@
 #include "callgraph/histogram_report.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <functional>
 #include <unordered_map>
@@ -23,17 +24,19 @@ struct UnitScale {
     const char* suffix;
     double divisor;
     bool integral;
+    // Position of the unit's column, coarse to fine (s, ms, us, ns).
+    int rank;
 };
 
 UnitScale choose_unit(uint64_t max_ns)
 {
     if (max_ns >= 1000000000ULL)
-        return {"s", 1e9, false};
+        return {"s", 1e9, false, 0};
     if (max_ns >= 1000000ULL)
-        return {"ms", 1e6, false};
+        return {"ms", 1e6, false, 1};
     if (max_ns >= 1000ULL)
-        return {"us", 1e3, false};
-    return {"ns", 1.0, true};
+        return {"us", 1e3, false, 2};
+    return {"ns", 1.0, true, 3};
 }
 
 // Bucket k >= 1 covers [2^(k-1), 2^k) ns.  Bucket 0 is exactly 0 ns; display
@@ -103,20 +106,36 @@ size_t display_width(const std::string& text)
     return width;
 }
 
-// Tree lines are flushed after the whole tree is known so the totals line up
-// in one column.  Each node picks the unit that suits its own duration, so a
-// short child under a long root does not print as 0.00ms.
+// Tree lines are flushed after the whole tree is known so the totals line up.
+// Each node picks the unit that suits its own duration, and each unit gets its
+// own fixed-width column (s, ms, us, ns from left to right).  Equal units
+// therefore always start in the same column, while a finer unit is indented
+// past the coarser columns it follows.
 void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
 {
+    constexpr int kUnitCount = 4;
+
     size_t text_width = 0;
-    size_t value_width = 0;
+    std::array<size_t, kUnitCount> column_width{};
+    std::array<bool, kUnitCount> column_used{};
     for (const TreeLine& line : lines) {
         text_width = std::max(text_width, display_width(line.text));
-        if (line.has_total) {
-            const UnitScale unit = choose_unit(line.total_ns);
-            value_width = std::max(
-                value_width, format_value(line.total_ns, unit).size());
-        }
+        if (!line.has_total)
+            continue;
+        const UnitScale unit = choose_unit(line.total_ns);
+        const size_t width = format_value(line.total_ns, unit).size();
+        column_width[unit.rank] = std::max(column_width[unit.rank], width);
+        column_used[unit.rank] = true;
+    }
+
+    // Column start offsets relative to the first value column.  Unused units
+    // take no space, so a tree that only prints ms values has one column.
+    std::array<size_t, kUnitCount> column_offset{};
+    size_t offset = 0;
+    for (int i = 0; i < kUnitCount; ++i) {
+        column_offset[i] = offset;
+        if (column_used[i])
+            offset += column_width[i];
     }
 
     for (const TreeLine& line : lines) {
@@ -125,8 +144,9 @@ void append_tree_lines(std::string& out, const std::vector<TreeLine>& lines)
             const UnitScale unit = choose_unit(line.total_ns);
             out.append(text_width - display_width(line.text), ' ');
             out += "  ";
+            out.append(column_offset[unit.rank], ' ');
             out += right_justify(format_value(line.total_ns, unit),
-                                 value_width);
+                                 column_width[unit.rank]);
         }
         out += '\n';
     }
