@@ -1289,6 +1289,80 @@ void test_otel_drop_stats()
     CHECK(stats.total() == 5);
 }
 
+void test_span_complete_traces()
+{
+    std::vector<SpanRecord> emitted;
+    std::vector<std::vector<SpanRecord>> traces;
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 11;
+    config.seed_lo = 22;
+    config.timestamps_are_unix = true;
+    config.complete_traces = true;
+    config.trace_buffer_spans = 10;
+    config.trace_buffer_bytes = 1 << 20;
+
+    SpanGenerator generator(
+        config,
+        [&](SpanRecord&& span) { emitted.push_back(std::move(span)); },
+        [&](std::vector<SpanRecord>&& spans) {
+            traces.push_back(std::move(spans));
+        });
+
+    const uint64_t root =
+        generator.on_function_enter(10, 0, 0, 100, "", 0);
+    const uint64_t child =
+        generator.on_function_enter(10, 1, 1, 101, "", root);
+    generator.on_function_exit(10, child, 1, 102, SpanCloseReason::Return);
+
+    CHECK(emitted.empty());
+    CHECK(traces.empty());
+
+    generator.on_function_exit(10, root, 0, 103, SpanCloseReason::Return);
+    CHECK(traces.size() == 1);
+    if (traces.size() == 1) {
+        CHECK(traces[0].size() == 2);
+        CHECK(traces[0][0].context.parent_span_id == 0);
+        CHECK(traces[0][1].context.parent_span_id == root);
+    }
+    CHECK(generator.traces_flushed() == 1);
+    CHECK(generator.spans_trace_buffer_dropped() == 0);
+
+    SpanGeneratorConfig overflow_config = config;
+    overflow_config.trace_buffer_spans = 1;
+    std::vector<std::vector<SpanRecord>> overflow_traces;
+    SpanGenerator overflow(
+        overflow_config,
+        [&](SpanRecord&& span) { emitted.push_back(std::move(span)); },
+        [&](std::vector<SpanRecord>&& spans) {
+            overflow_traces.push_back(std::move(spans));
+        });
+
+    const uint64_t overflow_root =
+        overflow.on_function_enter(20, 0, 0, 200, "", 0);
+    const uint64_t overflow_child =
+        overflow.on_function_enter(20, 1, 1, 201, "", overflow_root);
+    overflow.on_function_exit(20, overflow_child, 1, 202,
+                              SpanCloseReason::Return);
+    overflow.on_function_exit(20, overflow_root, 0, 203,
+                              SpanCloseReason::Return);
+
+    CHECK(overflow_traces.empty());
+    CHECK(overflow.traces_overflowed() == 1);
+    CHECK(overflow.spans_trace_buffer_dropped() == 2);
+}
+
+void test_otel_trace_drop()
+{
+    OtelConfig config;
+    OtelExporter exporter(config);
+    std::vector<SpanRecord> spans(2);
+    exporter.export_trace(std::move(spans));
+    const OtelDropStats stats = exporter.drop_stats();
+    CHECK(stats.counts[static_cast<size_t>(OtelDropReason::NoSink)] == 2);
+    CHECK(exporter.dropped() == 2);
+}
+
 void test_otlp_encoding()
 {
     SpanRecord span;
@@ -2147,6 +2221,8 @@ int main()
     test_root_sampling();
     test_otlp_encoding();
     test_otel_drop_stats();
+    test_span_complete_traces();
+    test_otel_trace_drop();
     test_flame_graph_sink();
     test_text_parser();
     test_text_parser_depth();

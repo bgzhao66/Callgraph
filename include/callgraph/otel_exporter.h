@@ -22,6 +22,7 @@ enum class OtlpProtocol {
 enum class OtelDropReason {
     QueueSpansFull,
     QueueBytesFull,
+    TraceQueueFull,
     NoSink,
     BatchEncodeFailed,
     SendFailed,
@@ -66,6 +67,8 @@ struct OtelConfig {
     int flush_ms = 1000;
     int timeout_ms = 5000;
     size_t queue_spans = 10000;
+    // 0 means use batch_bytes * 8, preserving the historical queue budget.
+    size_t queue_bytes = 0;
     bool gzip = false;
 };
 
@@ -78,6 +81,7 @@ public:
     OtelExporter& operator=(const OtelExporter&) = delete;
 
     void export_span(SpanRecord&& span);
+    void export_trace(std::vector<SpanRecord>&& spans);
     void finish();
 
     uint64_t exported() const { return exported_.load(std::memory_order_relaxed); }

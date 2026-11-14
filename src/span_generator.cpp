@@ -1,5 +1,6 @@
 #include "callgraph/span_generator.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <utility>
@@ -15,6 +16,13 @@ uint64_t splitmix64(uint64_t value)
     value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
     value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
     return value ^ (value >> 31);
+}
+
+size_t span_record_cost(const SpanRecord& span)
+{
+    return 256 + span.function.name.size() + span.function.linkage_name.size() +
+           span.function.module_path.size() +
+           span.function.module_build_id.size() + span.arguments.size();
 }
 
 }  // namespace
@@ -49,9 +57,11 @@ const char* trace_scope_name(TraceScope scope)
     return "root";
 }
 
-SpanGenerator::SpanGenerator(SpanGeneratorConfig config, Emit emit)
+SpanGenerator::SpanGenerator(SpanGeneratorConfig config, Emit emit,
+                             EmitTrace emit_trace)
     : config_(config),
       emit_(std::move(emit)),
+      emit_trace_(std::move(emit_trace)),
       context_manager_(config.seed_hi, config.seed_lo)
 {
 }
@@ -182,6 +192,9 @@ uint64_t SpanGenerator::on_function_enter(uint32_t tid, uint64_t function_id,
     span.thread_name = thread_name(tid);
     span.arguments = arguments;
 
+    if (config_.complete_traces && trace.sampled)
+        trace_buffers_[trace.trace_id].open_spans += 1;
+
     const uint64_t token = span.context.span_id;
     open_.emplace(token, std::move(span));
     return token;
@@ -224,8 +237,85 @@ void SpanGenerator::on_function_exit(uint32_t tid, uint64_t token,
 
     open_.erase(it);
     ++spans_closed_;
-    if (emit_)
+    if (config_.complete_traces)
+        buffer_span(std::move(record));
+    else if (emit_)
         emit_(std::move(record));
+}
+
+void SpanGenerator::buffer_span(SpanRecord&& record)
+{
+    const TraceId trace_id = record.context.trace_id;
+    auto [it, inserted] =
+        trace_buffers_.try_emplace(trace_id, TraceBuffer{});
+    (void)inserted;
+    TraceBuffer& buffer = it->second;
+
+    const size_t cost = span_record_cost(record);
+    if (buffer.overflowed) {
+        ++spans_trace_buffer_dropped_;
+    } else if (trace_buffer_total_spans_ + 1 > config_.trace_buffer_spans ||
+               trace_buffer_total_bytes_ + cost > config_.trace_buffer_bytes) {
+        buffer.overflowed = true;
+        ++traces_overflowed_;
+        spans_trace_buffer_dropped_ += buffer.spans.size() + 1;
+        trace_buffer_total_spans_ -= buffer.spans.size();
+        trace_buffer_total_bytes_ -= buffer.bytes;
+        buffer.spans.clear();
+        buffer.bytes = 0;
+    } else {
+        buffer.spans.push_back(std::move(record));
+        buffer.bytes += cost;
+        trace_buffer_total_spans_ += 1;
+        trace_buffer_total_bytes_ += cost;
+        if (buffer.spans.back().context.parent_span_id == 0)
+            buffer.has_root = true;
+    }
+
+    if (buffer.open_spans != 0)
+        --buffer.open_spans;
+
+    if (buffer.open_spans != 0)
+        return;
+
+    if (buffer.overflowed) {
+        trace_buffers_.erase(it);
+    } else if (buffer.has_root) {
+        flush_trace(trace_id, buffer);
+        trace_buffers_.erase(it);
+    } else {
+        ++traces_orphaned_;
+        drop_trace_buffer(buffer);
+        trace_buffers_.erase(it);
+    }
+}
+
+void SpanGenerator::flush_trace(TraceId trace_id, TraceBuffer& buffer)
+{
+    (void)trace_id;
+    trace_buffer_total_spans_ -= buffer.spans.size();
+    trace_buffer_total_bytes_ -= buffer.bytes;
+    std::stable_sort(buffer.spans.begin(), buffer.spans.end(),
+                     [](const SpanRecord& a, const SpanRecord& b) {
+                         return a.depth < b.depth;
+                     });
+
+    if (emit_trace_) {
+        emit_trace_(std::move(buffer.spans));
+    } else if (emit_) {
+        for (SpanRecord& span : buffer.spans)
+            emit_(std::move(span));
+    }
+    ++traces_flushed_;
+}
+
+void SpanGenerator::drop_trace_buffer(TraceBuffer& buffer)
+{
+    spans_trace_buffer_dropped_ += buffer.spans.size();
+    trace_buffer_total_spans_ -= buffer.spans.size();
+    trace_buffer_total_bytes_ -= buffer.bytes;
+    buffer.spans.clear();
+    buffer.bytes = 0;
 }
 
 }  // namespace callgraph

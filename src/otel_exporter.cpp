@@ -41,6 +41,12 @@ void add_drop(std::array<std::atomic<uint64_t>, kOtelDropReasonCount>& counts,
                                                   std::memory_order_relaxed);
 }
 
+size_t queue_byte_limit(const OtelConfig& config)
+{
+    return config.queue_bytes != 0 ? config.queue_bytes
+                                   : config.batch_bytes * 8;
+}
+
 std::string grpc_body(const std::string& payload)
 {
     std::string body;
@@ -107,6 +113,8 @@ const char* otel_drop_reason_name(OtelDropReason reason)
         return "queue-spans-full";
     case OtelDropReason::QueueBytesFull:
         return "queue-bytes-full";
+    case OtelDropReason::TraceQueueFull:
+        return "trace-queue-full";
     case OtelDropReason::NoSink:
         return "no-sink";
     case OtelDropReason::BatchEncodeFailed:
@@ -160,13 +168,40 @@ struct OtelExporter::HttpWorker {
                 add_drop(drop_counts_, OtelDropReason::QueueSpansFull);
                 return;
             }
-            if (queued_bytes_ + cost > config_.batch_bytes * 8) {
+            if (queued_bytes_ + cost > queue_byte_limit(config_)) {
                 dropped_.fetch_add(1, std::memory_order_relaxed);
                 add_drop(drop_counts_, OtelDropReason::QueueBytesFull);
                 return;
             }
             queued_bytes_ += cost;
             queue_.push_back(std::move(span));
+        }
+        cv_.notify_one();
+    }
+
+    void enqueue_trace(std::vector<SpanRecord>&& spans)
+    {
+        if (spans.empty())
+            return;
+
+        size_t total_cost = 0;
+        for (const SpanRecord& span : spans)
+            total_cost += span_cost(span);
+
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            const size_t queue_limit =
+                config_.queue_spans != 0 ? config_.queue_spans : 10000;
+            if (queue_.size() + spans.size() > queue_limit ||
+                queued_bytes_ + total_cost > queue_byte_limit(config_)) {
+                const uint64_t count = spans.size();
+                dropped_.fetch_add(count, std::memory_order_relaxed);
+                add_drop(drop_counts_, OtelDropReason::TraceQueueFull, count);
+                return;
+            }
+            queued_bytes_ += total_cost;
+            for (SpanRecord& span : spans)
+                queue_.push_back(std::move(span));
         }
         cv_.notify_one();
     }
@@ -459,6 +494,24 @@ void OtelExporter::export_span(SpanRecord&& span)
     } else if (!has_output()) {
         dropped_.fetch_add(1, std::memory_order_relaxed);
         add_drop(drop_counts_, OtelDropReason::NoSink);
+    }
+}
+
+void OtelExporter::export_trace(std::vector<SpanRecord>&& spans)
+{
+    if (spans.empty())
+        return;
+
+    if (has_output()) {
+        file_spans_.reserve(file_spans_.size() + spans.size());
+        for (const SpanRecord& span : spans)
+            file_spans_.push_back(span);
+    }
+    if (http_) {
+        http_->enqueue_trace(std::move(spans));
+    } else if (!has_output()) {
+        dropped_.fetch_add(spans.size(), std::memory_order_relaxed);
+        add_drop(drop_counts_, OtelDropReason::NoSink, spans.size());
     }
 }
 

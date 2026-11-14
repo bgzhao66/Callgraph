@@ -227,6 +227,11 @@ Live export options (--exporter):
           --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
           --fail-on-export-error
                             exit non-zero if export fails
+          --complete-traces export only complete traces (network endpoints)
+              --trace-buffer-bytes SIZE
+                            trace buffer byte limit (default: 256m)
+              --trace-buffer-spans N
+                            trace buffer span limit (default: 1000000)
 
 Offline export options (callgraph export):
   Convert an existing text trace without root.  --otel emits an
@@ -264,6 +269,7 @@ Offline export options (callgraph export):
   --output and --endpoint are alternatives; --otel requires one.
   --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
   protobuf use --exporter otlp or --exporter otlp-http.
+  --complete-traces applies to --endpoint exports, not --output.
 
 General options:
   -v, --verbose             verbose diagnostics
@@ -682,6 +688,15 @@ Batching uses `--batch-size` (spans) and `--flush-interval` (milliseconds).
 The exporter queue is bounded and never blocks the ring-buffer collector.
 `--compression gzip` applies to OTLP/HTTP; OTLP/gRPC compression is not
 implemented.
+
+By default, spans are exported as they close. A long-lived root can therefore
+appear in Jaeger without its trace name until it returns or attach exits.
+`--complete-traces` buffers each trace until all its spans have closed and a
+root is present, then exports the trace root-first. It applies only to network
+exporters (`otlp`, `otlp-http`, and offline `--endpoint`). Buffer limits are
+controlled by `--trace-buffer-bytes` (default `256m`) and
+`--trace-buffer-spans` (default `1000000`); a trace that exceeds either limit
+is dropped whole and counted as `trace-buffer-overflow`.
 
 Root-trace sampling is available with `--sample-rate R` (`0..1`, default
 `1.0`). The decision is made once for the root and inherited by all

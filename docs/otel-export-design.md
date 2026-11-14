@@ -274,8 +274,8 @@ Function tracing can produce very high span rates. The exporter provides:
 - a bounded span queue;
 - retry with backoff;
 - dropped/failed counters, broken down by reason (`queue-spans-full`,
-  `queue-bytes-full`, `no-sink`, `encode-failed`, `send-failed`,
-  `write-failed`);
+  `queue-bytes-full`, `trace-queue-full`, `no-sink`, `encode-failed`,
+  `send-failed`, `write-failed`);
 - instrumentation filters (`--include`, `--exclude`);
 - root-trace sampling (`--sample-rate 0..1`).
 
@@ -283,6 +283,20 @@ Root-trace sampling is consistent: the decision is made once for the root and
 inherited by every descendant. A retained root never has sampled-out children.
 The default is no sampling (`1.0`). For tail sampling, forward complete traces
 through an OpenTelemetry Collector.
+
+### 8.1 Complete-trace export
+
+By default, spans are exported as they close, so a long-lived root can appear
+in Jaeger without its trace name until it returns or the attach session ends.
+`--complete-traces` (network exporters only) buffers each trace until all its
+spans have closed and a root span is present, then exports the trace
+root-first.
+
+The buffer is bounded by `--trace-buffer-bytes` (default `256m`) and
+`--trace-buffer-spans` (default `1000000`). A trace that exceeds either limit
+is discarded whole and counted as `trace-buffer-overflow`; no partial trace is
+sent. The exporter queue accepts complete traces as a unit and reports
+`trace-queue-full` if the whole trace will not fit.
 
 ## 9. Incomplete traces and errors
 

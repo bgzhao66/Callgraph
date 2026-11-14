@@ -6,6 +6,7 @@
 
 #include <bpf/libbpf_version.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cinttypes>
 #include <cmath>
@@ -112,6 +113,10 @@ struct Options {
     std::string compression = "none";
     bool fail_on_export_error = false;
     double sample_rate = 1.0;
+    bool complete_traces = false;
+    size_t trace_buffer_bytes = 256ull << 20;
+    size_t trace_buffer_spans = 1000000;
+    bool trace_buffer_option_used = false;
     std::string trace_metadata;
 };
 
@@ -274,6 +279,12 @@ void usage(FILE* out)
         {"--compression M", "none (default) or gzip (OTLP/HTTP only)", 1},
         {"--sample-rate R", "root-trace sampling rate, 0..1 (default: 1)", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
+        {"--complete-traces",
+         "export only complete traces (network endpoints)", 1},
+        {"--trace-buffer-bytes SIZE",
+         "trace buffer byte limit (default: 256m)", 2},
+        {"--trace-buffer-spans N",
+         "trace buffer span limit (default: 1000000)", 2},
     });
 
     fprintf(out,
@@ -314,6 +325,7 @@ void usage(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
+            "  --complete-traces applies to --endpoint exports, not --output.\n"
             "\n");
 
     print_help_section(out, "General options", {
@@ -684,6 +696,17 @@ Options parse_args(int argc, char** argv)
         } else if (arg == "--fail-on-export-error") {
             options.fail_on_export_error = true;
             mark_export_option();
+        } else if (arg == "--complete-traces") {
+            options.complete_traces = true;
+            mark_export_option();
+        } else if (arg == "--trace-buffer-bytes") {
+            options.trace_buffer_bytes = parse_size(value(), arg);
+            options.trace_buffer_option_used = true;
+            mark_export_option();
+        } else if (arg == "--trace-buffer-spans") {
+            options.trace_buffer_spans = parse_size(value(), arg);
+            options.trace_buffer_option_used = true;
+            mark_export_option();
         } else if (arg == "--trace-metadata") {
             options.trace_metadata = value();
         } else if (arg == "-v" || arg == "--verbose") {
@@ -809,6 +832,16 @@ Options parse_args(int argc, char** argv)
     }
     if (exporter_mode == "stdout" && options.export_option_used)
         usage_error("export options are not valid with --exporter stdout");
+    if (options.trace_buffer_option_used && !options.complete_traces)
+        usage_error("--trace-buffer options require --complete-traces");
+    if (options.complete_traces) {
+        if (exporter_mode != "otlp" && exporter_mode != "otlp-http")
+            usage_error("--complete-traces requires --exporter otlp or "
+                        "--exporter otlp-http");
+        if (options.trace_buffer_bytes == 0 ||
+            options.trace_buffer_spans == 0)
+            usage_error("--trace-buffer limits must be >= 1");
+    }
     if (exporter_mode == "otlp" || exporter_mode == "otlp-http") {
         if (!otlp_http_available())
             usage_error("--exporter %s requires a build with libcurl",
@@ -941,6 +974,20 @@ void print_otel_drop_stats(const OtelExporter& exporter)
     fprintf(stderr, "callgraph: OTLP drop reasons: %s\n", reasons.c_str());
 }
 
+void print_trace_buffer_stats(const SpanGenerator& generator)
+{
+    fprintf(stderr,
+            "callgraph: trace buffer: %" PRIu64 " completed, %zu active, "
+            "%" PRIu64 " overflowed, %" PRIu64 " orphaned\n",
+            generator.traces_flushed(), generator.active_trace_buffers(),
+            generator.traces_overflowed(), generator.traces_orphaned());
+    if (generator.spans_trace_buffer_dropped() != 0) {
+        fprintf(stderr,
+                "callgraph: trace buffer dropped %" PRIu64 " span(s)\n",
+                generator.spans_trace_buffer_dropped());
+    }
+}
+
 void fill_host_otel_config(OtelConfig& config)
 {
     struct utsname uts = {};
@@ -982,6 +1029,10 @@ struct ExportOptions {
     int timeout_ms = 5000;
     std::string compression = "none";
     bool fail_on_error = false;
+    bool complete_traces = false;
+    size_t trace_buffer_bytes = 256ull << 20;
+    size_t trace_buffer_spans = 1000000;
+    bool trace_buffer_option_used = false;
 };
 
 ExportOptions parse_export_args(int argc, char** argv)
@@ -1097,6 +1148,17 @@ ExportOptions parse_export_args(int argc, char** argv)
         } else if (arg == "--fail-on-export-error") {
             options.fail_on_error = true;
             mark_otel_option();
+        } else if (arg == "--complete-traces") {
+            options.complete_traces = true;
+            mark_otel_option();
+        } else if (arg == "--trace-buffer-bytes") {
+            options.trace_buffer_bytes = parse_size(value(), arg);
+            options.trace_buffer_option_used = true;
+            mark_otel_option();
+        } else if (arg == "--trace-buffer-spans") {
+            options.trace_buffer_spans = parse_size(value(), arg);
+            options.trace_buffer_option_used = true;
+            mark_otel_option();
         } else if (arg == "-h" || arg == "--help") {
             options.help = true;
         } else {
@@ -1126,6 +1188,15 @@ ExportOptions parse_export_args(int argc, char** argv)
         usage_error("export --otel requires --output FILE or --endpoint URL");
     if (options.output == "-")
         usage_error("export --otel --output requires a file path, not '-'");
+    if (options.trace_buffer_option_used && !options.complete_traces)
+        usage_error("--trace-buffer options require --complete-traces");
+    if (options.complete_traces) {
+        if (options.endpoint.empty())
+            usage_error("--complete-traces requires --endpoint");
+        if (options.trace_buffer_bytes == 0 ||
+            options.trace_buffer_spans == 0)
+            usage_error("--trace-buffer limits must be >= 1");
+    }
     if (options.batch_spans == 0 || options.batch_bytes == 0 ||
         options.queue_spans == 0)
         usage_error("batch and queue sizes must be >= 1");
@@ -1206,6 +1277,10 @@ int run_otel_export(const ExportOptions& options)
     config.batch_spans = options.batch_spans;
     config.batch_bytes = options.batch_bytes;
     config.queue_spans = options.queue_spans;
+    config.queue_bytes = options.complete_traces ? options.trace_buffer_bytes : 0;
+    if (options.complete_traces)
+        config.queue_spans =
+            std::max(options.queue_spans, options.trace_buffer_spans);
     config.flush_ms = options.flush_ms;
     config.timeout_ms = options.timeout_ms;
     config.gzip = options.compression == "gzip";
@@ -1219,14 +1294,22 @@ int run_otel_export(const ExportOptions& options)
     builder_config.sample_rate = options.sample_rate;
     builder_config.pid = pid;
     builder_config.read_thread_names = false;
+    builder_config.complete_traces = options.complete_traces;
+    builder_config.trace_buffer_bytes = options.trace_buffer_bytes;
+    builder_config.trace_buffer_spans = options.trace_buffer_spans;
     std::vector<FunctionMetadata> functions;
     builder_config.functions = &functions;
     if (!parse_trace_scope(trace_scope, &builder_config.scope))
         builder_config.scope = TraceScope::Root;
 
-    SpanGenerator builder(builder_config, [&exporter](SpanRecord&& span) {
-        exporter.export_span(std::move(span));
-    });
+    SpanGenerator builder(
+        builder_config,
+        [&exporter](SpanRecord&& span) {
+            exporter.export_span(std::move(span));
+        },
+        [&exporter](std::vector<SpanRecord>&& spans) {
+            exporter.export_trace(std::move(spans));
+        });
 
     std::vector<std::string> names;
     CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
@@ -1255,6 +1338,8 @@ int run_otel_export(const ExportOptions& options)
             stats.event_lines, stats.entries, stats.exits,
             exporter.exported(), exporter.dropped(), exporter.failed());
     print_otel_drop_stats(exporter);
+    if (options.complete_traces)
+        print_trace_buffer_stats(builder);
 
     return exporter.failed() != 0 && options.fail_on_error ? 1 : 0;
 }
@@ -1770,6 +1855,12 @@ int main(int argc, char** argv)
             otel_config.batch_spans = options.batch_size;
             otel_config.batch_bytes = options.batch_bytes;
             otel_config.queue_spans = options.queue_spans;
+            otel_config.queue_bytes = options.complete_traces
+                                          ? options.trace_buffer_bytes
+                                          : 0;
+            if (options.complete_traces)
+                otel_config.queue_spans =
+                    std::max(options.queue_spans, options.trace_buffer_spans);
             otel_config.flush_ms = options.flush_interval_ms;
             otel_config.timeout_ms = options.timeout_ms;
             otel_config.gzip = options.compression == "gzip";
@@ -1787,9 +1878,16 @@ int main(int argc, char** argv)
             builder_config.sample_rate = options.sample_rate;
             builder_config.pid = target;
             builder_config.read_thread_names = true;
+            builder_config.complete_traces = options.complete_traces;
+            builder_config.trace_buffer_bytes = options.trace_buffer_bytes;
+            builder_config.trace_buffer_spans = options.trace_buffer_spans;
             span_generator = std::make_unique<SpanGenerator>(
-                builder_config, [&exporter](SpanRecord&& span) {
+                builder_config,
+                [&exporter](SpanRecord&& span) {
                     (*exporter).export_span(std::move(span));
+                },
+                [&exporter](std::vector<SpanRecord>&& spans) {
+                    (*exporter).export_trace(std::move(spans));
                 });
         }
 
@@ -1902,6 +2000,8 @@ int main(int argc, char** argv)
             fprintf(stderr, "callgraph: sampled out %" PRIu64 " span(s)\n",
                     span_generator->spans_sampled_out());
         }
+        if (span_generator && options.complete_traces)
+            print_trace_buffer_stats(*span_generator);
 
         const uint64_t lost = probes.lost_events();
         const uint64_t events = stack.entries() + stack.returns();

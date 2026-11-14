@@ -79,6 +79,18 @@ if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
     exit 1
 fi
 
+echo "== complete traces CLI gating =="
+if "$BIN" run --complete-traces --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected --complete-traces without a network exporter to fail" >&2
+    exit 1
+fi
+if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+    --trace-buffer-spans 1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected trace-buffer options without --complete-traces to fail" >&2
+    exit 1
+fi
+
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Tracing options:'
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
@@ -93,6 +105,8 @@ echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^      --kernel'
 "$BIN" run --help | grep -q '^          --events'
 "$BIN" run --help | grep -q '^          --endpoint'
+"$BIN" run --help | grep -q '^          --complete-traces'
+"$BIN" run --help | grep -q '^              --trace-buffer-bytes SIZE'
 "$BIN" export --help | grep -q '^      --otel'
 "$BIN" export --help | grep -q '^      --flame'
 "$BIN" export --otel --help | grep -q '^          --endpoint'
@@ -121,6 +135,12 @@ EOF
     --service-name demo --trace-id-seed 1234 2>"$TMP/otel.err"
 grep -q 'converted 6 events' "$TMP/otel.err"
 grep -q '3 OTLP span(s)' "$TMP/otel.err"
+if "$BIN" export --otel --input "$TMP/otel.trace" \
+    --output "$TMP/complete-out.json" --complete-traces \
+    >/dev/null 2>&1; then
+    echo "expected offline --complete-traces without --endpoint to fail" >&2
+    exit 1
+fi
 grep -q '"resourceSpans"' "$TMP/otel.json"
 grep -q '"service.name","value":{"stringValue":"demo"}' "$TMP/otel.json"
 grep -q '"name":"C(int)"' "$TMP/otel.json"
@@ -562,6 +582,70 @@ grep -q 'OTLP .* span(s) exported' "$TMP/attach.err"
 grep -q '"key":"callgraph.attach_mode","value":{"boolValue":true}' "$TMP/attach.json"
 grep -q '"key":"callgraph.partial_stack","value":{"boolValue":true}' "$TMP/attach.json"
 grep -q '"name":"worker(int)"' "$TMP/attach.json"
+
+echo "== OTLP complete traces =="
+if command -v python3 >/dev/null 2>&1 &&
+   "$BIN" --version | grep -q 'otlp protobuf: yes' &&
+   "$BIN" --version | grep -q 'otlp http: yes'; then
+    cat > "$TMP/complete_target.cpp" <<'EOF'
+#include <unistd.h>
+__attribute__((noinline)) int child(int x) { return x + 1; }
+__attribute__((noinline)) int worker(int x) {
+    int y = child(x);
+    usleep(2000000);
+    return y;
+}
+int main() { sleep(2); return worker(1); }
+EOF
+    g++ -O0 -g -o "$TMP/complete_target" "$TMP/complete_target.cpp"
+    python3 - "$BIN" "$TMP/complete_target" <<'PY'
+import http.server, subprocess, sys, threading, time
+
+binary, target = sys.argv[1:3]
+requests = []
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        requests.append((time.time(), self.rfile.read(n)))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-protobuf")
+        self.end_headers()
+        self.wfile.write(b"")
+    def log_message(self, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+proc = subprocess.Popen([target])
+try:
+    time.sleep(0.2)
+    started = time.time()
+    result = subprocess.run(
+        [binary, "attach", "-p", str(proc.pid), "--complete-traces",
+         "--exporter", "otlp-http",
+         "--endpoint", f"http://127.0.0.1:{server.server_port}",
+         "--regex", "--include", "^(main|worker[(]int[)]|child[(]int[)])$"],
+        capture_output=True, text=True, timeout=30)
+    proc.wait(timeout=10)
+finally:
+    server.shutdown()
+    thread.join(timeout=5)
+    server.server_close()
+    if proc.poll() is None:
+        proc.kill()
+
+assert result.returncode == 0, result.stderr
+assert requests, result.stderr
+assert "trace buffer: 1 completed" in result.stderr, result.stderr
+first = requests[0][0] - started
+assert first > 3.0, (first, result.stderr)
+body = b"".join(request[1] for request in requests)
+assert b"worker(int)" in body, result.stderr
+assert b"child(int)" in body, result.stderr
+PY
+fi
 
 echo "== attach kernel block defaults =="
 cat > "$TMP/attach_kernel_target.cpp" <<'EOF'
