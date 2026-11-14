@@ -871,7 +871,7 @@ After the core families:
 | `IO` | `writeback:*`, filesystem `fsync` probes | causal |
 | `LOCK` | selected `lock:*` tracepoints | diagnostic, not latency |
 
-These are not enabled by the other presets; `full` will include them once
+These are not enabled by the other presets; `extended` will include them once
 implemented. Some can produce very high event volumes and are documented as
 such.
 
@@ -1059,6 +1059,7 @@ callgraph attach -p 4242 --kernel --preset proxy
 callgraph attach -p 4242 --kernel --preset storage
 callgraph attach -p 4242 --kernel --preset computation
 callgraph attach -p 4242 --kernel --preset full
+callgraph attach -p 4242 --kernel --preset extended
 
 # Explicit family list
 callgraph attach -p 4242 \
@@ -1080,7 +1081,7 @@ callgraph attach --kernel --system-wide --sched
 | `--kernel` | master switch; enables kernel tracing and defaults to `latency` |
 | `--events LIST` | comma-separated `sched,futex,io,block,net,mm,pmu,irq,work` or `all` |
 | `--sched`, `--futex`, `--io`, `--block`, `--network`, `--memory` | family sugar |
-| `--preset NAME` | `latency`, `proxy`, `storage`, `computation`, `full` |
+| `--preset NAME` | `latency`, `proxy`, `storage`, `computation`, `full`, `extended` |
 | `--tid TID` | restrict to explicit TIDs (repeatable/comma-separated) |
 | `--children` | follow child processes as well as threads |
 | `--system-wide` | bypass target filtering; no user-stack attribution |
@@ -1138,7 +1139,8 @@ means network syscalls + TCP retransmits.
 | `proxy` | proxies, gateways, load balancers | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
 | `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | — | ✓ | — | — | — |
 | `computation` | CPU-bound workers, batch, numeric | ✓ | ✓ | — | — | ✓ | ✓ | — | — |
-| `full` | everything implemented | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `full` | everything except block | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
+| `extended` | everything including block | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Rationale:
 
@@ -1155,8 +1157,10 @@ Rationale:
   page-fault points; add `--block` for the block layer.
 - `computation` keeps sched, futex, reclaim, and page faults. It drops syscall
   I/O, block, and network. PMU counters will join this preset when implemented.
-- `full` enables every implemented scope, including block and global TCP
-  retransmits. Future PMU, IRQ, and workqueue scopes join here.
+- `full` enables every implemented scope except block, including page faults
+  and global TCP retransmits.
+- `extended` adds block to `full`; it is the complete event set. Future PMU,
+  IRQ, and workqueue scopes join here.
 
 Presets are additive with explicit family flags and `--events`: explicit
 `--memory` adds faults even under `latency`, and explicit `--network` adds TCP
@@ -1165,11 +1169,12 @@ requested scope and never change `--trace-scope`; that option remains `root`
 unless set.
 
 Block tracepoints are global and fire for every device request on the host,
-not just the traced PID. Only `full` includes block by default. `--block` is a
-family shortcut like `--sched`: on its own it selects block-only tracing, and
-combined with a preset or other family flags it adds block to that selection.
-Explicit family flags are additive and suppress the implicit latency default;
-`--block --io --network` selects exactly block, io, and network.
+not just the traced PID. Only `extended` includes block by default. `--block`
+is a family shortcut like `--sched`: on its own it selects block-only tracing,
+and combined with a preset or other family flags it adds block to that
+selection. Explicit family flags are additive and suppress the implicit
+latency default; `--block --io --network` selects exactly block, io, and
+network.
 
 ## 9. Output and reports
 
@@ -1640,8 +1645,8 @@ The first implementation deliberately narrows the full design:
   `--io`, `--block`, `--network`, `--memory`, `--events`, `--preset`,
   `--report`, `--merge-window`, and `--require-events` options.
   `--preset` accepts `latency` (default), `proxy`, `storage`,
-  `computation`, and `full`; presets expand to the fine-grained scopes in
-  Section 8 and stay additive with explicit family flags.
+  `computation`, `full`, and `extended`; presets expand to the fine-grained
+  scopes in Section 8 and stay additive with explicit family flags.
   `--ringbuf-size` sizes both the function and kernel ring buffers.
   `--children`, `--tid`, and `--system-wide` are not implemented yet.
 - **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, OTel span events

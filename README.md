@@ -193,12 +193,14 @@ Kernel event options (--kernel):
           --network         trace socket syscalls and TCP retransmits
           --memory          trace page faults and direct reclaim
           --events L        comma-separated: sched,futex,io,block,net,mm
-          --preset P        latency (default), proxy, storage, computation, or full
+          --preset P        latency (default), proxy, storage, computation, full, or extended
               latency       sched, futex, io, net syscalls
               proxy         sched, futex, io, net syscalls, TCP retransmits
               storage       sched, futex, io, direct reclaim
               computation   sched, futex, direct reclaim, page faults
-              full          sched, futex, io, block, net syscalls, direct reclaim,
+              full          sched, futex, io, net syscalls, direct reclaim,
+                            page faults, TCP retransmits
+              extended      sched, futex, io, block, net syscalls, direct reclaim,
                             page faults, TCP retransmits
           --report          append the per-thread kernel summary
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
@@ -548,15 +550,16 @@ Presets select fine-grained scopes:
 | `proxy` | scheduler, futex, I/O syscalls, direct reclaim, network syscalls, global TCP retransmits | block |
 | `storage` | scheduler, futex, I/O syscalls, direct reclaim | block, network, page-fault points |
 | `computation` | scheduler, futex, direct reclaim, page-fault points | I/O syscalls, block, network |
-| `full` | every implemented scope | — |
+| `full` | scheduler, futex, I/O syscalls, network syscalls, direct reclaim, page faults, TCP retransmits | block |
+| `extended` | all `full` scopes plus block | — |
 
 `--memory` still adds both direct reclaim and page-fault points, and
 `--network` still adds both socket syscalls and global TCP retransmits; presets
 are additive with explicit family flags. Presets do not change
 `--trace-scope`, which stays `root` unless set.
 
-Block events are global and not tied to the traced PID. Only `full` includes
-them by default. `--block` is a family shortcut: on its own it selects
+Block events are global and not tied to the traced PID. Only `extended`
+includes them by default. `--block` is a family shortcut: on its own it selects
 block-only tracing; combined with a preset or other family flags it adds block
 to that selection. Explicit family flags are additive and suppress the
 implicit latency default: `--kernel --block --io --network` selects exactly

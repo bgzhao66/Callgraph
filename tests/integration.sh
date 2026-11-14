@@ -84,7 +84,8 @@ echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
 "$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
 "$BIN" run --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
-"$BIN" run --help | grep -q '^              full          sched, futex, io, block, net syscalls, direct reclaim,$'
+"$BIN" run --help | grep -q '^              full          sched, futex, io, net syscalls, direct reclaim,$'
+"$BIN" run --help | grep -q '^              extended      sched, futex, io, block, net syscalls, direct reclaim,$'
 "$BIN" run --help | grep -q '^Live export options (--exporter):'
 "$BIN" run --help | grep -q '^Offline export options (callgraph export):'
 "$BIN" run --help | grep -q '^General options:'
@@ -387,13 +388,15 @@ grep -q '@MM page_fault' "$TMP/preset-computation.trace"
     >/dev/null 2>"$TMP/preset-full.err"
 grep -q '@MM page_fault' "$TMP/preset-full.trace"
 grep -q '@NET socket_begin' "$TMP/preset-full.trace"
-grep -q 'block tracepoints are global' "$TMP/preset-full.err"
+! grep -q '@BLOCK' "$TMP/preset-full.trace"
+! grep -q 'block tracepoints are global' "$TMP/preset-full.err"
 
-"$BIN" run --kernel --preset full --block \
-    -o "$TMP/preset-full-block.trace" --regex \
-    --include "$preset_include" -- "$TMP/kernel" \
-    >/dev/null 2>"$TMP/preset-full-block.err"
-grep -q 'block tracepoints are global' "$TMP/preset-full-block.err"
+"$BIN" run --kernel --preset extended -o "$TMP/preset-extended.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-extended.err"
+grep -q '@MM page_fault' "$TMP/preset-extended.trace"
+grep -q '@NET socket_begin' "$TMP/preset-extended.trace"
+grep -q 'block tracepoints are global' "$TMP/preset-extended.err"
 
 "$BIN" run --kernel --block -o "$TMP/preset-block-only.trace" \
     --regex --include "$preset_include" -- "$TMP/kernel" \

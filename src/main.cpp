@@ -235,12 +235,16 @@ void usage(FILE* out)
         {"--memory", "trace page faults and direct reclaim", 1},
         {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
         {"--preset P",
-         "latency (default), proxy, storage, computation, or full", 1},
+         "latency (default), proxy, storage, computation, full, or extended", 1},
         {"latency", "sched, futex, io, net syscalls", 2},
         {"proxy", "sched, futex, io, net syscalls, TCP retransmits", 2},
         {"storage", "sched, futex, io, direct reclaim", 2},
         {"computation", "sched, futex, direct reclaim, page faults", 2},
         {"full",
+         "sched, futex, io, net syscalls, direct reclaim,\n"
+         "page faults, TCP retransmits",
+         2},
+        {"extended",
          "sched, futex, io, block, net syscalls, direct reclaim,\n"
          "page faults, TCP retransmits",
          2},
@@ -749,6 +753,14 @@ Options parse_args(int argc, char** argv)
             options.sched = true;
             options.futex = true;
             options.io = true;
+            options.memory = true;
+            options.page_faults = true;
+            options.network = true;
+            options.tcp = true;
+        } else if (options.kernel_preset == "extended") {
+            options.sched = true;
+            options.futex = true;
+            options.io = true;
             options.block = true;
             options.memory = true;
             options.page_faults = true;
@@ -756,7 +768,7 @@ Options parse_args(int argc, char** argv)
             options.tcp = true;
         } else {
             usage_error("--preset must be 'latency', 'proxy', 'storage', "
-                        "'computation', or 'full'");
+                        "'computation', 'full', or 'extended'");
         }
     }
     const bool kernel_any = options.sched || options.futex || options.io ||
