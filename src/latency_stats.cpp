@@ -26,22 +26,27 @@ void LatencyHistogram::add(uint64_t ns)
     ++buckets[latency_bucket(ns)];
 }
 
-size_t EdgeKeyHash::operator()(const EdgeKey& key) const noexcept
+size_t CallPathHash::operator()(const CallPath& path) const noexcept
 {
-    // Mix both ids; function ids are dense, so a simple combine is enough.
-    uint64_t hash = key.parent * 0x9e3779b97f4a7c15ULL;
-    hash ^= key.child + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    // FNV-1a over the function ids; paths are short and usually share a long
+    // prefix, but the exact key keeps every call site separate.
+    uint64_t hash = 1469598103934665603ULL;
+    for (uint64_t function_id : path) {
+        hash ^= function_id;
+        hash *= 1099511628211ULL;
+    }
     return static_cast<size_t>(hash);
 }
 
-void LatencyStats::record(uint32_t tid, uint64_t parent, uint64_t child,
-                          uint64_t ns)
+void LatencyStats::record(uint32_t tid, const CallPath& path, uint64_t ns)
 {
+    if (path.empty())
+        return;
+
     ThreadLatency& thread = threads_[tid];
-    const EdgeKey key{parent, child};
-    auto [it, inserted] = thread.edges.try_emplace(key);
+    auto [it, inserted] = thread.paths.try_emplace(path);
     if (inserted)
-        thread.edge_sequence.emplace(key, thread.next_sequence++);
+        thread.path_sequence.emplace(path, thread.next_sequence++);
     it->second.add(ns);
 }
 

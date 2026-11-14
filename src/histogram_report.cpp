@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <functional>
 #include <unordered_map>
@@ -334,39 +335,47 @@ std::string format_histogram_report(const LatencyStats& stats,
 
         const ThreadLatency& thread = threads.at(tid);
 
-        // Completed edges: parent -> children.
-        std::unordered_map<uint64_t, std::vector<uint64_t>> children;
-        for (const auto& [edge, hist] : thread.edges) {
+        // Completed call paths: parent path -> child paths.  Keying by the
+        // whole path keeps a node's total consistent with the subtree beneath
+        // it; keying by the immediate caller merges call sites and lets a
+        // child's aggregate exceed its parent's.
+        std::unordered_map<CallPath, std::vector<CallPath>, CallPathHash>
+            children;
+        for (const auto& [path, hist] : thread.paths) {
             (void)hist;
-            children[edge.parent].push_back(edge.child);
+            if (path.empty())
+                continue;
+            CallPath parent(path.begin(), path.end() - 1);
+            children[parent].push_back(path);
         }
 
-        auto edge_sequence = [&](uint64_t parent,
-                                 uint64_t child) -> uint64_t {
-            const auto it = thread.edge_sequence.find({parent, child});
-            return it == thread.edge_sequence.end() ? UINT64_MAX : it->second;
+        auto path_sequence = [&](const CallPath& path) -> uint64_t {
+            const auto it = thread.path_sequence.find(path);
+            return it == thread.path_sequence.end() ? UINT64_MAX : it->second;
         };
         auto name_of = [&](uint64_t id) -> std::string {
             return id < names.size() ? names[id] : std::string("<unknown>");
         };
-        auto sort_children = [&](uint64_t parent,
-                                 std::vector<uint64_t>& kids) {
-            std::sort(kids.begin(), kids.end(), [&](uint64_t a, uint64_t b) {
-                const uint64_t seq_a = edge_sequence(parent, a);
-                const uint64_t seq_b = edge_sequence(parent, b);
-                if (seq_a != seq_b)
-                    return seq_a < seq_b;
+        auto sort_children = [&](std::vector<CallPath>& kids) {
+            std::sort(kids.begin(), kids.end(),
+                      [&](const CallPath& a, const CallPath& b) {
+                          const uint64_t seq_a = path_sequence(a);
+                          const uint64_t seq_b = path_sequence(b);
+                          if (seq_a != seq_b)
+                              return seq_a < seq_b;
 
-                const std::string name_a = name_of(a);
-                const std::string name_b = name_of(b);
-                if (name_a != name_b)
-                    return name_a < name_b;
-                return a < b;
-            });
+                          const std::string name_a = name_of(a.back());
+                          const std::string name_b = name_of(b.back());
+                          if (name_a != name_b)
+                              return name_a < name_b;
+                          return a < b;
+                      });
         };
 
-        for (auto& [parent, kids] : children)
-            sort_children(parent, kids);
+        for (auto& [parent, kids] : children) {
+            (void)parent;
+            sort_children(kids);
+        }
 
         // Entries are inserted on first DFS visit so the histogram section
         // follows the same top-to-bottom order as the Tree section.  They are
@@ -428,43 +437,42 @@ std::string format_histogram_report(const LatencyStats& stats,
             }
         };
 
-        std::unordered_set<uint64_t> path;
+        std::unordered_set<uint64_t> path_functions;
 
         // Completed subtree.  A cycle cut-off keeps recursion bounded.
-        std::function<void(uint64_t, uint64_t, uint32_t,
-                           const std::string&, bool)>
-            render_completed = [&](uint64_t parent, uint64_t child,
-                                   uint32_t depth,
+        std::function<void(const CallPath&, uint32_t, const std::string&, bool)>
+            render_completed = [&](const CallPath& path, uint32_t depth,
                                    const std::string& parent_prefix,
                                    bool is_last) {
-                const auto it = thread.edges.find({parent, child});
-                if (it == thread.edges.end())
+                const auto it = thread.paths.find(path);
+                if (it == thread.paths.end())
                     return;
 
+                const uint64_t function_id = path.back();
                 const std::string line_prefix =
                     parent_prefix + (is_last ? kLast : kBranch);
                 const std::string detail_prefix =
                     parent_prefix + (is_last ? kBlank : kVertical);
 
-                const bool recursive = path.contains(child);
-                record(depth, child, &it->second, recursive, false);
-                append_tree_node(tree_lines, line_prefix, name_of(child),
+                const bool recursive = path_functions.contains(function_id);
+                record(depth, function_id, &it->second, recursive, false);
+                append_tree_node(tree_lines, line_prefix, name_of(function_id),
                                  recursive ? "  [recursive]" : "",
                                  it->second.total_ns, true);
                 if (recursive)
                     return;
 
-                const bool inserted = path.insert(child).second;
-                const auto kids = children.find(child);
+                const bool inserted = path_functions.insert(function_id).second;
+                const auto kids = children.find(path);
                 if (kids != children.end()) {
                     for (size_t i = 0; i < kids->second.size(); ++i) {
-                        render_completed(child, kids->second[i], depth + 1,
+                        render_completed(kids->second[i], depth + 1,
                                          detail_prefix,
                                          i + 1 == kids->second.size());
                     }
                 }
                 if (inserted)
-                    path.erase(child);
+                    path_functions.erase(function_id);
             };
 
         // Live chain at shutdown.  Its frames have no duration, but their
@@ -481,12 +489,13 @@ std::string format_histogram_report(const LatencyStats& stats,
                 }
 
                 const uint64_t node = thread.live_stack[index];
-                const uint64_t parent =
-                    index == 0 ? kRootFunction
-                               : thread.live_stack[index - 1];
+                const auto node_end =
+                    thread.live_stack.begin() +
+                    static_cast<std::ptrdiff_t>(index + 1);
+                const CallPath node_path(thread.live_stack.begin(), node_end);
 
-                const auto edge = thread.edges.find({parent, node});
-                if (edge != thread.edges.end()) {
+                const auto edge = thread.paths.find(node_path);
+                if (edge != thread.paths.end()) {
                     record(static_cast<uint32_t>(index), node, &edge->second,
                            false, true);
                     append_tree_node(tree_lines, line_prefix, name_of(node),
@@ -499,15 +508,24 @@ std::string format_histogram_report(const LatencyStats& stats,
                                      "  [incomplete]", 0, false);
                 }
 
-                const bool inserted = path.insert(node).second;
+                const bool inserted = path_functions.insert(node).second;
 
-                std::vector<uint64_t> kids;
-                const auto it = children.find(node);
+                // The next live frame is rendered by the chain itself, not as
+                // a completed child.  Match the exact path, not just the name.
+                CallPath next_live_path;
+                if (index + 1 < thread.live_stack.size()) {
+                    const auto next_end =
+                        thread.live_stack.begin() +
+                        static_cast<std::ptrdiff_t>(index + 2);
+                    next_live_path.assign(thread.live_stack.begin(), next_end);
+                }
+
+                std::vector<CallPath> kids;
+                const auto it = children.find(node_path);
                 if (it != children.end()) {
-                    for (uint64_t grandchild : it->second) {
-                        // The next live frame is rendered by the chain itself.
-                        if (index + 1 < thread.live_stack.size() &&
-                            grandchild == thread.live_stack[index + 1])
+                    for (const CallPath& grandchild : it->second) {
+                        if (!next_live_path.empty() &&
+                            grandchild == next_live_path)
                             continue;
                         kids.push_back(grandchild);
                     }
@@ -519,7 +537,7 @@ std::string format_histogram_report(const LatencyStats& stats,
                     kids.size() + (has_live_child ? 1 : 0);
 
                 for (size_t i = 0; i < kids.size(); ++i) {
-                    render_completed(node, kids[i],
+                    render_completed(kids[i],
                                      static_cast<uint32_t>(index + 1),
                                      detail_prefix, i + 1 == total);
                 }
@@ -527,26 +545,29 @@ std::string format_histogram_report(const LatencyStats& stats,
                     render_live(index + 1, detail_prefix, true);
 
                 if (inserted)
-                    path.erase(node);
+                    path_functions.erase(node);
             };
 
-        std::vector<uint64_t> roots;
-        const auto root_children = children.find(kRootFunction);
+        std::vector<CallPath> roots;
+        const auto root_children = children.find(CallPath{});
         if (root_children != children.end())
             roots = root_children->second;
-        if (!thread.live_stack.empty() &&
-            std::find(roots.begin(), roots.end(), thread.live_stack[0]) ==
+        if (!thread.live_stack.empty()) {
+            CallPath live_root{thread.live_stack[0]};
+            if (std::find(roots.begin(), roots.end(), live_root) ==
                 roots.end()) {
-            roots.push_back(thread.live_stack[0]);
+                roots.push_back(std::move(live_root));
+            }
         }
-        sort_children(kRootFunction, roots);
+        sort_children(roots);
 
         bool first_root = true;
-        for (uint64_t root : roots) {
+        for (const CallPath& root : roots) {
             const bool live = !thread.live_stack.empty() &&
-                              root == thread.live_stack[0];
-            const auto it = thread.edges.find({kRootFunction, root});
-            if (!live && it == thread.edges.end())
+                              root.size() == 1 &&
+                              root[0] == thread.live_stack[0];
+            const auto it = thread.paths.find(root);
+            if (!live && it == thread.paths.end())
                 continue;
 
             if (!first_root)
@@ -556,26 +577,27 @@ std::string format_histogram_report(const LatencyStats& stats,
             entries.clear();
             entry_index.clear();
             tree_lines.clear();
-            path.clear();
+            path_functions.clear();
 
             out += "Tree:\n";
 
             if (live) {
                 render_live(0, "", false);
             } else {
-                record(0, root, &it->second, false, false);
-                append_tree_node(tree_lines, "", name_of(root), "",
+                record(0, root.back(), &it->second, false, false);
+                append_tree_node(tree_lines, "", name_of(root.back()), "",
                                  it->second.total_ns, true);
-                const bool inserted = path.insert(root).second;
+                const bool inserted =
+                    path_functions.insert(root.back()).second;
                 const auto kids = children.find(root);
                 if (kids != children.end()) {
                     for (size_t i = 0; i < kids->second.size(); ++i) {
-                        render_completed(root, kids->second[i], 1, "",
+                        render_completed(kids->second[i], 1, "",
                                          i + 1 == kids->second.size());
                     }
                 }
                 if (inserted)
-                    path.erase(root);
+                    path_functions.erase(root.back());
             }
 
             append_tree_lines(out, tree_lines);

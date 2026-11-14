@@ -182,31 +182,33 @@ be classified, simply omit the suffix.
 ### Latency histogram
 
 `--histogram` collects a per-thread latency distribution while the event stream
-is consumed. On a matched return, `CallStack` derives the immediate caller from
-the frame below the returning one (or a root sentinel at depth 0), subtracts the
-entry timestamp, and adds the duration to the `(tid, parent, child)` edge. The
-statistics live in a map separate from the live per-TID stacks, so erasing an
-empty stack does not discard them. Frames skipped by a desync and frames still
-live at shutdown have no measurable duration; they are counted as incomplete
-instead.
+is consumed. On a matched return, `CallStack` takes the full root-to-callee
+function path from the live stack, subtracts the entry timestamp, and adds the
+duration to the `(tid, call path)` bucket. The statistics live in a map separate
+from the live per-TID stacks, so erasing an empty stack does not discard them.
+Frames skipped by a desync and frames still live at shutdown have no measurable
+duration; they are counted as incomplete instead.
 
 The report is rendered after collection stops and appended to the event stream
 by `Output::finish()`, which joins the writer thread first so the trailer cannot
 overtake queued events. Each root is rendered as a pair: a `Tree:` section with
 the call structure and each node's inclusive total, followed immediately by a
 `Histograms:` section with one block per `(depth, function)` pair in that tree.
-Tree totals are the per-edge (caller→callee) durations. Each duration uses its
-own best-fit unit, so a short child of a long root does not print as `0.00`.
+Tree totals are the inclusive duration of each exact call path. Keying by the
+full path (rather than by the immediate caller) is what keeps a node's total
+consistent with the subtree beneath it: the children of a path are a partition
+of that path's invocations, so a child total cannot exceed its parent. A
+function called from several places appears once per caller path, each time
+showing only the time spent through that path. Each duration uses its own
+best-fit unit, so a short child of a long root does not print as `0.00`.
 Each unit gets a fixed-width column ordered `s`, `ms`, `us`, `ns`; values with
 the same unit therefore start in the same column, and finer units are indented
 past the coarser columns. A middle-dot (`·`) leader joins each label to its
 total so long names do not read as a single run of text. Histogram entries
-aggregate the same function at
-the same depth across callers. Histogram entries follow
+aggregate the same function at the same depth across call paths. They follow
 the same DFS/preorder top-to-bottom order as the tree; the depth number is not
-a sort key. Entries are aggregated across callers at the same depth within a
-root. This keeps the tree compact and avoids repeating histogram bars inside
-the call graph while keeping each root's tree next to its numbers.
+a sort key. Aggregating entries across paths avoids repeating histogram bars
+inside the call graph while keeping each root's tree next to its numbers.
 
 Each histogram entry begins with a dashed bar whose length is the entry's
 `total_ns` relative to the root span's duration (the depth-0 entry's inclusive
@@ -214,14 +216,17 @@ time), so the bar shows how much of the tree's elapsed time the node accounts
 for. The bar belongs to the function, not to an individual latency bucket: all
 of that entry's bucket lines share it.
 
-The tree is built from immediate caller edges, not full call paths, which keeps
-recursion and diamond-shaped call graphs bounded; a DFS cuts off when a
-function is already on the current path and marks that node `[recursive]`.
-Siblings, including roots, are emitted in first-call order: `LatencyStats`
-assigns each edge a sequence number on its first completed call, and sibling
-calls on one thread cannot overlap, so completion order is call order. Roots in
-one thread are separated by a blank line, and each root repeats the
-`Tree:`/`Histograms:` pair. A frame that is
+The tree is built from full call paths, so diamond-shaped call graphs expand
+once per distinct path and their totals nest. This can produce more tree lines
+than the old merged-edge view, which is the cost of keeping every subtree's
+arithmetic consistent. To keep deep recursion bounded, a
+DFS cuts off when a function is already on the current path and marks that node
+`[recursive]`; the marked node still carries the inclusive time of everything
+below the cut-off. Siblings, including roots, are emitted in first-call order:
+`LatencyStats` assigns each path a sequence number on its first completed call,
+and sibling calls on one thread cannot overlap, so completion order is call
+order. Roots in one thread are separated by a blank line, and each root repeats
+the `Tree:`/`Histograms:` pair. A frame that is
 still live at shutdown appears in the tree as `name  [incomplete]` and in the
 histogram section as `calls=0  [incomplete]`, so completed calls made inside it
 remain visible. Bucket `k >= 1` covers `[2^(k-1), 2^k)` ns and bucket 0 is

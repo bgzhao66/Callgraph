@@ -201,11 +201,15 @@ void CallStack::on_event(const TraceEvent& event,
         emit_line(event.ts, event.tid, depth, "<-", name);
 
     if (collect_latency_) {
-        const uint64_t parent =
-            index >= 2 ? frames[index - 2].function_id : kRootFunction;
         const uint64_t duration =
             event.ts >= frame.start_ts ? event.ts - frame.start_ts : 0;
-        stats_.record(event.tid, parent, frame.function_id, duration);
+        // close_skipped_frames() already trimmed the stack to the matched
+        // frame, so frames[0..index) is the full root-to-callee path.
+        path_scratch_.clear();
+        path_scratch_.reserve(index);
+        for (size_t i = 0; i < index; ++i)
+            path_scratch_.push_back(frames[i].function_id);
+        stats_.record(event.tid, path_scratch_, duration);
     }
 
     if (sink_) {

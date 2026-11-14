@@ -257,6 +257,63 @@ void test_histogram_bar_proportional()
     CHECK(bars == 2);
 }
 
+void test_histogram_call_path_totals()
+{
+    // A function reached from several call sites used to be split by caller
+    // for its own total but merged for its children: palloc0's node showed one
+    // caller's slice while AllocSetAlloc showed every palloc0 invocation, so
+    // the child could be larger than its parent.  Path-keyed totals keep each
+    // subtree's numbers consistent.
+    const std::vector<std::string> names = {"main", "palloc0", "AllocSetAlloc",
+                                            "helper"};
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+
+        stack.on_event(make_event(0, 92, kEventEnter, 0));    // main
+
+        stack.on_event(make_event(1, 92, kEventEnter, 100));  // palloc0
+        stack.on_event(make_event(2, 92, kEventEnter, 110));  // AllocSetAlloc
+        stack.on_event(make_event(2, 92, kEventExit, 210));   // 100 ns
+        stack.on_event(make_event(1, 92, kEventExit, 400));   // 300 ns
+
+        stack.on_event(make_event(3, 92, kEventEnter, 500));  // helper
+        for (uint64_t base : {510ULL, 820ULL, 1130ULL}) {
+            stack.on_event(make_event(1, 92, kEventEnter, base));
+            stack.on_event(make_event(2, 92, kEventEnter, base + 10));
+            stack.on_event(make_event(2, 92, kEventExit, base + 110));  // 100
+            stack.on_event(make_event(1, 92, kEventExit, base + 290));  // 290
+        }
+        stack.on_event(make_event(3, 92, kEventExit, 1500));  // 1000 ns
+        stack.on_event(make_event(0, 92, kEventExit, 2000));  // 2000 ns
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    const size_t tree_start = report.find("Tree:\n");
+    const size_t hist_start = report.find("\nHistograms:", tree_start);
+    CHECK(tree_start != std::string::npos);
+    CHECK(hist_start != std::string::npos);
+    const std::string tree =
+        report.substr(tree_start, hist_start - tree_start);
+
+    // palloc0 appears once per call path, each with its own subtree.
+    CHECK(std::regex_search(tree, std::regex("palloc0[^\\n]*300ns")));
+    CHECK(std::regex_search(tree, std::regex("palloc0[^\\n]*870ns")));
+    CHECK(std::regex_search(tree,
+                            std::regex("AllocSetAlloc[^\\n]*100ns")));
+    CHECK(std::regex_search(tree,
+                            std::regex("AllocSetAlloc[^\\n]*300ns")));
+    // The old merged-edge total (4 x 100 ns under one palloc0 node) is gone.
+    CHECK(tree.find("400ns") == std::string::npos);
+}
+
 void test_histogram_tree_units()
 {
     const auto names = make_names();
@@ -1768,6 +1825,7 @@ int main()
     test_latency_histogram();
     test_histogram_report();
     test_histogram_bar_proportional();
+    test_histogram_call_path_totals();
     test_histogram_tree_units();
     test_histogram_tree_unit_columns();
     test_histogram_incomplete();

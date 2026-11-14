@@ -108,6 +108,8 @@ private:
 
     std::unordered_map<uint32_t, ThreadState> threads_;
     LatencyStats stats_;
+    // Reused root-to-callee buffer so --histogram does not allocate per return.
+    std::vector<uint64_t> path_scratch_;
 
     uint64_t entries_ = 0;
     uint64_t returns_ = 0;
