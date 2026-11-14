@@ -71,6 +71,15 @@ if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
     exit 1
 fi
 
+echo "== help hierarchy =="
+"$BIN" run --help | grep -q '^      --kernel'
+"$BIN" run --help | grep -q '^              --events'
+"$BIN" run --help | grep -q '^              --endpoint'
+"$BIN" export --help | grep -q '^      --otel'
+"$BIN" export --help | grep -q '^      --flame'
+"$BIN" export --otel --help | grep -q '^              --endpoint'
+"$BIN" export --flame --help | grep -q '^      --flame'
+
 echo "== OTLP offline conversion =="
 cat > "$TMP/otel.trace" <<'EOF'
 2026-11-12T10:00:00.000000000+00:00 100 : 0 -> main

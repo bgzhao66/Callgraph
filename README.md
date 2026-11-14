@@ -147,6 +147,9 @@ sudo ./build/callgraph run -T --exporter otlp-json \
 
 ### Options
 
+Master options are listed at the normal indent; the options that refine or
+require them are indented beneath the master.
+
 ```
 Usage:
   callgraph run [options] -- program [args...]
@@ -165,35 +168,40 @@ Usage:
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
       --histogram       append per-root call trees and latency histograms to the output
+
       --kernel          enable correlated kernel event tracing
-      --events L        comma-separated: sched,futex,io,block
-      --preset P        latency (default), database, cpu, or full
-      --report          append the per-thread kernel summary
-      --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
-      --require-events  fail if a requested tracepoint is unavailable
-      --sched           trace scheduler switch/wakeup events
-      --futex           trace futex syscall begin/end events
-      --io              trace read/write/fsync syscall events
-      --block           trace block request events (global)
+              --sched           trace scheduler switch/wakeup events
+              --futex           trace futex syscall begin/end events
+              --io              trace read/write/fsync syscall events
+              --block           trace block request events (global)
+              --events L        comma-separated: sched,futex,io,block
+              --preset P        latency (default), database, cpu, or full
+              --report          append the per-thread kernel summary
+              --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
+              --require-events  fail if a requested tracepoint is unavailable
+
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
+
       --exporter M      stdout (default), otlp, otlp-http, or otlp-json
-      --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
-      --export-file FILE  output file for --exporter otlp-json
-      --service-name NAME
-                        override service.name (default: exe basename)
-      --service-namespace NAME
-      --trace-scope M   root (default), thread, or process
-      --batch-size N    spans per OTLP batch (default: 512)
-      --batch-bytes N   OTLP request size limit (default: 1m)
-      --flush-interval N  OTLP batch flush interval in ms (default: 1000)
-      --timeout-ms N    OTLP HTTP timeout (default: 5000)
-      --queue-spans N   exporter queue limit (default: 10000)
-      --header K=V      add an HTTP header (repeatable)
-      --compression M   none (default) or gzip (OTLP/HTTP only)
-      --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
-      --fail-on-export-error  exit non-zero if export fails
+              --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
+              --export-file FILE  output file for --exporter otlp-json
+              --service-name NAME
+                                   override service.name (default: exe basename)
+              --service-namespace NAME
+                                        override service.namespace
+              --trace-scope M   root (default), thread, or process
+              --batch-size N    spans per OTLP batch (default: 512)
+              --batch-bytes N   OTLP request size limit (default: 1m)
+              --flush-interval N  OTLP batch flush interval in ms (default: 1000)
+              --timeout-ms N    OTLP HTTP timeout (default: 5000)
+              --queue-spans N   exporter queue limit (default: 10000)
+              --header K=V      add an HTTP header (repeatable)
+              --compression M   none (default) or gzip (OTLP/HTTP only)
+              --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
+              --fail-on-export-error  exit non-zero if export fails
+
       --trace-metadata FILE  write an offline-conversion sidecar
   -v, --verbose         verbose diagnostics
   -h, --help            show help

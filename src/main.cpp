@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <memory>
 #include <regex>
@@ -111,6 +112,73 @@ struct Options {
 enum class UsageMode { Run, Export };
 UsageMode g_usage_mode = UsageMode::Run;
 
+// Help options use two levels: a master option and the options that refine or
+// require it.  Masters stay at the normal column; secondary options are
+// indented eight spaces further and their descriptions shift with them.
+struct HelpOption {
+    const char* flags;
+    const char* desc;
+    int level = 0;
+};
+
+constexpr int kPrimaryShortIndent = 2;
+constexpr int kPrimaryIndent = 6;
+constexpr int kPrimaryDescColumn = 24;
+constexpr int kSecondaryIndent = 14;
+constexpr int kSecondaryDescColumn = 32;
+
+void print_help_description(FILE* out, const char* desc, int column)
+{
+    const char* line = desc;
+    while (true) {
+        const char* newline = std::strchr(line, '\n');
+        const int length = newline ? static_cast<int>(newline - line)
+                                   : static_cast<int>(std::strlen(line));
+        fprintf(out, "%*s%.*s\n", column, "", length, line);
+        if (!newline)
+            break;
+        line = newline + 1;
+    }
+}
+
+void print_help_option(FILE* out, const HelpOption& option)
+{
+    const bool short_option =
+        option.flags[0] == '-' && option.flags[1] != '-';
+    const int indent =
+        option.level == 0
+            ? (short_option ? kPrimaryShortIndent : kPrimaryIndent)
+            : kSecondaryIndent;
+    const int desc_column = option.level == 0 ? kPrimaryDescColumn
+                                              : kSecondaryDescColumn;
+    const int width = desc_column - indent;
+    const int flags_length = static_cast<int>(std::strlen(option.flags));
+
+    if (flags_length >= width) {
+        // Long flags hang their description two spaces past the flag so the
+        // text never starts underneath the flag itself.
+        fprintf(out, "%*s%s\n", indent, "", option.flags);
+        print_help_description(out, option.desc,
+                               indent + flags_length + 2);
+        return;
+    }
+
+    const char* newline = std::strchr(option.desc, '\n');
+    const int first_length =
+        newline ? static_cast<int>(newline - option.desc)
+                : static_cast<int>(std::strlen(option.desc));
+    fprintf(out, "%*s%-*s%.*s\n", indent, "", width, option.flags,
+            first_length, option.desc);
+    if (newline)
+        print_help_description(out, newline + 1, desc_column);
+}
+
+void print_help_options(FILE* out, std::initializer_list<HelpOption> options)
+{
+    for (const HelpOption& option : options)
+        print_help_option(out, option);
+}
+
 void usage(FILE* out)
 {
     fprintf(out,
@@ -119,55 +187,83 @@ void usage(FILE* out)
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
             "\n"
-            "Options:\n"
-            "  -o, --output FILE     write events to FILE (default: stdout)\n"
-            "      --include GLOB    only trace functions matching GLOB (repeatable)\n"
-            "      --exclude GLOB    skip functions matching GLOB (repeatable)\n"
-            "      --regex           treat --include/--exclude as extended regex\n"
-            "      --return-mode M   uretprobe (default) or ret (exception-safe)\n"
-            "      --no-rsp-resync   keep frames across stack switches (stackful\n"
-            "                        runtimes such as ucontext, Boost.Context, Go);\n"
-            "                        disables longjmp/siglongjmp depth repair\n"
-            "      --all-modules     trace every mapped ELF module\n"
-            "      --module GLOB     also trace mapped modules matching GLOB\n"
-            "  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)\n"
-            "      --max-depth N     print events with depth <= N (default: unlimited)\n"
-            "      --indent N        indent names by depth*N spaces (default: 0)\n"
-            "      --show-args       show function arguments after names (needs DWARF)\n"
-            "      --histogram       append per-root call trees and latency histograms to the output\n"
-            "      --kernel          enable correlated kernel event tracing\n"
-            "      --events L        comma-separated: sched,futex,io,block\n"
-            "      --preset P        latency (default), database, cpu, or full\n"
-            "      --report          append the per-thread kernel summary\n"
-            "      --merge-window D  reorder window, ns/us/ms/s (default: 1ms)\n"
-            "      --require-events  fail if a requested tracepoint is unavailable\n"
-            "      --sched           trace scheduler switch/wakeup events\n"
-            "      --futex           trace futex syscall begin/end events\n"
-            "      --io              trace read/write/fsync syscall events\n"
-            "      --block           trace block request events (global)\n"
-            "      --probe-batch-size N  functions per uprobe_multi link (default: 1000)\n"
-            "      --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)\n"
-            "      --dry-run         list resolved functions and exit\n"
-            "      --exporter M      stdout (default), otlp, otlp-http, or otlp-json\n"
-            "      --endpoint URL    OTLP endpoint; default localhost:4317 / :4318\n"
-            "      --export-file FILE  output file for --exporter otlp-json\n"
-            "      --service-name NAME\n"
-            "                        override service.name (default: exe basename)\n"
-            "      --service-namespace NAME\n"
-            "      --trace-scope M   root (default), thread, or process\n"
-            "      --batch-size N    spans per OTLP batch (default: 512)\n"
-            "      --batch-bytes N   OTLP request size limit (default: 1m)\n"
-            "      --flush-interval N  OTLP batch flush interval in ms (default: 1000)\n"
-            "      --timeout-ms N    OTLP HTTP timeout (default: 5000)\n"
-            "      --queue-spans N   exporter queue limit (default: 10000)\n"
-            "      --header K=V      add an HTTP header (repeatable)\n"
-            "      --compression M   none (default) or gzip (OTLP/HTTP only)\n"
-            "      --sample-rate R   root-trace sampling rate, 0..1 (default: 1)\n"
-            "      --fail-on-export-error  exit non-zero if export fails\n"
-            "      --trace-metadata FILE  write an offline-conversion sidecar\n"
-            "  -v, --verbose         verbose diagnostics\n"
-            "  -h, --help            show this help\n"
-            "      --version         show version\n"
+            "Options:\n");
+    print_help_options(out, {
+        {"-o, --output FILE", "write events to FILE (default: stdout)"},
+        {"--include GLOB", "only trace functions matching GLOB (repeatable)"},
+        {"--exclude GLOB", "skip functions matching GLOB (repeatable)"},
+        {"--regex", "treat --include/--exclude as extended regex"},
+        {"--return-mode M", "uretprobe (default) or ret (exception-safe)"},
+        {"--no-rsp-resync",
+         "keep frames across stack switches (stackful\n"
+         "runtimes such as ucontext, Boost.Context, Go);\n"
+         "disables longjmp/siglongjmp depth repair"},
+        {"--all-modules", "trace every mapped ELF module"},
+        {"--module GLOB", "also trace mapped modules matching GLOB"},
+        {"-T, --wall-clock",
+         "wall-clock timestamps (default: seconds since boot)"},
+        {"--max-depth N", "print events with depth <= N (default: unlimited)"},
+        {"--indent N", "indent names by depth*N spaces (default: 0)"},
+        {"--show-args", "show function arguments after names (needs DWARF)"},
+        {"--histogram",
+         "append per-root call trees and latency histograms to the output"},
+    });
+    fputc('\n', out);
+
+    print_help_options(out, {
+        {"--kernel", "enable correlated kernel event tracing"},
+        {"--sched", "trace scheduler switch/wakeup events", 1},
+        {"--futex", "trace futex syscall begin/end events", 1},
+        {"--io", "trace read/write/fsync syscall events", 1},
+        {"--block", "trace block request events (global)", 1},
+        {"--events L", "comma-separated: sched,futex,io,block", 1},
+        {"--preset P", "latency (default), database, cpu, or full", 1},
+        {"--report", "append the per-thread kernel summary", 1},
+        {"--merge-window D",
+         "reorder window, ns/us/ms/s (default: 1ms)", 1},
+        {"--require-events",
+         "fail if a requested tracepoint is unavailable", 1},
+    });
+    fputc('\n', out);
+
+    print_help_options(out, {
+        {"--probe-batch-size N",
+         "functions per uprobe_multi link (default: 1000)"},
+        {"--ringbuf-size N",
+         "function and kernel ring buffer size, k/m/g suffix (default: 16m)"},
+        {"--dry-run", "list resolved functions and exit"},
+    });
+    fputc('\n', out);
+
+    print_help_options(out, {
+        {"--exporter M", "stdout (default), otlp, otlp-http, or otlp-json"},
+        {"--endpoint URL",
+         "OTLP endpoint; default localhost:4317 / :4318", 1},
+        {"--export-file FILE", "output file for --exporter otlp-json", 1},
+        {"--service-name NAME",
+         "override service.name (default: exe basename)", 1},
+        {"--service-namespace NAME", "override service.namespace", 1},
+        {"--trace-scope M", "root (default), thread, or process", 1},
+        {"--batch-size N", "spans per OTLP batch (default: 512)", 1},
+        {"--batch-bytes N", "OTLP request size limit (default: 1m)", 1},
+        {"--flush-interval N",
+         "OTLP batch flush interval in ms (default: 1000)", 1},
+        {"--timeout-ms N", "OTLP HTTP timeout (default: 5000)", 1},
+        {"--queue-spans N", "exporter queue limit (default: 10000)", 1},
+        {"--header K=V", "add an HTTP header (repeatable)", 1},
+        {"--compression M", "none (default) or gzip (OTLP/HTTP only)", 1},
+        {"--sample-rate R", "root-trace sampling rate, 0..1 (default: 1)", 1},
+        {"--fail-on-export-error", "exit non-zero if export fails", 1},
+    });
+    fputc('\n', out);
+
+    print_help_options(out, {
+        {"--trace-metadata FILE", "write an offline-conversion sidecar"},
+        {"-v, --verbose", "verbose diagnostics"},
+        {"-h, --help", "show help"},
+        {"--version", "show version"},
+    });
+    fprintf(out,
             "\n"
             "Examples:\n"
             "  sudo callgraph run -- ./demo\n"
@@ -191,14 +287,18 @@ void export_usage(FILE* out)
             "  callgraph export --otel --input TRACE [options]\n"
             "  callgraph export --flame --input TRACE [options]\n"
             "\n"
-            "Modes:\n"
-            "  --otel    convert a text trace to OpenTelemetry OTLP/JSON spans\n"
-            "  --flame   convert a text trace to folded stacks for flame graphs\n"
-            "\n"
-            "Shared options:\n"
-            "  --input FILE          callgraph text trace to convert\n"
-            "  -o, --output FILE     write output to FILE\n"
-            "  -h, --help            show this help\n"
+            "Modes:\n");
+    print_help_options(out, {
+        {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
+        {"--flame", "convert a text trace to folded stacks for flame graphs"},
+    });
+    fprintf(out, "\nShared options:\n");
+    print_help_options(out, {
+        {"--input FILE", "callgraph text trace to convert"},
+        {"-o, --output FILE", "write output to FILE"},
+        {"-h, --help", "show this help"},
+    });
+    fprintf(out,
             "\n"
             "Mode-specific help:\n"
             "  callgraph export --otel --help\n"
@@ -216,28 +316,39 @@ void otel_export_usage(FILE* out)
             "to write it to a file or --endpoint to POST it to an OTLP/HTTP\n"
             "JSON receiver.\n"
             "\n"
-            "Options:\n"
-            "  --input FILE          callgraph text trace to convert\n"
-            "  -o, --output FILE     write the OTLP/JSON request body to FILE\n"
-            "  --endpoint URL        POST the OTLP/JSON body to URL\n"
-            "                        (OTLP/HTTP JSON; path defaults to /v1/traces)\n"
-            "  --service-name NAME   override service.name\n"
-            "  --service-namespace NAME\n"
-            "  --metadata FILE       trace metadata sidecar\n"
-            "  --assume-local-capture  assume the trace came from this host/boot session\n"
-            "  --trace-scope MODE    root (default), thread, or process\n"
-            "  --trace-id-seed HEX   deterministic trace IDs\n"
-            "  --sample-rate R       root-trace sampling rate, 0..1\n"
-            "  --batch-size N        spans per OTLP batch (default: 512)\n"
-            "  --batch-bytes N       request size limit (default: 1m)\n"
-            "  --flush-interval N    batch flush interval in ms (default: 1000)\n"
-            "  --timeout-ms N        HTTP timeout (default: 5000)\n"
-            "  --queue-spans N       exporter queue limit (default: 10000)\n"
-            "  --header K=V          add an HTTP header (repeatable)\n"
-            "  --compression M       none (default) or gzip\n"
-            "  --fail-on-export-error  exit non-zero if export fails\n"
-            "  --input-show-args     preserve --show-args suffixes as attributes\n"
-            "  -h, --help            show this help\n"
+            "Mode:\n");
+    print_help_options(out, {
+        {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
+        {"--endpoint URL",
+         "POST the OTLP/JSON body to URL\n"
+         "(OTLP/HTTP JSON; path defaults to /v1/traces)", 1},
+        {"--service-name NAME", "override service.name", 1},
+        {"--service-namespace NAME", "override service.namespace", 1},
+        {"--metadata FILE", "trace metadata sidecar", 1},
+        {"--assume-local-capture",
+         "assume the trace came from this host/boot session", 1},
+        {"--trace-scope MODE", "root (default), thread, or process", 1},
+        {"--trace-id-seed HEX", "deterministic trace IDs", 1},
+        {"--sample-rate R", "root-trace sampling rate, 0..1", 1},
+        {"--batch-size N", "spans per OTLP batch (default: 512)", 1},
+        {"--batch-bytes N", "request size limit (default: 1m)", 1},
+        {"--flush-interval N",
+         "batch flush interval in ms (default: 1000)", 1},
+        {"--timeout-ms N", "HTTP timeout (default: 5000)", 1},
+        {"--queue-spans N", "exporter queue limit (default: 10000)", 1},
+        {"--header K=V", "add an HTTP header (repeatable)", 1},
+        {"--compression M", "none (default) or gzip", 1},
+        {"--fail-on-export-error", "exit non-zero if export fails", 1},
+        {"--input-show-args",
+         "preserve --show-args suffixes as attributes", 1},
+    });
+    fprintf(out, "\nShared options:\n");
+    print_help_options(out, {
+        {"--input FILE", "callgraph text trace to convert"},
+        {"-o, --output FILE", "write the OTLP/JSON request body to FILE"},
+        {"-h, --help", "show this help"},
+    });
+    fprintf(out,
             "\n"
             "Notes:\n"
             "  --output and --endpoint are alternatives; one is required.\n"
@@ -268,10 +379,17 @@ void flame_export_usage(FILE* out)
             "flamegraph.pl or inferno-flamegraph.  Output goes to stdout unless\n"
             "-o/--output is given.\n"
             "\n"
-            "Options:\n"
-            "  --input FILE          callgraph text trace to convert\n"
-            "  -o, --output FILE     write folded stacks to FILE (default: stdout)\n"
-            "  -h, --help            show this help\n"
+            "Mode:\n");
+    print_help_options(out, {
+        {"--flame", "convert a text trace to folded stacks for flame graphs"},
+    });
+    fprintf(out, "\nShared options:\n");
+    print_help_options(out, {
+        {"--input FILE", "callgraph text trace to convert"},
+        {"-o, --output FILE", "write folded stacks to FILE (default: stdout)"},
+        {"-h, --help", "show this help"},
+    });
+    fprintf(out,
             "\n"
             "Format:\n"
             "  main;C(int);B(int) 1\n"

@@ -330,7 +330,9 @@ The default exporter is stdout. OTLP is explicitly enabled. `callgraph export`
 has two mutually exclusive offline modes: `--otel` emits OTLP/JSON and
 `--flame` emits folded stacks for flamegraph tools. `--batch-size` controls
 OTLP batching; `--probe-batch-size` controls the `uprobe_multi` link batch
-independently.
+independently. In `--help`, each offline mode is a master entry and its
+mode-specific options are indented beneath it; `--input`, `--output`, and
+`--help` are shared.
 
 ## 11. Jaeger visualization
 
