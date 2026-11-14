@@ -147,9 +147,11 @@ sudo ./build/callgraph run -T --exporter otlp-json \
 
 ### Options
 
-Master options stay at the normal indent. Options that refine or require a
-master are indented four spaces further, and every description starts in the
-same column.
+Every help entry point (`callgraph --help`, `run --help`, `attach --help`,
+`export --help`, and the two export mode pages) prints the same page, organized
+by section. Master options stay at the normal indent; options that refine or
+require a master are indented four spaces further, and every description starts
+in the same column.
 
 ```
 Usage:
@@ -157,7 +159,7 @@ Usage:
   callgraph attach [options] -p PID
   callgraph export --otel|--flame --input TRACE [options]
 
-Options:
+Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
       --include GLOB        only trace functions matching GLOB (repeatable)
       --exclude GLOB        skip functions matching GLOB (repeatable)
@@ -173,7 +175,12 @@ Options:
       --indent N            indent names by depth*N spaces (default: 0)
       --show-args           show function arguments after names (needs DWARF)
       --histogram           append per-root call trees and latency histograms to the output
+      --probe-batch-size N  functions per uprobe_multi link (default: 1000)
+      --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
+      --dry-run             list resolved functions and exit
+      --trace-metadata FILE write an offline-conversion sidecar
 
+Kernel event options (--kernel):
       --kernel              enable correlated kernel event tracing
           --sched           trace scheduler switch/wakeup events
           --futex           trace futex syscall begin/end events
@@ -185,10 +192,7 @@ Options:
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
           --require-events  fail if a requested tracepoint is unavailable
 
-      --probe-batch-size N  functions per uprobe_multi link (default: 1000)
-      --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
-      --dry-run             list resolved functions and exit
-
+Live export options (--exporter):
       --exporter M          stdout (default), otlp, otlp-http, or otlp-json
           --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
           --export-file FILE
@@ -210,22 +214,89 @@ Options:
           --fail-on-export-error
                             exit non-zero if export fails
 
-      --trace-metadata FILE write an offline-conversion sidecar
+Offline export options (callgraph export):
+  Convert an existing text trace without root.  --otel emits an
+  OTLP/JSON request body; --flame emits folded stacks.
+      --input FILE          callgraph text trace to convert
+      --otel                convert a text trace to OpenTelemetry OTLP/JSON spans
+          --endpoint URL    POST the OTLP/JSON body to URL
+                            (OTLP/HTTP JSON; path defaults to /v1/traces)
+          --service-name NAME
+                            override service.name
+          --service-namespace NAME
+                            override service.namespace
+          --metadata FILE   trace metadata sidecar
+          --assume-local-capture
+                            assume the trace came from this host/boot session
+          --trace-scope MODE
+                            root (default), thread, or process
+          --trace-id-seed HEX
+                            deterministic trace IDs
+          --sample-rate R   root-trace sampling rate, 0..1
+          --batch-size N    spans per OTLP batch (default: 512)
+          --batch-bytes N   request size limit (default: 1m)
+          --flush-interval N
+                            batch flush interval in ms (default: 1000)
+          --timeout-ms N    HTTP timeout (default: 5000)
+          --queue-spans N   exporter queue limit (default: 10000)
+          --header K=V      add an HTTP header (repeatable)
+          --compression M   none (default) or gzip
+          --fail-on-export-error
+                            exit non-zero if export fails
+          --input-show-args preserve --show-args suffixes as attributes
+      --flame               convert a text trace to folded stacks for flame graphs
+  -o, --output FILE         write the converted output to FILE (default: stdout)
+
+  --output and --endpoint are alternatives; --otel requires one.
+  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
+  protobuf use --exporter otlp or --exporter otlp-http.
+
+General options:
   -v, --verbose             verbose diagnostics
-  -h, --help                show help
+  -h, --help                show this help
       --version             show version
+
+Examples:
+  Trace a program:
+    sudo callgraph run -- ./demo
+    sudo callgraph run --include 'Database::*' -- ./demo
+    callgraph run --dry-run -- ./demo
+
+  Attach to a running process:
+    sudo callgraph attach -p 12345 --include 'Database::*'
+
+  Correlated kernel events:
+    sudo callgraph run --kernel --preset latency -- ./demo
+    sudo callgraph run --kernel --sched --futex --report -- ./demo
+
+  Live export:
+    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo
+    sudo callgraph run --exporter otlp-http -- ./demo
+    sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo
+    sudo callgraph attach -p 12345 --exporter otlp \
+        --endpoint localhost:4317 --service-name my_app
+
+  Offline export:
+    # Record the timestamp anchor while capturing, then convert
+    callgraph run -o trace.log --trace-metadata trace.meta -- ./app
+    callgraph export --otel --input trace.log \
+        --metadata trace.meta --output spans.json
+
+    # ISO wall-clock trace with no sidecar
+    callgraph export --otel --input trace.log --output spans.json
+
+    # Boot-second trace with no sidecar; approximate this-host anchor
+    callgraph export --otel --input trace.log --output spans.json \
+        --assume-local-capture
+
+    callgraph export --flame --input trace.log --output stacks.folded
+    flamegraph.pl stacks.folded > flame.svg
 ```
 
-`callgraph export --otel` accepts `--input TRACE`, `--output FILE`,
-`--endpoint URL`, `--service-name NAME`, `--service-namespace NAME`,
-`--metadata FILE`, `--assume-local-capture`, `--trace-scope MODE`,
-`--trace-id-seed HEX`, `--sample-rate R`, `--input-show-args`, and batch/HTTP
-options (`--batch-size`, `--batch-bytes`, `--flush-interval`, `--timeout-ms`,
-`--queue-spans`, `--compression`, `--header`, `--fail-on-export-error`).
-
-`callgraph export --flame` accepts `--input TRACE` and optional
-`--output FILE`; it writes folded stacks to stdout by default. The two modes
-are mutually exclusive.
+`callgraph export` has two mutually exclusive offline modes: `--otel` emits an
+OTLP/JSON request body and `--flame` emits folded stacks. Both read a text
+trace via `--input`; `--otel` requires either `--output FILE` or
+`--endpoint URL`, while `--flame` writes to stdout unless `--output` is given.
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;

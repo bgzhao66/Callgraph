@@ -72,6 +72,12 @@ if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
 fi
 
 echo "== help hierarchy =="
+"$BIN" run --help | grep -q '^Tracing options:'
+"$BIN" run --help | grep -q '^Kernel event options (--kernel):'
+"$BIN" run --help | grep -q '^Live export options (--exporter):'
+"$BIN" run --help | grep -q '^Offline export options (callgraph export):'
+"$BIN" run --help | grep -q '^General options:'
+"$BIN" run --help | grep -q '^  Correlated kernel events:'
 "$BIN" run --help | grep -q '^      --kernel'
 "$BIN" run --help | grep -q '^          --events'
 "$BIN" run --help | grep -q '^          --endpoint'
@@ -79,6 +85,16 @@ echo "== help hierarchy =="
 "$BIN" export --help | grep -q '^      --flame'
 "$BIN" export --otel --help | grep -q '^          --endpoint'
 "$BIN" export --flame --help | grep -q '^      --flame'
+"$BIN" --help > "$TMP/help.txt"
+for args in "run --help" "attach --help" "export --help" \
+            "export --otel --help" "export --flame --help"; do
+    # shellcheck disable=SC2086
+    "$BIN" $args > "$TMP/help-variant.txt"
+    if ! cmp -s "$TMP/help.txt" "$TMP/help-variant.txt"; then
+        echo "help output differs for: $args" >&2
+        exit 1
+    fi
+done
 
 echo "== OTLP offline conversion =="
 cat > "$TMP/otel.trace" <<'EOF'

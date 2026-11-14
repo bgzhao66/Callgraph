@@ -109,9 +109,6 @@ struct Options {
     std::string trace_metadata;
 };
 
-enum class UsageMode { Run, Export };
-UsageMode g_usage_mode = UsageMode::Run;
-
 // Help options use two levels: a master option and the options that refine or
 // require it.  Masters stay at the normal indent; secondary options are
 // indented four spaces further.  Descriptions share one column, so the option
@@ -176,6 +173,14 @@ void print_help_options(FILE* out, std::initializer_list<HelpOption> options)
         print_help_option(out, option);
 }
 
+void print_help_section(FILE* out, const char* title,
+                        std::initializer_list<HelpOption> options)
+{
+    fprintf(out, "%s:\n", title);
+    print_help_options(out, options);
+    fputc('\n', out);
+}
+
 void usage(FILE* out)
 {
     fprintf(out,
@@ -183,9 +188,9 @@ void usage(FILE* out)
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
-            "\n"
-            "Options:\n");
-    print_help_options(out, {
+            "\n");
+
+    print_help_section(out, "Tracing options", {
         {"-o, --output FILE", "write events to FILE (default: stdout)"},
         {"--include GLOB", "only trace functions matching GLOB (repeatable)"},
         {"--exclude GLOB", "skip functions matching GLOB (repeatable)"},
@@ -204,10 +209,15 @@ void usage(FILE* out)
         {"--show-args", "show function arguments after names (needs DWARF)"},
         {"--histogram",
          "append per-root call trees and latency histograms to the output"},
+        {"--probe-batch-size N",
+         "functions per uprobe_multi link (default: 1000)"},
+        {"--ringbuf-size N",
+         "function and kernel ring buffer size, k/m/g suffix (default: 16m)"},
+        {"--dry-run", "list resolved functions and exit"},
+        {"--trace-metadata FILE", "write an offline-conversion sidecar"},
     });
-    fputc('\n', out);
 
-    print_help_options(out, {
+    print_help_section(out, "Kernel event options (--kernel)", {
         {"--kernel", "enable correlated kernel event tracing"},
         {"--sched", "trace scheduler switch/wakeup events", 1},
         {"--futex", "trace futex syscall begin/end events", 1},
@@ -221,18 +231,8 @@ void usage(FILE* out)
         {"--require-events",
          "fail if a requested tracepoint is unavailable", 1},
     });
-    fputc('\n', out);
 
-    print_help_options(out, {
-        {"--probe-batch-size N",
-         "functions per uprobe_multi link (default: 1000)"},
-        {"--ringbuf-size N",
-         "function and kernel ring buffer size, k/m/g suffix (default: 16m)"},
-        {"--dry-run", "list resolved functions and exit"},
-    });
-    fputc('\n', out);
-
-    print_help_options(out, {
+    print_help_section(out, "Live export options (--exporter)", {
         {"--exporter M", "stdout (default), otlp, otlp-http, or otlp-json"},
         {"--endpoint URL",
          "OTLP endpoint; default localhost:4317 / :4318", 1},
@@ -252,69 +252,13 @@ void usage(FILE* out)
         {"--sample-rate R", "root-trace sampling rate, 0..1 (default: 1)", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
     });
-    fputc('\n', out);
 
-    print_help_options(out, {
-        {"--trace-metadata FILE", "write an offline-conversion sidecar"},
-        {"-v, --verbose", "verbose diagnostics"},
-        {"-h, --help", "show help"},
-        {"--version", "show version"},
-    });
     fprintf(out,
-            "\n"
-            "Examples:\n"
-            "  sudo callgraph run -- ./demo\n"
-            "  sudo callgraph attach -p 12345 --include 'Database::*'\n"
-            "  callgraph run --dry-run -- ./demo\n"
-            "  sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
-            "  sudo callgraph run --exporter otlp-http -- ./demo\n"
-            "  sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo\n"
-            "  sudo callgraph attach -p 12345 --exporter otlp \\\n"
-            "      --endpoint localhost:4317 --service-name my_app\n"
-            "  callgraph export --otel --input trace.log --output spans.json\n"
-            "  callgraph export --flame --input trace.log --output stacks.folded\n"
-            "\n"
-            "Run 'callgraph export --help' for offline conversion options.\n");
-}
-
-void export_usage(FILE* out)
-{
-    fprintf(out,
-            "Usage:\n"
-            "  callgraph export --otel --input TRACE [options]\n"
-            "  callgraph export --flame --input TRACE [options]\n"
-            "\n"
-            "Modes:\n");
-    print_help_options(out, {
-        {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
-        {"--flame", "convert a text trace to folded stacks for flame graphs"},
-    });
-    fprintf(out, "\nShared options:\n");
+            "Offline export options (callgraph export):\n"
+            "  Convert an existing text trace without root.  --otel emits an\n"
+            "  OTLP/JSON request body; --flame emits folded stacks.\n");
     print_help_options(out, {
         {"--input FILE", "callgraph text trace to convert"},
-        {"-o, --output FILE", "write output to FILE"},
-        {"-h, --help", "show this help"},
-    });
-    fprintf(out,
-            "\n"
-            "Mode-specific help:\n"
-            "  callgraph export --otel --help\n"
-            "  callgraph export --flame --help\n");
-}
-
-void otel_export_usage(FILE* out)
-{
-    fprintf(out,
-            "Usage:\n"
-            "  callgraph export --otel --input TRACE [options]\n"
-            "\n"
-            "Convert a callgraph text trace into OpenTelemetry spans.  The\n"
-            "offline command emits one OTLP/JSON request body; use -o/--output\n"
-            "to write it to a file or --endpoint to POST it to an OTLP/HTTP\n"
-            "JSON receiver.\n"
-            "\n"
-            "Mode:\n");
-    print_help_options(out, {
         {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
         {"--endpoint URL",
          "POST the OTLP/JSON body to URL\n"
@@ -338,67 +282,70 @@ void otel_export_usage(FILE* out)
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
         {"--input-show-args",
          "preserve --show-args suffixes as attributes", 1},
-    });
-    fprintf(out, "\nShared options:\n");
-    print_help_options(out, {
-        {"--input FILE", "callgraph text trace to convert"},
-        {"-o, --output FILE", "write the OTLP/JSON request body to FILE"},
-        {"-h, --help", "show this help"},
+        {"--flame", "convert a text trace to folded stacks for flame graphs"},
+        {"-o, --output FILE",
+         "write the converted output to FILE (default: stdout)"},
     });
     fprintf(out,
             "\n"
-            "Notes:\n"
-            "  --output and --endpoint are alternatives; one is required.\n"
-            "  This command emits OTLP/JSON only. For live OTLP/gRPC or\n"
-            "  OTLP/HTTP-protobuf use --exporter otlp or --exporter otlp-http.\n"
-            "\n"
+            "  --output and --endpoint are alternatives; --otel requires one.\n"
+            "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
+            "  protobuf use --exporter otlp or --exporter otlp-http.\n"
+            "\n");
+
+    print_help_section(out, "General options", {
+        {"-v, --verbose", "verbose diagnostics"},
+        {"-h, --help", "show this help"},
+        {"--version", "show version"},
+    });
+
+    fprintf(out,
             "Examples:\n"
-            "  # Preferred: record the anchor while capturing\n"
-            "  callgraph run -o trace.log --trace-metadata trace.meta -- ./app\n"
-            "  callgraph export --otel --input trace.log \\\n"
-            "      --metadata trace.meta --output spans.json\n"
+            "  Trace a program:\n"
+            "    sudo callgraph run -- ./demo\n"
+            "    sudo callgraph run --include 'Database::*' -- ./demo\n"
+            "    callgraph run --dry-run -- ./demo\n"
             "\n"
-            "  # Trace with -T (ISO wall-clock timestamps), no sidecar\n"
-            "  callgraph export --otel --input trace.log --output spans.json\n"
+            "  Attach to a running process:\n"
+            "    sudo callgraph attach -p 12345 --include 'Database::*'\n"
             "\n"
-            "  # Boot-second trace with no sidecar; approximate this-host anchor\n"
-            "  callgraph export --otel --input trace.log --output spans.json \\\n"
-            "      --assume-local-capture\n");
+            "  Correlated kernel events:\n"
+            "    sudo callgraph run --kernel --preset latency -- ./demo\n"
+            "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
+            "\n"
+            "  Live export:\n"
+            "    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
+            "    sudo callgraph run --exporter otlp-http -- ./demo\n"
+            "    sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo\n"
+            "    sudo callgraph attach -p 12345 --exporter otlp \\\n"
+            "        --endpoint localhost:4317 --service-name my_app\n"
+            "\n"
+            "  Offline export:\n"
+            "    # Record the timestamp anchor while capturing, then convert\n"
+            "    callgraph run -o trace.log --trace-metadata trace.meta -- ./app\n"
+            "    callgraph export --otel --input trace.log \\\n"
+            "        --metadata trace.meta --output spans.json\n"
+            "\n"
+            "    # ISO wall-clock trace with no sidecar\n"
+            "    callgraph export --otel --input trace.log --output spans.json\n"
+            "\n"
+            "    # Boot-second trace with no sidecar; approximate this-host anchor\n"
+            "    callgraph export --otel --input trace.log --output spans.json \\\n"
+            "        --assume-local-capture\n"
+            "\n"
+            "    callgraph export --flame --input trace.log --output stacks.folded\n"
+            "    flamegraph.pl stacks.folded > flame.svg\n");
 }
 
-void flame_export_usage(FILE* out)
+void usage_brief(FILE* out)
 {
     fprintf(out,
             "Usage:\n"
-            "  callgraph export --flame --input TRACE [options]\n"
+            "  callgraph run [options] -- program [args...]\n"
+            "  callgraph attach [options] -p PID\n"
+            "  callgraph export --otel|--flame --input TRACE [options]\n"
             "\n"
-            "Convert a callgraph text trace into folded stacks for\n"
-            "flamegraph.pl or inferno-flamegraph.  Output goes to stdout unless\n"
-            "-o/--output is given.\n"
-            "\n"
-            "Mode:\n");
-    print_help_options(out, {
-        {"--flame", "convert a text trace to folded stacks for flame graphs"},
-    });
-    fprintf(out, "\nShared options:\n");
-    print_help_options(out, {
-        {"--input FILE", "callgraph text trace to convert"},
-        {"-o, --output FILE", "write folded stacks to FILE (default: stdout)"},
-        {"-h, --help", "show this help"},
-    });
-    fprintf(out,
-            "\n"
-            "Format:\n"
-            "  main;C(int);B(int) 1\n"
-            "  main;C(int) 1\n"
-            "  main 1\n"
-            "\n"
-            "Each line is a root-to-function stack followed by its invocation\n"
-            "count. Frames closed by desync or shutdown end in [incomplete].\n"
-            "\n"
-            "Example:\n"
-            "  callgraph export --flame --input trace.log --output stacks.folded\n"
-            "  flamegraph.pl stacks.folded > flame.svg\n");
+            "Run 'callgraph --help' for all options.\n");
 }
 
 [[noreturn]] void usage_error(const char* fmt, ...)
@@ -409,10 +356,7 @@ void flame_export_usage(FILE* out)
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n\n");
     va_end(ap);
-    if (g_usage_mode == UsageMode::Export)
-        export_usage(stderr);
-    else
-        usage(stderr);
+    usage_brief(stderr);
     std::exit(2);
 }
 
@@ -946,7 +890,6 @@ struct ExportOptions {
 
 ExportOptions parse_export_args(int argc, char** argv)
 {
-    g_usage_mode = UsageMode::Export;
     if (argc >= 3 && std::string(argv[2]) == "otel") {
         usage_error("the 'otel' token was removed; use "
                     "'callgraph export --otel --input TRACE'");
@@ -1066,12 +1009,7 @@ ExportOptions parse_export_args(int argc, char** argv)
     }
 
     if (options.help) {
-        if (!options.mode_set)
-            export_usage(stdout);
-        else if (options.mode == ExportMode::Otel)
-            otel_export_usage(stdout);
-        else
-            flame_export_usage(stdout);
+        usage(stdout);
         std::exit(0);
     }
 

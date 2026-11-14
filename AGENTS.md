@@ -48,7 +48,8 @@ sudo bash tests/integration.sh ./build/callgraph # full tracing + attach coverag
 - `--max-depth` and `--indent` are display-only and do not affect exported spans.
 - `--no-rsp-resync` disables the entry-`rsp` unwind heuristic for stackful runtimes (`ucontext`, Boost.Context, Go); pair it with `--return-mode=ret`.
 - The same `--exporter` options work in both `run` and `attach` mode.
-- `callgraph export --otel` converts text traces to OTLP/JSON and does not need root; `callgraph export --flame` emits folded stacks. See the mode-specific `--help`.
+- `callgraph export --otel` converts text traces to OTLP/JSON and does not need root; `callgraph export --flame` emits folded stacks.
+- Every help entry point (`callgraph --help`, `run --help`, `attach --help`, `export --help`, `export --otel --help`, `export --flame --help`) prints the same single page, organized into Usage, Tracing options, Kernel event options, Live export options, Offline export options, General options, and Examples. Errors print only the Usage block plus a `--help` hint.
 - Help output uses two levels: master options (`--kernel`, `--exporter`, `--otel`, `--flame`) stay at the normal indent, and the options that refine or require them are indented four spaces further. Descriptions share one column so the option names read as a table. Keep new sub-options under their master.
 
 ## Runtime requirements and gotchas
