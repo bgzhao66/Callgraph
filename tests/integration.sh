@@ -367,7 +367,8 @@ grep -q '@NET socket_begin' "$TMP/preset-net.trace"
     >/dev/null 2>"$TMP/preset-storage.err"
 grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 ! grep -q '@NET' "$TMP/preset-storage.trace"
-grep -q 'block tracepoints are global' "$TMP/preset-storage.err"
+! grep -q '@BLOCK' "$TMP/preset-storage.trace"
+! grep -q 'block tracepoints are global' "$TMP/preset-storage.err"
 
 "$BIN" run --kernel --preset computation \
     -o "$TMP/preset-computation.trace" --regex \
@@ -384,6 +385,31 @@ grep -q '@MM page_fault' "$TMP/preset-computation.trace"
 grep -q '@MM page_fault' "$TMP/preset-full.trace"
 grep -q '@NET socket_begin' "$TMP/preset-full.trace"
 grep -q 'block tracepoints are global' "$TMP/preset-full.err"
+
+"$BIN" run --kernel --preset full --block \
+    -o "$TMP/preset-full-block.trace" --regex \
+    --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-full-block.err"
+grep -q 'block tracepoints are global' "$TMP/preset-full-block.err"
+
+"$BIN" run --kernel --block -o "$TMP/preset-block-only.trace" \
+    --regex --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-block-only.err"
+grep -q 'block tracepoints are global' "$TMP/preset-block-only.err"
+! grep -q '@SCHED' "$TMP/preset-block-only.trace"
+! grep -q '@IO' "$TMP/preset-block-only.trace"
+! grep -q '@NET' "$TMP/preset-block-only.trace"
+! grep -q '@MM' "$TMP/preset-block-only.trace"
+
+"$BIN" run --kernel --block --io --network \
+    -o "$TMP/preset-combined.trace" --regex \
+    --include "$preset_include" -- "$TMP/kernel" \
+    >/dev/null 2>"$TMP/preset-combined.err"
+grep -q 'block tracepoints are global' "$TMP/preset-combined.err"
+grep -q '@IO fsync_begin' "$TMP/preset-combined.trace"
+grep -q '@NET socket_begin' "$TMP/preset-combined.trace"
+! grep -q '@SCHED' "$TMP/preset-combined.trace"
+! grep -q '@MM' "$TMP/preset-combined.trace"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
@@ -508,12 +534,26 @@ grep -q 'kernel events:' "$TMP/attach-default.err"
 "$TMP/attach_kernel_target" &
 attach_pid=$!
 sleep 0.2
-"$BIN" attach -p "$attach_pid" --kernel --preset storage \
+"$BIN" attach -p "$attach_pid" --kernel --preset storage --block \
     -o "$TMP/attach-storage.trace" --regex \
     --include '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-storage.err"
 wait "$attach_pid" || true
 grep -q 'block tracepoints are global' "$TMP/attach-storage.err"
+
+"$TMP/attach_kernel_target" &
+attach_pid=$!
+sleep 0.2
+"$BIN" attach -p "$attach_pid" --kernel --block \
+    -o "$TMP/attach-block-only.trace" --regex \
+    --include '^(worker[(]int[)]|leaf[(]int[)])$' \
+    >/dev/null 2>"$TMP/attach-block-only.err"
+wait "$attach_pid" || true
+grep -q 'block tracepoints are global' "$TMP/attach-block-only.err"
+! grep -q '@SCHED' "$TMP/attach-block-only.trace"
+! grep -q '@IO' "$TMP/attach-block-only.trace"
+! grep -q '@NET' "$TMP/attach-block-only.trace"
+! grep -q '@MM' "$TMP/attach-block-only.trace"
 
 echo "== wall-clock timestamps =="
 "$BIN" run -T -o "$TMP/wall.trace" --regex \

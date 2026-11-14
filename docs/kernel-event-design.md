@@ -1041,6 +1041,9 @@ its family shortcuts and modifiers are indented beneath it.
 # reclaim; no block, page-fault points, or global TCP retransmits)
 callgraph attach -p 4242 --kernel
 
+# Explicit family combination: block, io, and network only
+callgraph attach -p 4242 --kernel --block --io --network
+
 # Scheduler only
 callgraph attach -p 4242 --kernel --sched
 
@@ -1133,7 +1136,7 @@ means network syscalls + TCP retransmits.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `latency` (default) | generic request latency | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | — |
 | `proxy` | proxies, gateways, load balancers | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
-| `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | — | ✓ | — | — | — |
 | `computation` | CPU-bound workers, batch, numeric | ✓ | ✓ | — | — | ✓ | ✓ | — | — |
 | `full` | everything implemented | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
@@ -1149,12 +1152,12 @@ Rationale:
   socket `read`/`write` and `epoll_wait` interleave with proxying, and keeps
   sched/futex/reclaim because proxies still suffer scheduling, lock, and
   allocator stalls.
-- `storage` keeps io, block, sched, futex, and reclaim. It drops network and
-  page-fault points.
+- `storage` keeps io, sched, futex, and reclaim. It drops network, block, and
+  page-fault points; add `--block` for the block layer.
 - `computation` keeps sched, futex, reclaim, and page faults. It drops syscall
   I/O, block, and network. PMU counters will join this preset when implemented.
-- `full` enables every implemented scope, including the global/high-volume
-  ones. Future PMU, IRQ, and workqueue scopes join here.
+- `full` enables every implemented scope, including block and global TCP
+  retransmits. Future PMU, IRQ, and workqueue scopes join here.
 
 Presets are additive with explicit family flags and `--events`: explicit
 `--memory` adds faults even under `latency`, and explicit `--network` adds TCP
@@ -1162,10 +1165,12 @@ retransmits even under `latency`. Presets never disable an explicitly
 requested scope and never change `--trace-scope`; that option remains `root`
 unless set.
 
-In both run and attach, `latency` leaves block off: block tracepoints are
-global and fire for every device request on the host, not just the traced
-PID, so they are not part of the generic PID/app profile. Pass `--block`, or
-use `--preset storage`/`--preset full`, to include them.
+Block tracepoints are global and fire for every device request on the host,
+not just the traced PID. Only `full` includes block by default. `--block` is a
+family shortcut like `--sched`: on its own it selects block-only tracing, and
+combined with a preset or other family flags it adds block to that selection.
+Explicit family flags are additive and suppress the implicit latency default;
+`--block --io --network` selects exactly block, io, and network.
 
 ## 9. Output and reports
 
@@ -1353,7 +1358,7 @@ Guidelines:
 | sched | high invocation rate | target filter; only transitions |
 | futex | low/medium | selected syscall tracepoint |
 | I/O syscalls | medium | target filter; selected calls |
-| block | high | device filter; opt-in |
+| block | high | device filter; select with `--block` |
 | mm | low/medium | select with `--memory`; page faults can be high-volume |
 | net tracepoints | high | opt-in/global |
 | PMU counting | low | per-thread group |

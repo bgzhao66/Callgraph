@@ -189,7 +189,7 @@ Kernel event options (--kernel):
           --sched           trace scheduler switch/wakeup events
           --futex           trace futex syscall begin/end events
           --io              trace read/write/fsync syscall events
-          --block           trace block request events (global; not in latency)
+          --block           trace block request events (global)
           --network         trace socket syscalls and TCP retransmits
           --memory          trace page faults and direct reclaim
           --events L        comma-separated: sched,futex,io,block,net,mm
@@ -278,6 +278,7 @@ Examples:
     sudo callgraph run --kernel --sched --futex --report -- ./demo
     sudo callgraph run --kernel --memory --network -- ./demo
     sudo callgraph attach -p 12345 --kernel
+    sudo callgraph attach -p 12345 --kernel --block --io --network
 
   Live export:
     sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo
@@ -539,7 +540,7 @@ Presets select fine-grained scopes:
 | --- | --- | --- |
 | `latency` (default) | scheduler, futex, I/O syscalls, direct reclaim, network syscalls | block, page-fault points, global TCP retransmits |
 | `proxy` | scheduler, futex, I/O syscalls, direct reclaim, network syscalls, global TCP retransmits | block |
-| `storage` | scheduler, futex, I/O syscalls, block, direct reclaim | network, page-fault points |
+| `storage` | scheduler, futex, I/O syscalls, direct reclaim | block, network, page-fault points |
 | `computation` | scheduler, futex, direct reclaim, page-fault points | I/O syscalls, block, network |
 | `full` | every implemented scope | — |
 
@@ -548,9 +549,12 @@ Presets select fine-grained scopes:
 are additive with explicit family flags. Presets do not change
 `--trace-scope`, which stays `root` unless set.
 
-In both run and attach, `latency` leaves block off because block events are
-global and not tied to the traced PID. Pass `--block`, or use
-`--preset storage`/`--preset full`, to include them.
+Block events are global and not tied to the traced PID. Only `full` includes
+them by default. `--block` is a family shortcut: on its own it selects
+block-only tracing; combined with a preset or other family flags it adds block
+to that selection. Explicit family flags are additive and suppress the
+implicit latency default: `--kernel --block --io --network` selects exactly
+block, I/O, and network.
 
 Implemented families:
 
