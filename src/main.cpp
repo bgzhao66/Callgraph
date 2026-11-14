@@ -69,6 +69,7 @@ struct Options {
     size_t indent_step = 0;
     bool show_args = false;
     bool histogram = false;
+    bool kernel = false;
     bool sched = false;
     bool futex = false;
     bool io = false;
@@ -134,15 +135,16 @@ void usage(FILE* out)
             "      --indent N        indent names by depth*N spaces (default: 0)\n"
             "      --show-args       show function arguments after names (needs DWARF)\n"
             "      --histogram       append per-root call trees and latency histograms to the output\n"
+            "      --kernel          enable correlated kernel event tracing\n"
+            "      --events L        comma-separated: sched,futex,io,block\n"
+            "      --preset P        latency (default), database, cpu, or full\n"
+            "      --report          append the per-thread kernel summary\n"
+            "      --merge-window D  reorder window, ns/us/ms/s (default: 1ms)\n"
+            "      --require-events  fail if a requested tracepoint is unavailable\n"
             "      --sched           trace scheduler switch/wakeup events\n"
             "      --futex           trace futex syscall begin/end events\n"
             "      --io              trace read/write/fsync syscall events\n"
             "      --block           trace block request events (global)\n"
-            "      --kernel-events L comma-separated: sched,futex,io,block\n"
-            "      --kernel-preset P latency, database, cpu, or full\n"
-            "      --kernel-report   append the per-thread kernel summary\n"
-            "      --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)\n"
-            "      --require-kernel-events  fail if a requested tracepoint is unavailable\n"
             "      --probe-batch-size N  functions per uprobe_multi link (default: 1000)\n"
             "      --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
@@ -386,6 +388,10 @@ Options parse_args(int argc, char** argv)
     if (options.command != "run" && options.command != "attach")
         usage_error("unknown command '%s'", options.command.c_str());
 
+    // Kernel sub-options are meaningless without --kernel.  Remember the first
+    // one so the error can name it.
+    std::string kernel_option_used;
+
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
 
@@ -414,6 +420,10 @@ Options parse_args(int argc, char** argv)
             return argv[++i];
         };
         auto mark_export_option = [&] { options.export_option_used = true; };
+        auto note_kernel_option = [&](const char* name) {
+            if (kernel_option_used.empty())
+                kernel_option_used = name;
+        };
         auto add_kernel_family = [&](const std::string& name) {
             if (name == "sched") {
                 options.sched = true;
@@ -464,15 +474,22 @@ Options parse_args(int argc, char** argv)
             options.show_args = true;
         } else if (arg == "--histogram") {
             options.histogram = true;
+        } else if (arg == "--kernel") {
+            options.kernel = true;
         } else if (arg == "--sched") {
+            note_kernel_option("--sched");
             options.sched = true;
         } else if (arg == "--futex") {
+            note_kernel_option("--futex");
             options.futex = true;
         } else if (arg == "--io") {
+            note_kernel_option("--io");
             options.io = true;
         } else if (arg == "--block") {
+            note_kernel_option("--block");
             options.block = true;
-        } else if (arg == "--kernel-events") {
+        } else if (arg == "--events") {
+            note_kernel_option("--events");
             const std::string list = value();
             size_t start = 0;
             while (start <= list.size()) {
@@ -482,19 +499,23 @@ Options parse_args(int argc, char** argv)
                                            ? std::string::npos
                                            : comma - start);
                 if (name.empty())
-                    usage_error("--kernel-events contains an empty family");
+                    usage_error("--events contains an empty family");
                 add_kernel_family(name);
                 if (comma == std::string::npos)
                     break;
                 start = comma + 1;
             }
-        } else if (arg == "--kernel-preset") {
+        } else if (arg == "--preset") {
+            note_kernel_option("--preset");
             options.kernel_preset = value();
-        } else if (arg == "--kernel-report") {
+        } else if (arg == "--report") {
+            note_kernel_option("--report");
             options.kernel_report = true;
-        } else if (arg == "--kernel-merge-window") {
+        } else if (arg == "--merge-window") {
+            note_kernel_option("--merge-window");
             options.kernel_merge_window_ns = parse_duration_ns(value(), arg);
-        } else if (arg == "--require-kernel-events") {
+        } else if (arg == "--require-events") {
+            note_kernel_option("--require-events");
             options.require_kernel_events = true;
         } else if (arg == "--probe-batch-size") {
             options.probe_batch_size = parse_size(value(), arg);
@@ -587,6 +608,16 @@ Options parse_args(int argc, char** argv)
     if (options.command == "attach" && options.pid <= 0)
         usage_error("attach requires -p PID");
 
+    if (!options.kernel && !kernel_option_used.empty())
+        usage_error("%s requires --kernel", kernel_option_used.c_str());
+
+    // --kernel on its own selects the default latency preset; an explicit
+    // family or preset overrides it.
+    if (options.kernel && options.kernel_preset.empty() && !options.sched &&
+        !options.futex && !options.io && !options.block) {
+        options.kernel_preset = "latency";
+    }
+
     if (!options.kernel_preset.empty()) {
         if (options.kernel_preset == "latency" ||
             options.kernel_preset == "database") {
@@ -602,18 +633,18 @@ Options parse_args(int argc, char** argv)
             options.io = true;
             options.block = true;
         } else {
-            usage_error("--kernel-preset must be 'latency', 'database', "
+            usage_error("--preset must be 'latency', 'database', "
                         "'cpu', or 'full'");
         }
     }
     const bool kernel_any =
         options.sched || options.futex || options.io || options.block;
     if (options.kernel_report && !kernel_any)
-        usage_error("--kernel-report requires a kernel event family");
+        usage_error("--report requires a kernel event family");
     if (options.require_kernel_events && !kernel_any)
-        usage_error("--require-kernel-events requires a kernel event family");
+        usage_error("--require-events requires a kernel event family");
     if (options.kernel_merge_window_ns == 0)
-        usage_error("--kernel-merge-window must be > 0");
+        usage_error("--merge-window must be > 0");
 
     if (options.max_depth < -1)
         usage_error("--max-depth must be >= -1");

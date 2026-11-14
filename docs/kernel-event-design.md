@@ -212,7 +212,7 @@ The merger therefore holds a small bounded window:
 - After draining both ring buffers, `watermark = max(last_seen_ts) -
   reorder_window`; records at or below the watermark are released in
   `(ts, source_rank, sequence)` order.
-- `--kernel-merge-window` defaults to `1ms`. `0` disables reordering and is
+- `--merge-window` defaults to `1ms`. `0` disables reordering and is
   intended only for debugging.
 - At shutdown, drain both ring buffers and flush the whole window.
 - If a record arrives with a timestamp older than the last released record,
@@ -848,7 +848,7 @@ After the core families:
 | `IO` | `writeback:*`, filesystem `fsync` probes | causal |
 | `LOCK` | selected `lock:*` tracepoints | diagnostic, not latency |
 
-These are not enabled by `--kernel-events` presets except `full`. Some can
+These are not enabled by `--events` presets except `full`. Some can
 produce very high event volumes and are documented as such.
 
 ## 7. Discovery and BPF implementation
@@ -868,7 +868,7 @@ At startup:
 5. Validate that every field the BPF program needs exists and has an
    acceptable size (4 or 8 bytes). Missing or `__data_loc` fields disable
    that specific event with a warning; they do not abort the session unless
-   `--require-kernel-events` is set.
+   `--require-events` is set.
 6. Record the tracefs path, kernel release, available/missing events, and
    field layouts in `--trace-metadata` so an offline trace is reproducible.
 
@@ -1002,61 +1002,68 @@ userspace receipt and marked `approximate=true`.
 
 ## 8. Command-line interface
 
-Kernel events are opt-in. Without them, the CLI and output are unchanged.
+Kernel events are opt-in: `--kernel` is the master switch, and every other
+kernel option is secondary to it. Without `--kernel`, the CLI and output are
+unchanged. `--kernel` alone selects the `latency` preset.
 
 ```text
+# Default families (latency preset: sched, futex, io, block)
+callgraph attach -p 4242 --kernel
+
 # Scheduler only
-callgraph attach -p 4242 --sched
+callgraph attach -p 4242 --kernel --sched
 
 # Synchronization
-callgraph attach -p 4242 --futex
+callgraph attach -p 4242 --kernel --futex
 
 # Storage syscalls and block layer
-callgraph attach -p 4242 --io --block
+callgraph attach -p 4242 --kernel --io --block
 
 # Presets
-callgraph attach -p 4242 --kernel-preset latency
-callgraph attach -p 4242 --kernel-preset database
-callgraph attach -p 4242 --kernel-preset cpu
-callgraph attach -p 4242 --kernel-preset full
+callgraph attach -p 4242 --kernel --preset latency
+callgraph attach -p 4242 --kernel --preset database
+callgraph attach -p 4242 --kernel --preset cpu
+callgraph attach -p 4242 --kernel --preset full
 
 # Explicit family list
 callgraph attach -p 4242 \
-    --kernel-events sched,futex,io,block,mm
+    --kernel --events sched,futex,io,block,mm
 
 # Follow new threads and child processes
-callgraph attach -p 4242 --children --sched
+callgraph attach -p 4242 --kernel --children --sched
 
 # Hardware performance counters
 callgraph attach -p 4242 --pmu cycles,instructions,cache-misses
 callgraph attach -p 4242 --pmu cache-misses --pmu-sampling 100000
 
 # System-wide kernel events (no user-stack attribution)
-callgraph attach --system-wide --sched
+callgraph attach --kernel --system-wide --sched
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--kernel-events LIST` | comma-separated `sched,futex,io,block,net,mm,pmu,irq,work` or `all` |
+| `--kernel` | master switch; enables kernel tracing and defaults to `latency` |
+| `--events LIST` | comma-separated `sched,futex,io,block,net,mm,pmu,irq,work` or `all` |
 | `--sched`, `--futex`, `--io`, `--block`, `--network`, `--memory` | family sugar |
-| `--kernel-preset NAME` | `latency`, `database`, `cpu`, `full` |
+| `--preset NAME` | `latency`, `database`, `cpu`, `full` |
 | `--tid TID` | restrict to explicit TIDs (repeatable/comma-separated) |
 | `--children` | follow child processes as well as threads |
 | `--system-wide` | bypass target filtering; no user-stack attribution |
-| `--kernel-report` | append the `Kernel:` summary section |
-| `--kernel-merge-window NS` | timestamp reorder window (default 1ms) |
+| `--report` | append the `Kernel:` summary section |
+| `--merge-window NS` | timestamp reorder window (default 1ms) |
 | `--ringbuf-size SIZE` | size of both the function and kernel ring buffers (default 16m) |
 | `--block-devices LIST` | restrict block tracepoints to `major:minor` devices |
-| `--require-kernel-events` | fail if a requested tracepoint is unavailable |
+| `--require-events` | fail if a requested tracepoint is unavailable |
 | `--pmu LIST` | hardware counters to open |
 | `--pmu-sampling PERIOD` | sampling period; omit for counting mode |
 | `--otel-kernel-events` | attach raw kernel events as OTel span events |
 | `--otel-kernel-spans` | emit derived intervals as child spans (off by default) |
 
-Do not add a generic `--events` option; it is ambiguous with function
-filters. `--kernel-events` is explicit. `--kernel-events pmu` opens the
-default counter set (`cycles,instructions,cache-misses,branch-misses`);
-`--pmu` overrides that list.
+`--events` is deliberately namespaced under `--kernel` rather than being a
+generic top-level option, so it cannot be confused with function filters.
+`--events pmu` opens the default counter set
+(`cycles,instructions,cache-misses,branch-misses`); `--pmu` overrides that
+list.
 
 Validation:
 
@@ -1067,13 +1074,15 @@ Validation:
   target TID. `attach` currently requires `-p`; system-wide attach relaxes
   that requirement. `--system-wide` is incompatible with `--tid` and
   `--children`.
+- Every kernel sub-option, including the `--sched`, `--futex`, `--io`, and
+  `--block` shortcuts, is a usage error without `--kernel`.
 - `--block-devices` requires `--block`.
-- `--kernel-preset` and `--kernel-events` are additive; repeating
-  `--kernel-events` appends families.
+- `--preset` and `--events` are additive; repeating `--events` appends
+  families.
 - `--pmu-sampling` requires `--pmu`.
 - `--tid` and `--children` are mutually exclusive.
-- `--kernel-report` without a kernel family is a usage error.
-- `--kernel-events` with `--exporter` is valid; kernel events go to the text
+- `--report` without a kernel family is a usage error.
+- `--events` with `--exporter` is valid; kernel events go to the text
   stream and, if enabled, to span events.
 - `--dry-run` lists selected functions and available kernel events without
   attaching.
@@ -1121,7 +1130,7 @@ using spaces before the `@CATEGORY` token.
 
 ### 9.2 Kernel report
 
-`--kernel-report` (and `--histogram` when a kernel family is enabled) appends
+`--report` (and `--histogram` when a kernel family is enabled) appends
 a `Kernel:` section. If both are given, the section is rendered once. The MVP
 section is per thread, after that thread's roots, to avoid depending on
 per-root invocation identity:
@@ -1345,7 +1354,7 @@ Integration (`tests/integration.sh`, root only for tracing):
   memory pressure (otherwise skip).
 - `--pmu`: when permitted, `cycles`/`instructions` counts are nonzero and
   consistent with `perf stat`; sampling produces a sample count.
-- `--kernel-report`: `cpu + blocked + runnable` is within tolerance of wall
+- `--report`: `cpu + blocked + runnable` is within tolerance of wall
   for a synthetic sleep workload.
 - `--exporter otlp-json` with kernel events: function spans carry
   `callgraph.kernel.*` attributes and span events; no invalid OTLP.
@@ -1354,7 +1363,7 @@ Integration (`tests/integration.sh`, root only for tracing):
 - Without kernel flags, output is byte-identical to the current build for a
   deterministic example.
 - Missing tracepoint simulation: an unavailable family warns and continues,
-  or fails with `--require-kernel-events`.
+  or fails with `--require-events`.
 - Capability checks: non-root kernel tracing fails with a clear message;
   non-root integration skips tracing as it does today.
 
@@ -1369,7 +1378,7 @@ path), x86-64. The tracepoint-format reader is the main portability risk.
 - Add `KernelTimeline`, `StreamMerger`, `KernelReport` skeletons.
 - Add `Output::emit_kernel`, `TraceParser` kernel regex, stats.
 - Add CLI parsing for the new flags, but no BPF attachment; explicit
-  `--kernel-events` reports "not implemented" or is hidden until Phase 1.
+  `--events` reports "not implemented" or is hidden until Phase 1.
 - Unit tests for format/parse/merger/state machine with synthetic events.
 
 Acceptance: function-only output and all existing tests unchanged; synthetic
@@ -1382,7 +1391,7 @@ kernel events render and replay.
 - Attach `sched_switch`, `sched_wakeup`, `sched_waking`, `sched_wakeup_new`,
   `sched_migrate_task`, `sched_process_fork`, `sched_process_exit`.
 - Implement the scheduler state machine and CPU/off-CPU/runqueue accounting.
-- Add `--sched`, `--kernel-merge-window`, and reuse `--ringbuf-size` for the
+- Add `--kernel`, `--sched`, `--merge-window`, and reuse `--ringbuf-size` for the
   kernel ring buffer.
 
 Acceptance: a sleeping example yields correct off-CPU and runqueue values;
@@ -1434,7 +1443,7 @@ approximate; denied access does not break other families.
 - Add offline export parity and metadata.
 - Consider per-root pairing and optional interval spans.
 
-Acceptance: `--histogram --sched` preserves the tree/histogram pair and adds
+Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair and adds
 a correct kernel summary; OTLP JSON validates and Jaeger shows span events.
 
 ## 14. File map
@@ -1505,7 +1514,7 @@ These need a decision before or during Phase 0/1:
 9. Do we need a raw-only mode that suppresses derived lines, or are the
    convenience durations harmless because replay recomputes them?
 10. Should kernel text lines be emitted by default when a family is enabled,
-    or only with `--kernel-report`? The design assumes raw lines are the
+    or only with `--report`? The design assumes raw lines are the
     default artifact.
 
 ## 16. P0 implementation notes
@@ -1541,9 +1550,9 @@ The first implementation deliberately narrows the full design:
   global. The timeline never charges a block completion to the running
   thread. The report prints `partial=yes` when the observed interval does not
   cover the whole story.
-- **CLI.** Implemented: `--sched`, `--futex`, `--io`, `--block`,
-  `--kernel-events`, `--kernel-preset`, `--kernel-report`,
-  `--kernel-merge-window`, `--require-kernel-events`. `--ringbuf-size` sizes
+- **CLI.** Implemented: `--kernel` plus the secondary `--sched`, `--futex`,
+  `--io`, `--block`, `--events`, `--preset`, `--report`, `--merge-window`,
+  and `--require-events` options. `--ringbuf-size` sizes
   both the function and kernel ring buffers. `--children`, `--tid`, and
   `--system-wide` are not implemented yet.
 - **Deferred.** Network, memory, PMU, IRQ/workqueue, per-root kernel reports,

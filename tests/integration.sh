@@ -52,6 +52,25 @@ dry=$("$BIN" run --dry-run --regex --include '^(main|A[(]int[)])$' \
 echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
 
+echo "== kernel CLI gating =="
+for opt in "--sched" "--futex" "--io" "--block" "--events sched" \
+           "--preset cpu" "--report" "--merge-window 1ms" "--require-events"; do
+    # shellcheck disable=SC2086
+    if "$BIN" run $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+        echo "expected '$opt' without --kernel to fail" >&2
+        exit 1
+    fi
+done
+"$BIN" run --kernel --dry-run -- "$TMP/simple" >/dev/null 2>&1
+"$BIN" run --kernel --events sched --preset cpu --report \
+    --merge-window 1ms --require-events --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1
+if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected the old --kernel-events name to fail" >&2
+    exit 1
+fi
+
 echo "== OTLP offline conversion =="
 cat > "$TMP/otel.trace" <<'EOF'
 2026-11-12T10:00:00.000000000+00:00 100 : 0 -> main
@@ -266,7 +285,7 @@ grep -q ' : 0 <- main' "$TMP/simple.trace"
 grep -q '0 lost' "$TMP/simple.err"
 
 echo "== kernel events: scheduler, futex, I/O =="
-"$BIN" run --sched --futex --io --kernel-report \
+"$BIN" run --kernel --sched --futex --io --report \
     -o "$TMP/kernel.trace" --regex \
     --include '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel.err"

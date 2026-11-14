@@ -355,7 +355,7 @@ void KernelProbeManager::attach(const KernelSelection& selection, bool require)
     }
 
     if (require && (missing_events_ != 0 || attach_failures_ != 0))
-        fail("--require-kernel-events: %llu unavailable and %llu failed to "
+        fail("--require-events: %llu unavailable and %llu failed to "
              "attach",
              static_cast<unsigned long long>(missing_events_),
              static_cast<unsigned long long>(attach_failures_));

@@ -120,11 +120,11 @@ sudo ./build/callgraph run --return-mode ret -- ./my_app
 sudo ./build/callgraph run -o trace.log -- ./my_app
 
 # Correlate scheduler, futex, and I/O events with the call tree
-sudo ./build/callgraph run --sched --futex --io --kernel-report \
+sudo ./build/callgraph run --kernel --sched --futex --io --report \
     -o trace.log -- ./my_app
 
 # All P0 kernel families
-sudo ./build/callgraph run --kernel-events sched,futex,io,block -- ./my_app
+sudo ./build/callgraph run --kernel --events sched,futex,io,block -- ./my_app
 
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
 sudo ./build/callgraph run -T --exporter otlp -- ./my_app
@@ -165,15 +165,16 @@ Usage:
       --indent N        indent names by depth*N spaces (default: 0)
       --show-args       show function arguments after names (needs DWARF)
       --histogram       append per-root call trees and latency histograms to the output
+      --kernel          enable correlated kernel event tracing
+      --events L        comma-separated: sched,futex,io,block
+      --preset P        latency (default), database, cpu, or full
+      --report          append the per-thread kernel summary
+      --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
+      --require-events  fail if a requested tracepoint is unavailable
       --sched           trace scheduler switch/wakeup events
       --futex           trace futex syscall begin/end events
       --io              trace read/write/fsync syscall events
       --block           trace block request events (global)
-      --kernel-events L comma-separated: sched,futex,io,block
-      --kernel-preset P latency, database, cpu, or full
-      --kernel-report   append the per-thread kernel summary
-      --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)
-      --require-kernel-events  fail if a requested tracepoint is unavailable
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
@@ -413,9 +414,13 @@ Histograms:
 
 ### Kernel events (P0)
 
-`--sched`, `--futex`, `--io`, and `--block` add a second, correlated event
-stream for kernel activity. Kernel events are never represented as function
-entries or returns; they use a separate `@CATEGORY` line:
+`--kernel` enables a second, correlated event stream for kernel activity.
+`--events`, `--preset`, `--report`, `--merge-window`, and `--require-events`
+refine it, as do the `--sched`, `--futex`, `--io`, and `--block` family
+shortcuts; none of them work without `--kernel`. With no family or preset,
+`--kernel` selects the `latency` preset (sched, futex, io, block). Kernel events
+are never represented as function entries or returns; they use a separate
+`@CATEGORY` line:
 
 ```text
 327657.794260059 27074 : 1 @FUTEX wait_begin id=2 uaddr=0x6211f656a040 op=0x80 val=2
@@ -443,7 +448,7 @@ Implemented families:
   correlated by `(dev, sector, nr_sectors)` to report `queue_ns`, `device_ns`,
   and `total_ns`; unmatched requests are marked.
 
-`--kernel-report`, and `--histogram` when a kernel family is enabled, appends a
+`--report`, and `--histogram` when a kernel family is enabled, appends a
 per-thread `Kernel:` summary:
 
 ```text
