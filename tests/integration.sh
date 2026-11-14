@@ -352,18 +352,22 @@ grep -q '@SCHED switch' "$TMP/preset-latency.trace"
 grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
 ! grep -q '@MM page_fault' "$TMP/preset-latency.trace"
 ! grep -q '@NET tcp_retransmit' "$TMP/preset-latency.trace"
+! grep -q '@BLOCK' "$TMP/preset-latency.trace"
+! grep -q 'block tracepoints are global' "$TMP/preset-latency.err"
 
 "$BIN" run --kernel --preset proxy -o "$TMP/preset-net.trace" \
     --regex --include "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-net.err"
 grep -q '@NET socket_begin' "$TMP/preset-net.trace"
 ! grep -q '@BLOCK' "$TMP/preset-net.trace"
+! grep -q 'block tracepoints are global' "$TMP/preset-net.err"
 
 "$BIN" run --kernel --preset storage -o "$TMP/preset-storage.trace" \
     --regex --include "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-storage.err"
 grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 ! grep -q '@NET' "$TMP/preset-storage.trace"
+grep -q 'block tracepoints are global' "$TMP/preset-storage.err"
 
 "$BIN" run --kernel --preset computation \
     -o "$TMP/preset-computation.trace" --regex \
@@ -372,12 +376,14 @@ grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 grep -q '@MM page_fault' "$TMP/preset-computation.trace"
 ! grep -q '@NET' "$TMP/preset-computation.trace"
 ! grep -q '@IO' "$TMP/preset-computation.trace"
+! grep -q 'block tracepoints are global' "$TMP/preset-computation.err"
 
 "$BIN" run --kernel --preset full -o "$TMP/preset-full.trace" \
     --regex --include "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-full.err"
 grep -q '@MM page_fault' "$TMP/preset-full.trace"
 grep -q '@NET socket_begin' "$TMP/preset-full.trace"
+grep -q 'block tracepoints are global' "$TMP/preset-full.err"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
@@ -475,6 +481,39 @@ grep -q 'OTLP .* span(s) exported' "$TMP/attach.err"
 grep -q '"key":"callgraph.attach_mode","value":{"boolValue":true}' "$TMP/attach.json"
 grep -q '"key":"callgraph.partial_stack","value":{"boolValue":true}' "$TMP/attach.json"
 grep -q '"name":"worker(int)"' "$TMP/attach.json"
+
+echo "== attach kernel block defaults =="
+cat > "$TMP/attach_kernel_target.cpp" <<'EOF'
+#include <unistd.h>
+__attribute__((noinline)) int leaf(int x) { usleep(2000); return x + 1; }
+__attribute__((noinline)) int worker(int x) { return leaf(x) + leaf(x + 1); }
+int main() {
+    sleep(1);
+    for (int i = 0; i < 50; ++i) worker(i);
+    sleep(1);
+    return 0;
+}
+EOF
+g++ -O0 -g -o "$TMP/attach_kernel_target" "$TMP/attach_kernel_target.cpp"
+"$TMP/attach_kernel_target" &
+attach_pid=$!
+sleep 0.2
+"$BIN" attach -p "$attach_pid" --kernel -o "$TMP/attach-default.trace" \
+    --regex --include '^(worker[(]int[)]|leaf[(]int[)])$' \
+    >/dev/null 2>"$TMP/attach-default.err"
+wait "$attach_pid" || true
+grep -q 'kernel events:' "$TMP/attach-default.err"
+! grep -q 'block tracepoints are global' "$TMP/attach-default.err"
+
+"$TMP/attach_kernel_target" &
+attach_pid=$!
+sleep 0.2
+"$BIN" attach -p "$attach_pid" --kernel --preset storage \
+    -o "$TMP/attach-storage.trace" --regex \
+    --include '^(worker[(]int[)]|leaf[(]int[)])$' \
+    >/dev/null 2>"$TMP/attach-storage.err"
+wait "$attach_pid" || true
+grep -q 'block tracepoints are global' "$TMP/attach-storage.err"
 
 echo "== wall-clock timestamps =="
 "$BIN" run -T -o "$TMP/wall.trace" --regex \

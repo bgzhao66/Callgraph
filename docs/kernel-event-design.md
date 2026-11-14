@@ -1037,8 +1037,8 @@ unchanged. `--kernel` alone selects the `latency` preset. In the unified
 its family shortcuts and modifiers are indented beneath it.
 
 ```text
-# Default scopes (latency preset: sched, futex, io, block, net syscalls,
-# direct reclaim; no page-fault points or global TCP retransmits)
+# Default scopes (latency preset: sched, futex, io, net syscalls, direct
+# reclaim; no block, page-fault points, or global TCP retransmits)
 callgraph attach -p 4242 --kernel
 
 # Scheduler only
@@ -1131,7 +1131,7 @@ means network syscalls + TCP retransmits.
 
 | Preset | Intended workload | sched | futex | io | block | reclaim | faults | net | tcp |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `latency` (default) | generic request latency | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | — |
+| `latency` (default) | generic request latency | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | — |
 | `proxy` | proxies, gateways, load balancers | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
 | `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
 | `computation` | CPU-bound workers, batch, numeric | ✓ | ✓ | — | — | ✓ | ✓ | — | — |
@@ -1139,12 +1139,12 @@ means network syscalls + TCP retransmits.
 
 Rationale:
 
-- `latency` covers every scope that produces a wait: runqueue/off-CPU, lock
-  waits, syscall I/O, block service time, direct reclaim, and network
-  syscalls. It excludes page-fault points and global TCP retransmits because
-  they are high-volume and either not intervals or not attributable to a
-  function. This keeps the default stream bounded and keeps `partial`
-  reasoning clean.
+- `latency` covers every directly attributable scope that produces a wait:
+  runqueue/off-CPU, lock waits, syscall I/O, direct reclaim, and network
+  syscalls. It excludes block because block events are global, and excludes
+  page-fault points and global TCP retransmits because they are high-volume
+  and either not intervals or not attributable to a function. This keeps the
+  default stream bounded, attributable, and `partial` reasoning clean.
 - `proxy` adds global TCP retransmits and drops block. It keeps io because
   socket `read`/`write` and `epoll_wait` interleave with proxying, and keeps
   sched/futex/reclaim because proxies still suffer scheduling, lock, and
@@ -1161,6 +1161,11 @@ Presets are additive with explicit family flags and `--events`: explicit
 retransmits even under `latency`. Presets never disable an explicitly
 requested scope and never change `--trace-scope`; that option remains `root`
 unless set.
+
+In both run and attach, `latency` leaves block off: block tracepoints are
+global and fire for every device request on the host, not just the traced
+PID, so they are not part of the generic PID/app profile. Pass `--block`, or
+use `--preset storage`/`--preset full`, to include them.
 
 ## 9. Output and reports
 

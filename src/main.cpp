@@ -228,7 +228,7 @@ void usage(FILE* out)
         {"--sched", "trace scheduler switch/wakeup events", 1},
         {"--futex", "trace futex syscall begin/end events", 1},
         {"--io", "trace read/write/fsync syscall events", 1},
-        {"--block", "trace block request events (global)", 1},
+        {"--block", "trace block request events (global; not in latency)", 1},
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
         {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
@@ -324,7 +324,7 @@ void usage(FILE* out)
             "    sudo callgraph run --kernel --preset storage -- ./db\n"
             "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
             "    sudo callgraph run --kernel --memory --network -- ./demo\n"
-            "    sudo callgraph attach -p 12345 --kernel --preset latency\n"
+            "    sudo callgraph attach -p 12345 --kernel\n"
             "\n"
             "  Live export:\n"
             "    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
@@ -716,7 +716,6 @@ Options parse_args(int argc, char** argv)
             options.sched = true;
             options.futex = true;
             options.io = true;
-            options.block = true;
             options.memory = true;
             options.network = true;
         } else if (options.kernel_preset == "proxy") {
