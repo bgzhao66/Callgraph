@@ -75,7 +75,6 @@ struct Options {
     bool block = false;
     bool kernel_report = false;
     bool require_kernel_events = false;
-    size_t kernel_buffer_size = 4ull << 20;
     uint64_t kernel_merge_window_ns = 1000000;
     std::string kernel_preset;
     size_t probe_batch_size = 1000;
@@ -142,11 +141,10 @@ void usage(FILE* out)
             "      --kernel-events L comma-separated: sched,futex,io,block\n"
             "      --kernel-preset P latency, database, cpu, or full\n"
             "      --kernel-report   append the per-thread kernel summary\n"
-            "      --kernel-buffer-size N  kernel ring buffer size (default: 4m)\n"
             "      --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)\n"
             "      --require-kernel-events  fail if a requested tracepoint is unavailable\n"
             "      --probe-batch-size N  functions per uprobe_multi link (default: 1000)\n"
-            "      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)\n"
+            "      --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)\n"
             "      --dry-run         list resolved functions and exit\n"
             "      --exporter M      stdout (default), otlp, otlp-http, or otlp-json\n"
             "      --endpoint URL    OTLP endpoint; default localhost:4317 / :4318\n"
@@ -494,8 +492,6 @@ Options parse_args(int argc, char** argv)
             options.kernel_preset = value();
         } else if (arg == "--kernel-report") {
             options.kernel_report = true;
-        } else if (arg == "--kernel-buffer-size") {
-            options.kernel_buffer_size = parse_size(value(), arg);
         } else if (arg == "--kernel-merge-window") {
             options.kernel_merge_window_ns = parse_duration_ns(value(), arg);
         } else if (arg == "--require-kernel-events") {
@@ -616,10 +612,6 @@ Options parse_args(int argc, char** argv)
         usage_error("--kernel-report requires a kernel event family");
     if (options.require_kernel_events && !kernel_any)
         usage_error("--require-kernel-events requires a kernel event family");
-    if (options.kernel_buffer_size < 4096 ||
-        (options.kernel_buffer_size &
-         (options.kernel_buffer_size - 1)) != 0)
-        usage_error("--kernel-buffer-size must be a power of two and >= 4096");
     if (options.kernel_merge_window_ns == 0)
         usage_error("--kernel-merge-window must be > 0");
 
@@ -1504,7 +1496,7 @@ int main(int argc, char** argv)
         if (kernel_selection.any()) {
             const std::vector<uint32_t> tids = target_tids(target);
             kernel_probes = std::make_unique<KernelProbeManager>(
-                options.kernel_buffer_size, options.verbose);
+                options.ringbuf_size, options.verbose);
             kernel_probes->load();
             kernel_probes->set_system_wide(false);
             kernel_probes->set_target_tids(tids);

@@ -133,8 +133,9 @@ Reasons for two objects and two ring buffers:
    reduces attribution.
 3. **Compatibility.** The existing `cg_event` ABI, text format, and offline
    replay path remain untouched.
-4. **Independent sizing.** `--ringbuf-size` continues to control function
-   events; `--kernel-buffer-size` controls kernel events.
+4. **Shared sizing.** `--ringbuf-size` sets the size of both the function and
+   the kernel ring buffer. They remain separate maps, so the loss isolation
+   above still holds.
 
 The cost is that the two streams must be merged in timestamp order. A
 bounded reorder window (Section 3.4) handles that.
@@ -1044,7 +1045,7 @@ callgraph attach --system-wide --sched
 | `--system-wide` | bypass target filtering; no user-stack attribution |
 | `--kernel-report` | append the `Kernel:` summary section |
 | `--kernel-merge-window NS` | timestamp reorder window (default 1ms) |
-| `--kernel-buffer-size SIZE` | kernel ring buffer size (default 4m) |
+| `--ringbuf-size SIZE` | size of both the function and kernel ring buffers (default 16m) |
 | `--block-devices LIST` | restrict block tracepoints to `major:minor` devices |
 | `--require-kernel-events` | fail if a requested tracepoint is unavailable |
 | `--pmu LIST` | hardware counters to open |
@@ -1273,7 +1274,7 @@ Guidelines:
 | PMU counting | low | per-thread group |
 | PMU sampling | high | period; per-CPU or per-thread |
 
-`--kernel-buffer-size` and `--ringbuf-size` should be sized for the workload.
+`--ringbuf-size` sizes both ring buffers and should be chosen for the workload.
 Lost events are reported as `kernel_lost[category]`, never silently ignored.
 
 ## 11. Security, namespaces, and privileges
@@ -1381,7 +1382,8 @@ kernel events render and replay.
 - Attach `sched_switch`, `sched_wakeup`, `sched_waking`, `sched_wakeup_new`,
   `sched_migrate_task`, `sched_process_fork`, `sched_process_exit`.
 - Implement the scheduler state machine and CPU/off-CPU/runqueue accounting.
-- Add `--sched`, `--kernel-buffer-size`, `--kernel-merge-window`.
+- Add `--sched`, `--kernel-merge-window`, and reuse `--ringbuf-size` for the
+  kernel ring buffer.
 
 Acceptance: a sleeping example yields correct off-CPU and runqueue values;
 preemption is labeled runnable; function traces are unaffected when the flag
@@ -1541,9 +1543,9 @@ The first implementation deliberately narrows the full design:
   cover the whole story.
 - **CLI.** Implemented: `--sched`, `--futex`, `--io`, `--block`,
   `--kernel-events`, `--kernel-preset`, `--kernel-report`,
-  `--kernel-buffer-size`, `--kernel-merge-window`,
-  `--require-kernel-events`. `--children`, `--tid`, and `--system-wide` are
-  not implemented yet.
+  `--kernel-merge-window`, `--require-kernel-events`. `--ringbuf-size` sizes
+  both the function and kernel ring buffers. `--children`, `--tid`, and
+  `--system-wide` are not implemented yet.
 - **Deferred.** Network, memory, PMU, IRQ/workqueue, per-root kernel reports,
   OTel span events for kernel records, and offline kernel-line replay. The
   text parser currently ignores `@CATEGORY` lines, so function-only export

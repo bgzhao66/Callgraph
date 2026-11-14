@@ -172,11 +172,10 @@ Usage:
       --kernel-events L comma-separated: sched,futex,io,block
       --kernel-preset P latency, database, cpu, or full
       --kernel-report   append the per-thread kernel summary
-      --kernel-buffer-size N  kernel ring buffer size (default: 4m)
       --kernel-merge-window D reorder window, ns/us/ms/s (default: 1ms)
       --require-kernel-events  fail if a requested tracepoint is unavailable
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
-      --ringbuf-size N  ring buffer size, k/m/g suffix (default: 16m)
+      --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)
       --dry-run         list resolved functions and exit
       --exporter M      stdout (default), otlp, otlp-http, or otlp-json
       --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
