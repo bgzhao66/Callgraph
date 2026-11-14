@@ -1,5 +1,8 @@
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -28,6 +31,34 @@ __attribute__((noinline)) void fsync_work()
     (void)close(fd);
 }
 
+__attribute__((noinline)) void memory_work()
+{
+    constexpr size_t kSize = 1 << 20;
+    char* pages = static_cast<char*>(mmap(nullptr, kSize, PROT_READ | PROT_WRITE,
+                                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (pages == MAP_FAILED)
+        return;
+    for (size_t offset = 0; offset < kSize; offset += 4096)
+        pages[offset] = static_cast<char>(offset);
+    (void)munmap(pages, kSize);
+}
+
+__attribute__((noinline)) void network_work()
+{
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return;
+
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(9);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    (void)connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    (void)sendto(fd, "x", 1, 0, reinterpret_cast<sockaddr*>(&address),
+                 sizeof(address));
+    (void)close(fd);
+}
+
 int main()
 {
     pthread_t holder;
@@ -45,6 +76,8 @@ int main()
     lock_work();
     work(100);
     fsync_work();
+    memory_work();
+    network_work();
 
     pthread_join(holder, nullptr);
     return 0;

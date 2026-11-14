@@ -44,6 +44,22 @@ static __always_inline int tp_read_size(void *ctx, struct cg_tp_config *cfg,
         }
         return -1;
     }
+    if (size == 1) {
+        __u8 value = 0;
+        if (bpf_probe_read_kernel(&value, sizeof(value),
+                                  (char *)ctx + offset) != 0)
+            return -1;
+        *out = value;
+        return 0;
+    }
+    if (size == 2) {
+        __u16 value = 0;
+        if (bpf_probe_read_kernel(&value, sizeof(value),
+                                  (char *)ctx + offset) != 0)
+            return -1;
+        *out = value;
+        return 0;
+    }
     if (size == 4) {
         __u32 value = 0;
         if (bpf_probe_read_kernel(&value, sizeof(value),

@@ -75,6 +75,8 @@ struct Options {
     bool futex = false;
     bool io = false;
     bool block = false;
+    bool memory = false;
+    bool network = false;
     bool kernel_report = false;
     bool require_kernel_events = false;
     uint64_t kernel_merge_window_ns = 1000000;
@@ -223,7 +225,9 @@ void usage(FILE* out)
         {"--futex", "trace futex syscall begin/end events", 1},
         {"--io", "trace read/write/fsync syscall events", 1},
         {"--block", "trace block request events (global)", 1},
-        {"--events L", "comma-separated: sched,futex,io,block", 1},
+        {"--network", "trace socket syscalls and TCP retransmits", 1},
+        {"--memory", "trace page faults and direct reclaim", 1},
+        {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
         {"--preset P", "latency (default), database, cpu, or full", 1},
         {"--report", "append the per-thread kernel summary", 1},
         {"--merge-window D",
@@ -312,6 +316,7 @@ void usage(FILE* out)
             "  Correlated kernel events:\n"
             "    sudo callgraph run --kernel --preset latency -- ./demo\n"
             "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
+            "    sudo callgraph run --kernel --memory --network -- ./demo\n"
             "\n"
             "  Live export:\n"
             "    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
@@ -492,11 +497,17 @@ Options parse_args(int argc, char** argv)
                 options.io = true;
             } else if (name == "block") {
                 options.block = true;
+            } else if (name == "net" || name == "network") {
+                options.network = true;
+            } else if (name == "mm" || name == "memory") {
+                options.memory = true;
             } else if (name == "all") {
                 options.sched = true;
                 options.futex = true;
                 options.io = true;
                 options.block = true;
+                options.network = true;
+                options.memory = true;
             } else {
                 usage_error("unknown kernel event family '%s'", name.c_str());
             }
@@ -547,6 +558,12 @@ Options parse_args(int argc, char** argv)
         } else if (arg == "--block") {
             note_kernel_option("--block");
             options.block = true;
+        } else if (arg == "--network") {
+            note_kernel_option("--network");
+            options.network = true;
+        } else if (arg == "--memory") {
+            note_kernel_option("--memory");
+            options.memory = true;
         } else if (arg == "--events") {
             note_kernel_option("--events");
             const std::string list = value();
@@ -673,7 +690,8 @@ Options parse_args(int argc, char** argv)
     // --kernel on its own selects the default latency preset; an explicit
     // family or preset overrides it.
     if (options.kernel && options.kernel_preset.empty() && !options.sched &&
-        !options.futex && !options.io && !options.block) {
+        !options.futex && !options.io && !options.block && !options.memory &&
+        !options.network) {
         options.kernel_preset = "latency";
     }
 
@@ -684,6 +702,7 @@ Options parse_args(int argc, char** argv)
             options.futex = true;
             options.io = true;
             options.block = true;
+            options.memory = true;
         } else if (options.kernel_preset == "cpu") {
             options.sched = true;
         } else if (options.kernel_preset == "full") {
@@ -691,13 +710,16 @@ Options parse_args(int argc, char** argv)
             options.futex = true;
             options.io = true;
             options.block = true;
+            options.memory = true;
+            options.network = true;
         } else {
             usage_error("--preset must be 'latency', 'database', "
                         "'cpu', or 'full'");
         }
     }
-    const bool kernel_any =
-        options.sched || options.futex || options.io || options.block;
+    const bool kernel_any = options.sched || options.futex || options.io ||
+                            options.block || options.memory ||
+                            options.network;
     if (options.kernel_report && !kernel_any)
         usage_error("--report requires a kernel event family");
     if (options.require_kernel_events && !kernel_any)
@@ -1574,6 +1596,8 @@ int main(int argc, char** argv)
         kernel_selection.futex = options.futex;
         kernel_selection.io = options.io;
         kernel_selection.block = options.block;
+        kernel_selection.memory = options.memory;
+        kernel_selection.network = options.network;
 
         std::unique_ptr<KernelProbeManager> kernel_probes;
         std::unique_ptr<KernelTimeline> kernel_timeline;

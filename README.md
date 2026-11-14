@@ -123,8 +123,12 @@ sudo ./build/callgraph run -o trace.log -- ./my_app
 sudo ./build/callgraph run --kernel --sched --futex --io --report \
     -o trace.log -- ./my_app
 
-# All P0 kernel families
-sudo ./build/callgraph run --kernel --events sched,futex,io,block -- ./my_app
+# All kernel event families
+sudo ./build/callgraph run --kernel --events sched,futex,io,block,net,mm \
+    -- ./my_app
+
+# Page faults, direct reclaim, socket syscalls, and TCP retransmits
+sudo ./build/callgraph run --kernel --memory --network -- ./my_app
 
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
 sudo ./build/callgraph run -T --exporter otlp -- ./my_app
@@ -186,7 +190,9 @@ Kernel event options (--kernel):
           --futex           trace futex syscall begin/end events
           --io              trace read/write/fsync syscall events
           --block           trace block request events (global)
-          --events L        comma-separated: sched,futex,io,block
+          --network         trace socket syscalls and TCP retransmits
+          --memory          trace page faults and direct reclaim
+          --events L        comma-separated: sched,futex,io,block,net,mm
           --preset P        latency (default), database, cpu, or full
           --report          append the per-thread kernel summary
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
@@ -268,6 +274,7 @@ Examples:
   Correlated kernel events:
     sudo callgraph run --kernel --preset latency -- ./demo
     sudo callgraph run --kernel --sched --futex --report -- ./demo
+    sudo callgraph run --kernel --memory --network -- ./demo
 
   Live export:
     sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo
@@ -499,15 +506,15 @@ Histograms:
   histogram entry is also marked `[recursive]` instead of being expanded
   forever.
 
-### Kernel events (P0)
+### Kernel events
 
 `--kernel` enables a second, correlated event stream for kernel activity.
 `--events`, `--preset`, `--report`, `--merge-window`, and `--require-events`
-refine it, as do the `--sched`, `--futex`, `--io`, and `--block` family
-shortcuts; none of them work without `--kernel`. With no family or preset,
-`--kernel` selects the `latency` preset (sched, futex, io, block). Kernel events
-are never represented as function entries or returns; they use a separate
-`@CATEGORY` line:
+refine it, as do the `--sched`, `--futex`, `--io`, `--block`, `--network`, and
+`--memory` family shortcuts; none of them work without `--kernel`. With no
+family or preset, `--kernel` selects the `latency` preset (sched, futex, io,
+block, mm). Kernel events are never represented as function entries or returns;
+they use a separate `@CATEGORY` line:
 
 ```text
 327657.794260059 27074 : 1 @FUTEX wait_begin id=2 uaddr=0x6211f656a040 op=0x80 val=2
@@ -519,8 +526,9 @@ are never represented as function entries or returns; they use a separate
 ```
 
 The depth column is the top traced user frame on that TID. `-` means the TID
-has no traced frame; `*` means the record is global (block events). Kernel
-lines are ignored by the function-line parser, so old traces still replay.
+has no traced frame; `*` means the record is global (block events and TCP
+retransmits). Kernel lines are ignored by the function-line parser, so old
+traces still replay.
 
 Implemented families:
 
@@ -534,6 +542,13 @@ Implemented families:
 - **Block:** insert, issue, complete, requeue, and error records. Requests are
   correlated by `(dev, sector, nr_sectors)` to report `queue_ns`, `device_ns`,
   and `total_ns`; unmatched requests are marked.
+- **Memory:** user and kernel page faults (`@MM page_fault` with the raw error
+  code) and direct reclaim (`direct_reclaim_begin`/`end`). Direct reclaim is
+  the highest-precedence blocking reason, reported as `blocked(memory=...)`.
+- **Network:** socket, connect, accept4, sendto, recvfrom, sendmsg, recvmsg,
+  epoll_wait, and poll syscall pairs with duration. TCP retransmits are global
+  records (`*` depth) and are reported in the `global` section; they are never
+  charged to a function.
 
 `--report`, and `--histogram` when a kernel family is enabled, appends a
 per-thread `Kernel:` summary:
@@ -541,11 +556,14 @@ per-thread `Kernel:` summary:
 ```text
 Kernel:
   tid 27074
-    cpu=622.266us runnable=532.629us blocked=254.210ms switches=6 partial=yes
-    blocked(futex=99.055ms io=4.845ms sleep=150.133ms other=176.329us)
-    0. main cpu=44.211us runnable=38.554us blocked=0ns
+    cpu=622.266us runnable=532.629us blocked=254.210ms switches=6 faults=12 partial=yes
+    blocked(futex=99.055ms io=4.845ms net=1.201ms memory=0ns sleep=150.133ms)
+    0. main cpu=44.211us runnable=38.554us blocked=0ns faults=12
     1. work(int) cpu=43.044us runnable=71.817us blocked=100.068ms
     1. lock_work() cpu=68.063us runnable=154.676us blocked=149.121ms
+  global
+    BLOCK rq_insert=3 rq_issue=3 rq_complete=3
+    NET tcp_retransmit=2
 ```
 
 Time is exclusive to the top frame. `cpu + runnable + blocked` is the observed
@@ -553,14 +571,18 @@ wall interval; `partial=yes` means the beginning or end was not observed
 (usually because the first switch was missed before the target TID was
 learned). Without scheduler events, runstate counters remain zero.
 
-Limitations of the P0 MVP:
+Limitations of the kernel support:
 
 - Target TIDs are taken from `/proc/<pid>/task` and learned from the first
   uprobe event for each thread. A switch that happens before the first uprobe
   is not attributed, so the first interval can be marked partial.
 - Block events are global; unrelated device traffic can appear. There is no
   per-device filter yet.
-- Network, memory, PMU, interrupts, and workqueues are not implemented.
+- TCP retransmits are global and unfiltered; unrelated traffic can appear.
+  Direct socket syscalls are attributed to the target TID.
+- Page-fault tracepoints are point events, not intervals. Their error code is
+  reported raw and is not used to label a fault major or minor.
+- PMU counters, interrupts, and workqueues are not implemented.
 - Kernel lines are not yet replayed by `export --otel`; the offline parser
   ignores them.
 - Kernel tracing needs root (or the BPF/perf capabilities) and tracefs.

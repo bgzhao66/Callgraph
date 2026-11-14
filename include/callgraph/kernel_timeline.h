@@ -37,6 +37,7 @@ struct KernelCounters {
     uint64_t switches = 0;
     uint64_t migrations = 0;
     uint64_t kernel_events = 0;
+    uint64_t page_faults = 0;
     bool partial = false;
 
     uint64_t blocked_total() const;
@@ -92,6 +93,9 @@ private:
         uint32_t prev_state = 0;
         BlockReason reason = BlockReason::Other;
         std::vector<PendingOp> ops;
+        uint32_t reclaim_depth = 0;
+        uint64_t reclaim_begin_ns = 0;
+        uint64_t reclaim_id = 0;
         bool partial = false;
         uint64_t out_of_order = 0;
     };
@@ -143,7 +147,10 @@ private:
     void on_sched_wakeup(const KernelEvent& event, const CallStack& stack);
     void on_futex(const KernelEvent& event, const CallStack& stack);
     void on_io(const KernelEvent& event, const CallStack& stack);
+    void on_net(const KernelEvent& event, const CallStack& stack);
+    void on_mm(const KernelEvent& event, const CallStack& stack);
     void on_block(const KernelEvent& event);
+    void on_tcp_retransmit(const KernelEvent& event);
     void emit_event(const KernelEvent& event, int depth,
                     const std::string& name, const std::string& attrs);
     uint64_t next_id();
@@ -161,6 +168,7 @@ private:
     std::unordered_map<uint32_t, KernelCounters> thread_counters_;
     std::unordered_map<StatKey, KernelCounters, StatKeyHash> function_counters_;
     std::unordered_map<BlockKey, BlockPending, BlockKeyHash> block_pending_;
+    std::unordered_map<uint16_t, uint64_t> global_counts_;
 };
 
 std::string format_kernel_report(const KernelTimeline& timeline,

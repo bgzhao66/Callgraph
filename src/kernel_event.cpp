@@ -58,7 +58,19 @@ const char* kernel_kind_name(uint16_t kind)
         return "rq_requeue";
     case CG_KEV_BLOCK_ERROR:
         return "rq_error";
+    case CG_KEV_PAGE_FAULT_USER:
+    case CG_KEV_PAGE_FAULT_KERNEL:
+        return "page_fault";
+    case CG_KEV_DIRECT_RECLAIM_BEGIN:
+        return "direct_reclaim_begin";
+    case CG_KEV_DIRECT_RECLAIM_END:
+        return "direct_reclaim_end";
+    case CG_KEV_TCP_RETRANSMIT:
+        return "tcp_retransmit";
     default:
+        if (kind >= CG_KEV_NET_SOCKET_ENTER &&
+            kind <= CG_KEV_NET_POLL_EXIT)
+            return kernel_net_event_name(kind);
         return kernel_io_event_name(kind);
     }
 }
@@ -128,6 +140,73 @@ bool kernel_is_io_enter(uint16_t kind)
 bool kernel_is_io_exit(uint16_t kind)
 {
     return kernel_is_io_enter(static_cast<uint16_t>(kind - 1));
+}
+
+const char* kernel_net_event_name(uint16_t kind)
+{
+    switch (kind) {
+    case CG_KEV_NET_SOCKET_ENTER:
+        return "socket_begin";
+    case CG_KEV_NET_SOCKET_EXIT:
+        return "socket_end";
+    case CG_KEV_NET_CONNECT_ENTER:
+        return "connect_begin";
+    case CG_KEV_NET_CONNECT_EXIT:
+        return "connect_end";
+    case CG_KEV_NET_ACCEPT4_ENTER:
+        return "accept4_begin";
+    case CG_KEV_NET_ACCEPT4_EXIT:
+        return "accept4_end";
+    case CG_KEV_NET_SENDTO_ENTER:
+        return "sendto_begin";
+    case CG_KEV_NET_SENDTO_EXIT:
+        return "sendto_end";
+    case CG_KEV_NET_RECVFROM_ENTER:
+        return "recvfrom_begin";
+    case CG_KEV_NET_RECVFROM_EXIT:
+        return "recvfrom_end";
+    case CG_KEV_NET_SENDMSG_ENTER:
+        return "sendmsg_begin";
+    case CG_KEV_NET_SENDMSG_EXIT:
+        return "sendmsg_end";
+    case CG_KEV_NET_RECVMSG_ENTER:
+        return "recvmsg_begin";
+    case CG_KEV_NET_RECVMSG_EXIT:
+        return "recvmsg_end";
+    case CG_KEV_NET_EPOLL_WAIT_ENTER:
+        return "epoll_wait_begin";
+    case CG_KEV_NET_EPOLL_WAIT_EXIT:
+        return "epoll_wait_end";
+    case CG_KEV_NET_POLL_ENTER:
+        return "poll_begin";
+    case CG_KEV_NET_POLL_EXIT:
+        return "poll_end";
+    default:
+        return "unknown";
+    }
+}
+
+bool kernel_is_net_enter(uint16_t kind)
+{
+    switch (kind) {
+    case CG_KEV_NET_SOCKET_ENTER:
+    case CG_KEV_NET_CONNECT_ENTER:
+    case CG_KEV_NET_ACCEPT4_ENTER:
+    case CG_KEV_NET_SENDTO_ENTER:
+    case CG_KEV_NET_RECVFROM_ENTER:
+    case CG_KEV_NET_SENDMSG_ENTER:
+    case CG_KEV_NET_RECVMSG_ENTER:
+    case CG_KEV_NET_EPOLL_WAIT_ENTER:
+    case CG_KEV_NET_POLL_ENTER:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool kernel_is_net_exit(uint16_t kind)
+{
+    return kernel_is_net_enter(static_cast<uint16_t>(kind - 1));
 }
 
 }  // namespace callgraph

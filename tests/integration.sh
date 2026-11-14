@@ -53,8 +53,9 @@ echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
 
 echo "== kernel CLI gating =="
-for opt in "--sched" "--futex" "--io" "--block" "--events sched" \
-           "--preset cpu" "--report" "--merge-window 1ms" "--require-events"; do
+for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
+           "--events sched" "--events net" "--preset cpu" "--report" \
+           "--merge-window 1ms" "--require-events"; do
     # shellcheck disable=SC2086
     if "$BIN" run $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
         echo "expected '$opt' without --kernel to fail" >&2
@@ -322,6 +323,18 @@ grep -q '@IO fsync_begin' "$TMP/kernel.trace"
 grep -q '@IO fsync_end' "$TMP/kernel.trace"
 grep -q '^Kernel:$' "$TMP/kernel.trace"
 grep -q 'blocked(' "$TMP/kernel.trace"
+
+echo "== kernel events: memory and network =="
+"$BIN" run --kernel --memory --network --report \
+    -o "$TMP/kernel-mm.trace" --regex \
+    --include '^(main|memory_work[(][)]|network_work[(][)])$' \
+    -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-mm.err"
+grep -q '@MM page_fault' "$TMP/kernel-mm.trace"
+grep -q '@NET socket_begin' "$TMP/kernel-mm.trace"
+grep -q '@NET connect_begin' "$TMP/kernel-mm.trace"
+grep -q '@NET sendto_begin' "$TMP/kernel-mm.trace"
+grep -q '@NET sendto_end' "$TMP/kernel-mm.trace"
+grep -q '^Kernel:$' "$TMP/kernel-mm.trace"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \

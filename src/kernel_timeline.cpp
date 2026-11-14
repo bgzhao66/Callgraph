@@ -112,6 +112,31 @@ std::string device_text(uint64_t value)
     return std::to_string(major) + ":" + std::to_string(minor);
 }
 
+std::string ipv4_text(uint64_t value)
+{
+    const uint32_t address = static_cast<uint32_t>(value);
+    return std::to_string(address & 0xff) + "." +
+           std::to_string((address >> 8) & 0xff) + "." +
+           std::to_string((address >> 16) & 0xff) + "." +
+           std::to_string((address >> 24) & 0xff);
+}
+
+uint8_t global_category(uint16_t kind)
+{
+    switch (kind) {
+    case CG_KEV_BLOCK_INSERT:
+    case CG_KEV_BLOCK_ISSUE:
+    case CG_KEV_BLOCK_COMPLETE:
+    case CG_KEV_BLOCK_REQUEUE:
+    case CG_KEV_BLOCK_ERROR:
+        return CG_KCAT_BLOCK;
+    case CG_KEV_TCP_RETRANSMIT:
+        return CG_KCAT_NET;
+    default:
+        return 0;
+    }
+}
+
 }  // namespace
 
 const char* block_reason_name(BlockReason reason)
@@ -269,9 +294,13 @@ void KernelTimeline::account_until(uint32_t tid, uint64_t ts,
 
 BlockReason KernelTimeline::classify_block(const ThreadRuntime& thread) const
 {
+    if (thread.reclaim_depth != 0)
+        return BlockReason::Memory;
     for (auto it = thread.ops.rbegin(); it != thread.ops.rend(); ++it) {
         if (it->kind == CG_KEV_FUTEX_ENTER && futex_is_wait(it->op))
             return BlockReason::Futex;
+        if (kernel_is_net_enter(it->kind))
+            return BlockReason::Net;
         if (kernel_is_io_enter(it->kind))
             return BlockReason::Io;
     }
@@ -571,8 +600,189 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
                kernel_io_event_name(event.kind), attrs);
 }
 
+void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
+{
+    account_until(event.tid, event.ts, stack);
+    ThreadRuntime& thread = threads_[event.tid];
+
+    if (kernel_is_net_enter(event.kind)) {
+        PendingOp op;
+        op.kind = event.kind;
+        op.ts = event.ts;
+        op.id = next_id();
+        op.fd = event.b;
+        op.nr = static_cast<uint32_t>(event.a);
+        thread.ops.push_back(op);
+
+        std::string attrs;
+        append_attr(attrs, "id", op.id);
+        switch (event.kind) {
+        case CG_KEV_NET_SOCKET_ENTER:
+            append_attr(attrs, "family", event.b);
+            append_attr(attrs, "type", event.c);
+            append_attr(attrs, "protocol", event.d);
+            break;
+        case CG_KEV_NET_CONNECT_ENTER:
+            append_signed_attr(attrs, "fd", static_cast<int32_t>(event.b));
+            append_hex_attr(attrs, "addr", event.c);
+            append_signed_attr(attrs, "addrlen",
+                               static_cast<int32_t>(event.d));
+            break;
+        case CG_KEV_NET_ACCEPT4_ENTER:
+            append_signed_attr(attrs, "fd", static_cast<int32_t>(event.b));
+            append_hex_attr(attrs, "addr", event.c);
+            append_hex_attr(attrs, "addrlen", event.d);
+            append_attr(attrs, "flags", event.e);
+            break;
+        case CG_KEV_NET_SENDTO_ENTER:
+            append_signed_attr(attrs, "fd", static_cast<int32_t>(event.b));
+            append_attr(attrs, "len", event.d);
+            append_attr(attrs, "flags", event.e);
+            append_hex_attr(attrs, "addr", event.f);
+            append_signed_attr(attrs, "addr_len",
+                               static_cast<int32_t>(event.g));
+            break;
+        case CG_KEV_NET_RECVFROM_ENTER:
+            append_signed_attr(attrs, "fd", static_cast<int32_t>(event.b));
+            append_attr(attrs, "size", event.d);
+            append_attr(attrs, "flags", event.e);
+            append_hex_attr(attrs, "addr", event.f);
+            append_hex_attr(attrs, "addr_len", event.g);
+            break;
+        case CG_KEV_NET_SENDMSG_ENTER:
+        case CG_KEV_NET_RECVMSG_ENTER:
+            append_signed_attr(attrs, "fd", static_cast<int32_t>(event.b));
+            append_hex_attr(attrs, "msg", event.c);
+            append_attr(attrs, "flags", event.d);
+            break;
+        case CG_KEV_NET_EPOLL_WAIT_ENTER:
+            append_signed_attr(attrs, "epfd", static_cast<int32_t>(event.b));
+            append_hex_attr(attrs, "events", event.c);
+            append_attr(attrs, "maxevents", event.d);
+            append_signed_attr(attrs, "timeout",
+                               static_cast<int32_t>(event.e));
+            break;
+        case CG_KEV_NET_POLL_ENTER:
+            append_hex_attr(attrs, "fds", event.b);
+            append_attr(attrs, "nfds", event.c);
+            append_signed_attr(attrs, "timeout",
+                               static_cast<int32_t>(event.d));
+            break;
+        default:
+            break;
+        }
+        emit_event(event, depth_of(stack, event.tid),
+                   kernel_net_event_name(event.kind), attrs);
+        return;
+    }
+
+    const uint16_t enter_kind = static_cast<uint16_t>(event.kind - 1);
+    PendingOp pending;
+    bool found = false;
+    for (auto it = thread.ops.rbegin(); it != thread.ops.rend(); ++it) {
+        if (it->kind == enter_kind) {
+            pending = *it;
+            thread.ops.erase(std::next(it).base());
+            found = true;
+            break;
+        }
+    }
+
+    std::string attrs;
+    if (!found) {
+        append_signed_attr(attrs, "ret", static_cast<int64_t>(event.b));
+        attrs += " unmatched=1";
+    } else {
+        append_attr(attrs, "id", pending.id);
+        append_signed_attr(attrs, "ret", static_cast<int64_t>(event.b));
+        if (event.ts >= pending.ts)
+            append_attr(attrs, "duration_ns", event.ts - pending.ts);
+    }
+    emit_event(event, depth_of(stack, event.tid),
+               kernel_net_event_name(event.kind), attrs);
+}
+
+void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
+{
+    account_until(event.tid, event.ts, stack);
+    ThreadRuntime& thread = threads_[event.tid];
+
+    if (event.kind == CG_KEV_PAGE_FAULT_USER ||
+        event.kind == CG_KEV_PAGE_FAULT_KERNEL) {
+        const int depth = depth_of(stack, event.tid);
+        thread_counters_[event.tid].page_faults += 1;
+        if (depth >= 0) {
+            function_counters_[StatKey{
+                event.tid, static_cast<uint32_t>(depth),
+                function_of(stack, event.tid)}]
+                .page_faults += 1;
+        }
+
+        std::string attrs;
+        append_text_attr(attrs, "space",
+                         event.kind == CG_KEV_PAGE_FAULT_USER ? "user"
+                                                             : "kernel");
+        append_hex_attr(attrs, "address", event.a);
+        append_hex_attr(attrs, "ip", event.b);
+        append_hex_attr(attrs, "error", event.c);
+        emit_event(event, depth, "page_fault", attrs);
+        return;
+    }
+
+    if (event.kind == CG_KEV_DIRECT_RECLAIM_BEGIN) {
+        if (thread.reclaim_depth == 0) {
+            thread.reclaim_begin_ns = event.ts;
+            thread.reclaim_id = next_id();
+        }
+        thread.reclaim_depth += 1;
+
+        std::string attrs;
+        append_attr(attrs, "id", thread.reclaim_id);
+        append_signed_attr(attrs, "order", static_cast<int32_t>(event.a));
+        append_hex_attr(attrs, "gfp", event.b);
+        emit_event(event, depth_of(stack, event.tid),
+                   "direct_reclaim_begin", attrs);
+        return;
+    }
+
+    const bool matched = thread.reclaim_depth != 0;
+    std::string attrs;
+    if (matched) {
+        thread.reclaim_depth -= 1;
+        append_attr(attrs, "id", thread.reclaim_id);
+        append_attr(attrs, "nr_reclaimed", event.a);
+        if (thread.reclaim_depth == 0 &&
+            event.ts >= thread.reclaim_begin_ns)
+            append_attr(attrs, "duration_ns",
+                        event.ts - thread.reclaim_begin_ns);
+    } else {
+        append_attr(attrs, "unmatched", 1);
+        append_attr(attrs, "nr_reclaimed", event.a);
+    }
+    emit_event(event, depth_of(stack, event.tid), "direct_reclaim_end", attrs);
+}
+
+void KernelTimeline::on_tcp_retransmit(const KernelEvent& event)
+{
+    global_counts_[event.kind] += 1;
+
+    std::string attrs;
+    append_attr(attrs, "state", event.a);
+    append_attr(attrs, "sport", event.b);
+    append_attr(attrs, "dport", event.c);
+    append_attr(attrs, "family", event.d);
+    if (event.d == 2) {
+        append_text_attr(attrs, "saddr", ipv4_text(event.e));
+        append_text_attr(attrs, "daddr", ipv4_text(event.f));
+    }
+    if (event.g != 0)
+        append_signed_attr(attrs, "err", static_cast<int64_t>(event.g));
+    emit_event(event, kKernelDepthGlobal, "tcp_retransmit", attrs);
+}
+
 void KernelTimeline::on_block(const KernelEvent& event)
 {
+    global_counts_[event.kind] += 1;
     const BlockKey key{static_cast<uint32_t>(event.a), event.b,
                        static_cast<uint32_t>(event.c)};
     std::string attrs;
@@ -706,8 +916,23 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
     case CG_KEV_BLOCK_ERROR:
         on_block(event);
         break;
+    case CG_KEV_PAGE_FAULT_USER:
+    case CG_KEV_PAGE_FAULT_KERNEL:
+    case CG_KEV_DIRECT_RECLAIM_BEGIN:
+    case CG_KEV_DIRECT_RECLAIM_END:
+        if (is_target(event.tid))
+            on_mm(event, stack);
+        break;
+    case CG_KEV_TCP_RETRANSMIT:
+        on_tcp_retransmit(event);
+        break;
     default:
-        if (kernel_is_io_enter(event.kind) || kernel_is_io_exit(event.kind)) {
+        if (kernel_is_net_enter(event.kind) ||
+            kernel_is_net_exit(event.kind)) {
+            if (is_target(event.tid))
+                on_net(event, stack);
+        } else if (kernel_is_io_enter(event.kind) ||
+                   kernel_is_io_exit(event.kind)) {
             if (is_target(event.tid))
                 on_io(event, stack);
         }
@@ -726,7 +951,7 @@ void KernelTimeline::finish(uint64_t stop_ts, const CallStack& stack)
     for (uint32_t tid : tids) {
         account_until(tid, stop_ts, stack);
         auto& thread = threads_[tid];
-        if (!thread.ops.empty())
+        if (!thread.ops.empty() || thread.reclaim_depth != 0)
             thread.partial = true;
         if (thread.partial)
             thread_counters_[tid].partial = true;
@@ -736,7 +961,7 @@ void KernelTimeline::finish(uint64_t stop_ts, const CallStack& stack)
 std::string KernelTimeline::format_report(
     const std::vector<std::string>& names) const
 {
-    if (thread_counters_.empty())
+    if (thread_counters_.empty() && global_counts_.empty())
         return {};
 
     std::vector<uint32_t> tids;
@@ -759,6 +984,8 @@ std::string KernelTimeline::format_report(
         out += " runnable=" + format_ns(total.runnable_ns);
         out += " blocked=" + format_ns(total.blocked_total());
         out += " switches=" + std::to_string(total.switches);
+        if (total.page_faults != 0)
+            out += " faults=" + std::to_string(total.page_faults);
         if (total.partial)
             out += " partial=yes";
         out += '\n';
@@ -797,8 +1024,42 @@ std::string KernelTimeline::format_report(
             out += " cpu=" + format_ns(counters.cpu_ns);
             out += " runnable=" + format_ns(counters.runnable_ns);
             out += " blocked=" + format_ns(counters.blocked_total());
+            if (counters.page_faults != 0)
+                out += " faults=" + std::to_string(counters.page_faults);
             out += '\n';
         }
+    }
+
+    if (!global_counts_.empty()) {
+        std::vector<std::pair<uint16_t, uint64_t>> rows(
+            global_counts_.begin(), global_counts_.end());
+        std::sort(rows.begin(), rows.end(),
+                  [](const auto& a, const auto& b) {
+                      const uint8_t category_a = global_category(a.first);
+                      const uint8_t category_b = global_category(b.first);
+                      if (category_a != category_b)
+                          return category_a < category_b;
+                      return a.first < b.first;
+                  });
+
+        out += "  global\n";
+        uint8_t category = 0;
+        std::string line;
+        for (const auto& [kind, count] : rows) {
+            const uint8_t row_category = global_category(kind);
+            if (row_category != category) {
+                if (!line.empty())
+                    out += "    " + line + "\n";
+                line = kernel_category_name(row_category);
+                category = row_category;
+            }
+            line += ' ';
+            line += kernel_kind_name(kind);
+            line += '=';
+            line += std::to_string(count);
+        }
+        if (!line.empty())
+            out += "    " + line + "\n";
     }
     return out;
 }

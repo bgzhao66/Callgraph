@@ -39,5 +39,7 @@ struct {
 #include "kernel/sched.bpf.h"
 #include "kernel/syscall.bpf.h"
 #include "kernel/block.bpf.h"
+#include "kernel/mm.bpf.h"
+#include "kernel/net.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";

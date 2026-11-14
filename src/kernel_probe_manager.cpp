@@ -26,6 +26,8 @@ enum FamilyBit {
     kFamilyFutex = 1u << 1,
     kFamilyIo = 1u << 2,
     kFamilyBlock = 1u << 3,
+    kFamilyMm = 1u << 4,
+    kFamilyNet = 1u << 5,
 };
 
 std::string trim(std::string text)
@@ -46,6 +48,10 @@ bool selected(const KernelSelection& selection, uint32_t family)
     if ((family & kFamilyIo) && selection.io)
         return true;
     if ((family & kFamilyBlock) && selection.block)
+        return true;
+    if ((family & kFamilyMm) && selection.memory)
+        return true;
+    if ((family & kFamilyNet) && selection.network)
         return true;
     return false;
 }
@@ -148,6 +154,77 @@ const KernelProbeManager::EventSpec kEvents[] = {
     {"cg_block_block_rq_error", "block", "block_rq_error",
      CG_KEV_BLOCK_ERROR, CG_KCAT_BLOCK, kFamilyBlock,
      {"dev", "sector", "nr_sector", "error"}},
+
+    {"cg_page_fault_user", "exceptions", "page_fault_user",
+     CG_KEV_PAGE_FAULT_USER, CG_KCAT_MM, kFamilyMm,
+     {"address", "ip", "error_code"}},
+    {"cg_page_fault_kernel", "exceptions", "page_fault_kernel",
+     CG_KEV_PAGE_FAULT_KERNEL, CG_KCAT_MM, kFamilyMm,
+     {"address", "ip", "error_code"}},
+    {"cg_direct_reclaim_begin", "vmscan", "mm_vmscan_direct_reclaim_begin",
+     CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, kFamilyMm,
+     {"order", "gfp_flags"}},
+    {"cg_direct_reclaim_end", "vmscan", "mm_vmscan_direct_reclaim_end",
+     CG_KEV_DIRECT_RECLAIM_END, CG_KCAT_MM, kFamilyMm,
+     {"nr_reclaimed"}},
+
+    {"cg_sys_enter_socket", "syscalls", "sys_enter_socket",
+     CG_KEV_NET_SOCKET_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "family", "type", "protocol"}},
+    {"cg_sys_exit_socket", "syscalls", "sys_exit_socket",
+     CG_KEV_NET_SOCKET_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_connect", "syscalls", "sys_enter_connect",
+     CG_KEV_NET_CONNECT_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "uservaddr", "addrlen"}},
+    {"cg_sys_exit_connect", "syscalls", "sys_exit_connect",
+     CG_KEV_NET_CONNECT_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_accept4", "syscalls", "sys_enter_accept4",
+     CG_KEV_NET_ACCEPT4_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "upeer_sockaddr", "upeer_addrlen", "flags"}},
+    {"cg_sys_exit_accept4", "syscalls", "sys_exit_accept4",
+     CG_KEV_NET_ACCEPT4_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_sendto", "syscalls", "sys_enter_sendto",
+     CG_KEV_NET_SENDTO_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "buff", "len", "flags", "addr", "addr_len"}},
+    {"cg_sys_exit_sendto", "syscalls", "sys_exit_sendto",
+     CG_KEV_NET_SENDTO_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_recvfrom", "syscalls", "sys_enter_recvfrom",
+     CG_KEV_NET_RECVFROM_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "ubuf", "size", "flags", "addr", "addr_len"}},
+    {"cg_sys_exit_recvfrom", "syscalls", "sys_exit_recvfrom",
+     CG_KEV_NET_RECVFROM_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_sendmsg", "syscalls", "sys_enter_sendmsg",
+     CG_KEV_NET_SENDMSG_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "msg", "flags"}},
+    {"cg_sys_exit_sendmsg", "syscalls", "sys_exit_sendmsg",
+     CG_KEV_NET_SENDMSG_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_recvmsg", "syscalls", "sys_enter_recvmsg",
+     CG_KEV_NET_RECVMSG_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "fd", "msg", "flags"}},
+    {"cg_sys_exit_recvmsg", "syscalls", "sys_exit_recvmsg",
+     CG_KEV_NET_RECVMSG_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_epoll_wait", "syscalls", "sys_enter_epoll_wait",
+     CG_KEV_NET_EPOLL_WAIT_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "epfd", "events", "maxevents", "timeout"}},
+    {"cg_sys_exit_epoll_wait", "syscalls", "sys_exit_epoll_wait",
+     CG_KEV_NET_EPOLL_WAIT_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_sys_enter_poll", "syscalls", "sys_enter_poll",
+     CG_KEV_NET_POLL_ENTER, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ufds", "nfds", "timeout_msecs"}},
+    {"cg_sys_exit_poll", "syscalls", "sys_exit_poll",
+     CG_KEV_NET_POLL_EXIT, CG_KCAT_NET, kFamilyNet,
+     {"__syscall_nr", "ret"}},
+    {"cg_tcp_retransmit", "tcp", "tcp_retransmit_skb",
+     CG_KEV_TCP_RETRANSMIT, CG_KCAT_NET, kFamilyNet,
+     {"state", "sport", "dport", "family", "saddr", "daddr", "err"}},
 };
 
 }  // namespace
@@ -251,8 +328,9 @@ bool KernelProbeManager::read_format(
         std::string name = space == std::string::npos
                                ? declaration
                                : declaration.substr(space + 1);
-        if (name.find('[') != std::string::npos)
-            continue;
+        const size_t bracket = name.find('[');
+        if (bracket != std::string::npos)
+            name.resize(bracket);
 
         const size_t offset_pos = line.find("offset:");
         const size_t size_pos = line.find("size:");
@@ -286,7 +364,8 @@ bool KernelProbeManager::apply_tp_config(
             ++missing_events_;
             return false;
         }
-        if (it->second.size != 4 && it->second.size != 8) {
+        if (it->second.size != 1 && it->second.size != 2 &&
+            it->second.size != 4 && it->second.size != 8) {
             log_warn("kernel tracepoint %s:%s field %s has unsupported size %u",
                      spec.group, spec.name, name, it->second.size);
             ++missing_events_;

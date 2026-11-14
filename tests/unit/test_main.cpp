@@ -1816,6 +1816,271 @@ void test_kernel_output_global()
     CHECK(trace.find("42 : - @SCHED exit prio=120") != std::string::npos);
 }
 
+void test_kernel_memory()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+
+        TraceEvent enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(enter, stack);
+        stack.on_event(enter);
+
+        KernelEvent fault = {};
+        fault.ts = 100;
+        fault.tid = 10;
+        fault.kind = kKernelPageFaultUser;
+        fault.category = kKernelCatMm;
+        fault.a = 0x1000;
+        fault.b = 0x2000;
+        fault.c = 0x4;
+        timeline.on_kernel_event(fault, stack);
+
+        KernelEvent reclaim_begin = {};
+        reclaim_begin.ts = 200;
+        reclaim_begin.tid = 10;
+        reclaim_begin.kind = kKernelDirectReclaimBegin;
+        reclaim_begin.category = kKernelCatMm;
+        reclaim_begin.a = 0;
+        reclaim_begin.b = 0x200;
+        timeline.on_kernel_event(reclaim_begin, stack);
+
+        KernelEvent switch_out = {};
+        switch_out.ts = 300;
+        switch_out.tid = 10;
+        switch_out.peer_tid = 20;
+        switch_out.kind = kKernelSchedSwitch;
+        switch_out.category = kKernelCatSched;
+        switch_out.a = 1;  // TASK_INTERRUPTIBLE
+        timeline.on_kernel_event(switch_out, stack);
+
+        KernelEvent wake = {};
+        wake.ts = 1000;
+        wake.tid = 10;
+        wake.peer_tid = 20;
+        wake.kind = kKernelSchedWakeup;
+        wake.category = kKernelCatSched;
+        timeline.on_kernel_event(wake, stack);
+
+        KernelEvent switch_in = {};
+        switch_in.ts = 1200;
+        switch_in.tid = 20;
+        switch_in.peer_tid = 10;
+        switch_in.kind = kKernelSchedSwitch;
+        switch_in.category = kKernelCatSched;
+        switch_in.a = 0;
+        timeline.on_kernel_event(switch_in, stack);
+
+        KernelEvent reclaim_end = {};
+        reclaim_end.ts = 1300;
+        reclaim_end.tid = 10;
+        reclaim_end.kind = kKernelDirectReclaimEnd;
+        reclaim_end.category = kKernelCatMm;
+        reclaim_end.a = 42;
+        timeline.on_kernel_event(reclaim_end, stack);
+
+        TraceEvent exit = make_event(0, 10, kEventExit, 1400);
+        timeline.on_function_event(exit, stack);
+        stack.on_event(exit);
+        timeline.finish(1400, stack);
+
+        report = timeline.format_report(names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@MM page_fault space=user address=0x1000") !=
+          std::string::npos);
+    CHECK(trace.find("ip=0x2000 error=0x4") != std::string::npos);
+    CHECK(trace.find("@MM direct_reclaim_begin id=1 order=0 gfp=0x200") !=
+          std::string::npos);
+    CHECK(trace.find("@MM direct_reclaim_end") != std::string::npos);
+    CHECK(trace.find("nr_reclaimed=42 duration_ns=1100") !=
+          std::string::npos);
+    CHECK(report.find("blocked(memory=700ns") != std::string::npos);
+    CHECK(report.find("faults=1") != std::string::npos);
+}
+
+void test_kernel_network()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+
+        TraceEvent enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(enter, stack);
+        stack.on_event(enter);
+
+        KernelEvent socket_begin = {};
+        socket_begin.ts = 100;
+        socket_begin.tid = 10;
+        socket_begin.kind = CG_KEV_NET_SOCKET_ENTER;
+        socket_begin.category = kKernelCatNet;
+        socket_begin.a = 0;
+        socket_begin.b = 2;  // AF_INET
+        socket_begin.c = 1;  // SOCK_STREAM
+        socket_begin.d = 0;
+        timeline.on_kernel_event(socket_begin, stack);
+
+        KernelEvent socket_end = {};
+        socket_end.ts = 200;
+        socket_end.tid = 10;
+        socket_end.kind = CG_KEV_NET_SOCKET_EXIT;
+        socket_end.category = kKernelCatNet;
+        socket_end.a = 0;
+        socket_end.b = 5;
+        timeline.on_kernel_event(socket_end, stack);
+
+        KernelEvent send_begin = {};
+        send_begin.ts = 300;
+        send_begin.tid = 10;
+        send_begin.kind = CG_KEV_NET_SENDTO_ENTER;
+        send_begin.category = kKernelCatNet;
+        send_begin.a = 0;
+        send_begin.b = 5;
+        send_begin.c = 0x4000;
+        send_begin.d = 4;
+        send_begin.e = 0;
+        send_begin.f = 0x5000;
+        send_begin.g = 16;
+        timeline.on_kernel_event(send_begin, stack);
+
+        KernelEvent send_end = {};
+        send_end.ts = 400;
+        send_end.tid = 10;
+        send_end.kind = CG_KEV_NET_SENDTO_EXIT;
+        send_end.category = kKernelCatNet;
+        send_end.a = 0;
+        send_end.b = 4;
+        timeline.on_kernel_event(send_end, stack);
+
+        KernelEvent recv_begin = {};
+        recv_begin.ts = 500;
+        recv_begin.tid = 10;
+        recv_begin.kind = CG_KEV_NET_RECVFROM_ENTER;
+        recv_begin.category = kKernelCatNet;
+        recv_begin.a = 0;
+        recv_begin.b = 5;
+        recv_begin.c = 0x6000;
+        recv_begin.d = 64;
+        recv_begin.e = 0;
+        recv_begin.f = 0x7000;
+        recv_begin.g = 0x8000;
+        timeline.on_kernel_event(recv_begin, stack);
+
+        KernelEvent switch_out = {};
+        switch_out.ts = 600;
+        switch_out.tid = 10;
+        switch_out.peer_tid = 20;
+        switch_out.kind = kKernelSchedSwitch;
+        switch_out.category = kKernelCatSched;
+        switch_out.a = 1;
+        timeline.on_kernel_event(switch_out, stack);
+
+        KernelEvent wake = {};
+        wake.ts = 1000;
+        wake.tid = 10;
+        wake.peer_tid = 20;
+        wake.kind = kKernelSchedWakeup;
+        wake.category = kKernelCatSched;
+        timeline.on_kernel_event(wake, stack);
+
+        KernelEvent switch_in = {};
+        switch_in.ts = 1100;
+        switch_in.tid = 20;
+        switch_in.peer_tid = 10;
+        switch_in.kind = kKernelSchedSwitch;
+        switch_in.category = kKernelCatSched;
+        switch_in.a = 0;
+        timeline.on_kernel_event(switch_in, stack);
+
+        KernelEvent recv_end = {};
+        recv_end.ts = 1200;
+        recv_end.tid = 10;
+        recv_end.kind = CG_KEV_NET_RECVFROM_EXIT;
+        recv_end.category = kKernelCatNet;
+        recv_end.a = 0;
+        recv_end.b = 64;
+        timeline.on_kernel_event(recv_end, stack);
+
+        TraceEvent exit = make_event(0, 10, kEventExit, 1300);
+        timeline.on_function_event(exit, stack);
+        stack.on_event(exit);
+        timeline.finish(1300, stack);
+
+        report = timeline.format_report(names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@NET socket_begin id=1 family=2 type=1 protocol=0") !=
+          std::string::npos);
+    CHECK(trace.find("@NET socket_end id=1 ret=5 duration_ns=100") !=
+          std::string::npos);
+    CHECK(trace.find("@NET sendto_begin id=2 fd=5 len=4") !=
+          std::string::npos);
+    CHECK(trace.find("@NET sendto_end id=2 ret=4 duration_ns=100") !=
+          std::string::npos);
+    CHECK(trace.find("@NET recvfrom_begin id=3 fd=5 size=64") !=
+          std::string::npos);
+    CHECK(trace.find("@NET recvfrom_end id=3 ret=64 duration_ns=700") !=
+          std::string::npos);
+    CHECK(report.find("blocked(net=400ns") != std::string::npos);
+}
+
+void test_kernel_global_report()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+
+        KernelEvent retransmit = {};
+        retransmit.ts = 100;
+        retransmit.kind = kKernelTcpRetransmit;
+        retransmit.category = kKernelCatNet;
+        retransmit.a = 1;
+        retransmit.b = 1234;
+        retransmit.c = 80;
+        retransmit.d = 2;
+        retransmit.e = 0x0100007f;  // 127.0.0.1
+        retransmit.f = 0x0101a8c0;  // 192.168.1.1
+        timeline.on_kernel_event(retransmit, stack);
+
+        report = timeline.format_report(names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("0 : * @NET tcp_retransmit state=1 sport=1234 dport=80 "
+                     "family=2 saddr=127.0.0.1 daddr=192.168.1.1") !=
+          std::string::npos);
+    CHECK(report.find("  global\n") != std::string::npos);
+    CHECK(report.find("NET tcp_retransmit=1") != std::string::npos);
+}
+
 }  // namespace
 
 int main()
@@ -1837,6 +2102,9 @@ int main()
     test_kernel_scheduler();
     test_kernel_futex_and_io();
     test_kernel_block_correlation();
+    test_kernel_memory();
+    test_kernel_network();
+    test_kernel_global_report();
     test_kernel_output_global();
     test_basic_stack();
     test_desync();

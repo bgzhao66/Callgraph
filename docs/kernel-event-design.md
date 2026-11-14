@@ -1,10 +1,12 @@
 # Kernel event tracing design
 
-Status: **P0 MVP implemented; P1/P2 are proposals.** Implemented today:
-scheduler, futex, I/O syscalls, and block records, with a userspace
-`KernelTimeline` report. Network, memory, PMU, IRQ/workqueue, and offline
-kernel-line replay are not implemented. Sections below describe the full
-target design; Section 16 records the P0 deviations.
+Status: **P0 and P1 implemented; P2 and PMU are proposals.** Implemented today:
+scheduler, futex, I/O syscalls, block records, memory (page faults and direct
+reclaim), and network (socket syscalls and global TCP retransmits), with a
+userspace `KernelTimeline` report. PMU, IRQ/workqueue, per-root kernel reports,
+OTel kernel span events, and offline kernel-line replay are not implemented.
+Sections below describe the full target design; Section 16 records the
+implementation deviations.
 
 ## 1. Summary
 
@@ -297,7 +299,14 @@ without a union, but their meaning is fixed per kind:
 | `BLOCK_*` | dev | sector | nr_sector | bytes | error | | | |
 | `PAGE_FAULT` | address | ip | error_code | | | | | |
 | `DIRECT_RECLAIM_*` | order | gfp_flags | | | | | | |
+| `NET_*_ENTER` | nr | f1 | f2 | f3 | f4 | f5 | f6 | |
+| `NET_*_EXIT` | nr | ret | | | | | | |
+| `TCP_RETRANSMIT` | state | sport | dport | family | saddr | daddr | err | |
 | `PMU_SAMPLE` | event_id | period | ip | cpu | | | | |
+
+For `NET_*_ENTER`, `f1..f6` are the syscall fields in tracepoint order (for
+example `fd`, `buff`, `len`, `flags`, `addr`, `addr_len` for `sendto`); see
+Section 6.5. `TCP_RETRANSMIT` is global and uses `tid = peer_tid = 0`.
 
 Subject rules:
 
@@ -315,7 +324,7 @@ Subject rules:
 `tgid`/`peer_tgid` are best-effort context; filtering is TID-based because a
 tracepoint often does not expose the peer's TGID.
 
-Specific `kind` values (P0 set):
+Specific `kind` values (implemented set):
 
 ```text
 SCHED_SWITCH, SCHED_WAKEUP, SCHED_WAKING, SCHED_WAKEUP_NEW,
@@ -329,7 +338,11 @@ BLOCK_INSERT, BLOCK_ISSUE, BLOCK_COMPLETE, BLOCK_REQUEUE,
 BLOCK_ERROR,
 PAGE_FAULT_USER, PAGE_FAULT_KERNEL,
 DIRECT_RECLAIM_BEGIN, DIRECT_RECLAIM_END,
-NET_SOCKET, NET_CONNECT, NET_SEND, NET_RECV, NET_EPOLL_WAIT, NET_POLL,
+NET_SOCKET_ENTER, NET_SOCKET_EXIT, NET_CONNECT_ENTER, NET_CONNECT_EXIT,
+NET_ACCEPT4_ENTER, NET_ACCEPT4_EXIT, NET_SENDTO_ENTER, NET_SENDTO_EXIT,
+NET_RECVFROM_ENTER, NET_RECVFROM_EXIT, NET_SENDMSG_ENTER, NET_SENDMSG_EXIT,
+NET_RECVMSG_ENTER, NET_RECVMSG_EXIT,
+NET_EPOLL_WAIT_ENTER, NET_EPOLL_WAIT_EXIT, NET_POLL_ENTER, NET_POLL_EXIT,
 TCP_RETRANSMIT,
 PMU_SAMPLE
 ```
@@ -745,14 +758,18 @@ the device map before reserving ring-buffer space.
 Filesystem-specific tracepoints (`ext4_sync_file_*`, `xfs_*`, `writeback:*`)
 are optional P1 add-ons. They are discovered, not assumed.
 
-### 6.4 Memory (P1)
+### 6.4 Memory (P1, implemented)
+
+Implemented with `--memory` (and the `mm` family name in `--events`). Page
+faults are point events; direct reclaim is an interval. Direct reclaim is the
+highest-precedence blocking reason when the thread sleeps inside it.
 
 | Tracepoint/probe | Fields | Notes |
 | --- | --- | --- |
 | `exceptions:page_fault_user` | `address`, `ip`, `error_code` | may be absent |
 | `exceptions:page_fault_kernel` | `address`, `ip`, `error_code` | may be absent |
 | `vmscan:mm_vmscan_direct_reclaim_begin` | `order`, `gfp_flags` | per-thread |
-| `vmscan:mm_vmscan_direct_reclaim_end` | `order` | duration |
+| `vmscan:mm_vmscan_direct_reclaim_end` | `nr_reclaimed` | duration |
 
 Page-fault tracepoints are point events, not begin/end pairs. The error code
 does not reliably distinguish major from minor faults, so the text says
@@ -765,7 +782,13 @@ interval. It is attributed directly and is the highest-precedence blocking
 reason. `kswapd_wake`/`kswapd_sleep`, compaction, and `kmem` events are
 global or high-volume; they are not charged to the target function.
 
-### 6.5 Network (P1)
+### 6.5 Network (P1, implemented)
+
+Implemented with `--network` (and the `net` family name in `--events`).
+Direct socket syscalls are attributed to the target TID. TCP retransmits are
+global records and are reported in the `Kernel:` summary's `global` section.
+The interface/address filters and causal socket correlation remain future
+work.
 
 Direct (syscall) events:
 
@@ -785,12 +808,12 @@ their `EAGAIN` returns are not waits and must not be reported as latency.
 
 Kernel network tracepoints (`sock:inet_sock_set_state`,
 `tcp:tcp_retransmit_skb`, `tcp:tcp_send_reset`, `net:net_dev_queue`,
-`net:net_dev_xmit`, `netif_receive_skb`) are **global** in the MVP. They do
-not carry a target TID, and a retransmit or packet processing run in a
+`net:net_dev_xmit`, `netif_receive_skb`) are **global** in the implementation.
+They do not carry a target TID, and a retransmit or packet processing run in a
 softirq cannot be charged to the application function that happens to be
-running. They are opt-in, filtered by interface/address where possible, and
-reported in the global section. Causal socket correlation is a later
-extension; the trace format already has `CG_KF_CAUSAL` for it.
+running. `tcp_retransmit_skb` is implemented under `--network` and reported in
+the global section. Interface/address filtering and causal socket correlation
+are later extensions; the trace format already has `CG_KF_CAUSAL` for them.
 
 A successful `send` does not mean the peer received or processed the data.
 End-to-end RPC latency needs application request IDs, which are out of scope.
@@ -943,18 +966,17 @@ attached with the target PID filter, not the kernel TID map.
 ```text
 bpf/kernel/trace.bpf.c        # single translation unit, includes modules
 bpf/kernel/common.bpf.h       # record layout, helpers, categories
-bpf/kernel/maps.bpf.h         # shared map definitions
-bpf/kernel/sched.bpf.c
-bpf/kernel/syscall.bpf.c
-bpf/kernel/block.bpf.c
-bpf/kernel/mm.bpf.c
-bpf/kernel/net.bpf.c
-bpf/kernel/irq.bpf.c          # later
+bpf/kernel/sched.bpf.h
+bpf/kernel/syscall.bpf.h
+bpf/kernel/block.bpf.h
+bpf/kernel/mm.bpf.h
+bpf/kernel/net.bpf.h
+bpf/kernel/irq.bpf.h          # later
 ```
 
 A single translation unit keeps the existing embedded-object build simple.
-Modules are included in a fixed order; all maps are defined once in
-`maps.bpf.h`.
+Modules are included in a fixed order; the maps are defined in
+`trace.bpf.c`.
 
 Maps:
 
@@ -963,9 +985,9 @@ Maps:
 | `kernel_events` | ringbuf | kernel records |
 | `kernel_lost` | per-CPU array | lost counts per category |
 | `target_tids` | hash | exact TID filter |
-| `target_tgids` | hash | process fallback |
+| `target_tgids` | hash | process fallback (planned) |
 | `tp_config` | array | field offsets per event kind |
-| `block_devices` | hash | optional device filter |
+| `block_devices` | hash | optional device filter (planned) |
 | `kernel_config` | array | family bitmask and options |
 
 Program names are stable because userspace attaches them individually:
@@ -976,7 +998,12 @@ cg_sched_migrate, cg_proc_fork, cg_proc_exit,
 cg_sys_enter_futex, cg_sys_exit_futex,
 cg_sys_enter_read, cg_sys_exit_read, ...
 cg_block_insert, cg_block_issue, cg_block_complete,
-cg_page_fault_user, cg_direct_reclaim_begin, cg_direct_reclaim_end
+cg_page_fault_user, cg_page_fault_kernel,
+cg_direct_reclaim_begin, cg_direct_reclaim_end,
+cg_sys_enter_socket, cg_sys_enter_connect, cg_sys_enter_accept4,
+cg_sys_enter_sendto, cg_sys_enter_recvfrom, cg_sys_enter_sendmsg,
+cg_sys_enter_recvmsg, cg_sys_enter_epoll_wait, cg_sys_enter_poll,
+cg_tcp_retransmit
 ```
 
 `KernelProbeManager` loads the embedded `kernel_bpf_o` only when at least one
@@ -1076,9 +1103,15 @@ Validation:
   target TID. `attach` currently requires `-p`; system-wide attach relaxes
   that requirement. `--system-wide` is incompatible with `--tid` and
   `--children`.
-- Every kernel sub-option, including the `--sched`, `--futex`, `--io`, and
-  `--block` shortcuts, is a usage error without `--kernel`.
+- Every kernel sub-option, including the `--sched`, `--futex`, `--io`,
+  `--block`, `--network`, and `--memory` shortcuts, is a usage error without
+  `--kernel`.
 - `--block-devices` requires `--block`.
+- `--network` enables direct socket syscalls plus the global
+  `tcp_retransmit_skb` tracepoint; retransmits are reported in the global
+  section and never charged to a function.
+- `--memory` enables user/kernel page-fault point events and the direct-reclaim
+  interval. Direct reclaim outranks every other blocking reason.
 - `--preset` and `--events` are additive; repeating `--events` appends
   families.
 - `--pmu-sampling` requires `--pmu`.
@@ -1099,7 +1132,9 @@ Presets:
 | `full` | sched, futex, io, block, net, mm, irq, work |
 
 `latency` and `database` are intentionally the same for the MVP; they can
-diverge once filesystem-specific probes are added.
+diverge once filesystem-specific probes are added. `cpu` currently enables
+only sched because the PMU collector is deferred, and `full` enables the
+implemented families (irq/work are still future work).
 
 ## 9. Output and reports
 
@@ -1133,9 +1168,9 @@ using spaces before the `@CATEGORY` token.
 ### 9.2 Kernel report
 
 `--report` (and `--histogram` when a kernel family is enabled) appends
-a `Kernel:` section. If both are given, the section is rendered once. The MVP
-section is per thread, after that thread's roots, to avoid depending on
-per-root invocation identity:
+a `Kernel:` section. If both are given, the section is rendered once. The
+implemented section is per thread, after that thread's roots, to avoid
+depending on per-root invocation identity:
 
 ```text
 Kernel:
@@ -1159,7 +1194,15 @@ Kernel:
 `on-cpu + blocked + runnable` is the observed wall interval. `blocked` is
 split by reason; the reasons are mutually exclusive. `exclusive` means the
 top-frame time; callers include it in their wall time but not in their
-exclusive counters.
+exclusive counters. A `faults=N` column is added when page faults were
+observed. Global block and TCP-retransmit records are counted in a trailing
+`global` block:
+
+```text
+  global
+    BLOCK rq_insert=12 rq_issue=12 rq_complete=12
+    NET tcp_retransmit=3
+```
 
 A later revision can pair the `Kernel:` section with each root, using the
 invocation IDs added in Section 5.1. That requires deciding how to render a
@@ -1167,7 +1210,7 @@ root whose kernel intervals began before its first function entry; it is
 deferred.
 
 Units are chosen per value from `choose_unit()`, as the tree report already
-does. No kernel bar is added to the histogram in the MVP; a bar would imply
+does. No kernel bar is added to the histogram yet; a bar would imply
 a share of a root span, which is only meaningful once per-root pairing is
 defined.
 
@@ -1280,7 +1323,7 @@ Guidelines:
 | futex | low/medium | selected syscall tracepoint |
 | I/O syscalls | medium | target filter; selected calls |
 | block | high | device filter; opt-in |
-| mm | low/medium | direct reclaim only; faults opt-in |
+| mm | low/medium | select with `--memory`; page faults can be high-volume |
 | net tracepoints | high | opt-in/global |
 | PMU counting | low | per-thread group |
 | PMU sampling | high | period; per-CPU or per-thread |
@@ -1354,6 +1397,10 @@ Integration (`tests/integration.sh`, root only for tracing):
 - `--memory`: a large anonymous mapping touched page by page produces
   `@MM page_fault`; direct reclaim is exercised only when the test can force
   memory pressure (otherwise skip).
+- `--network`: a UDP socket/connect/sendto workload produces paired
+  `@NET socket_begin/socket_end`, `connect_begin/end`, and
+  `sendto_begin/end`; TCP retransmits, when present, appear as `*` global
+  records and in the report's `global` section.
 - `--pmu`: when permitted, `cycles`/`instructions` counts are nonzero and
   consistent with `perf stat`; sampling produces a sample count.
 - `--report`: `cpu + blocked + runnable` is within tolerance of wall
@@ -1419,11 +1466,11 @@ futex syscall duration is not double-counted with blocked time.
 Acceptance: an fsync/write workload shows block request service time; a
 missing insert is handled without dropping the completion.
 
-### Phase 4: memory and network
+### Phase 4: memory and network (implemented)
 
-- Add `mm.bpf.c`, `net.bpf.c`.
-- Page-fault events, direct reclaim; socket syscalls, epoll/poll, opt-in TCP
-  tracepoints.
+- Add `mm.bpf.h`, `net.bpf.h`.
+- Page-fault events, direct reclaim; socket syscalls, epoll/poll, TCP
+  retransmit tracepoint.
 - Add `--memory`, `--network`, global-event reporting.
 
 Acceptance: page faults and direct reclaim are attributed; network syscall
@@ -1456,25 +1503,21 @@ New:
 bpf/kernel_event.h                 shared 96-byte kernel record
 bpf/kernel/trace.bpf.c             kernel BPF object entry
 bpf/kernel/common.bpf.h            helpers and constants
-bpf/kernel/maps.bpf.h              map definitions
-bpf/kernel/sched.bpf.c             scheduler programs
-bpf/kernel/syscall.bpf.c           futex/I/O/network syscall programs
-bpf/kernel/block.bpf.c             block request programs
-bpf/kernel/mm.bpf.c                page fault/reclaim programs
-bpf/kernel/net.bpf.c               TCP/device programs
-bpf/kernel/irq.bpf.c               later
+bpf/kernel/sched.bpf.h             scheduler programs
+bpf/kernel/syscall.bpf.h           futex/I/O syscall programs
+bpf/kernel/block.bpf.h             block request programs
+bpf/kernel/mm.bpf.h                page fault/reclaim programs
+bpf/kernel/net.bpf.h               socket syscall/TCP programs
+bpf/kernel/irq.bpf.h               later
 include/callgraph/kernel_event.h   C++ record and enums
 include/callgraph/kernel_timeline.h
-include/callgraph/kernel_report.h
-include/callgraph/event_merger.h
 include/callgraph/kernel_probe_manager.h
-include/callgraph/perf_collector.h
+include/callgraph/perf_collector.h later
 src/kernel_event.cpp               formatting/parsing helpers
-src/kernel_timeline.cpp            state machine/accounting
-src/kernel_report.cpp              summary rendering
-src/event_merger.cpp               ordered merge
+src/kernel_timeline.cpp            state machine/accounting/report
 src/kernel_probe_manager.cpp       kernel object/maps/attachment
-src/perf_collector.cpp             perf counting/sampling
+src/event_collector.cpp            merge of function and kernel streams
+src/perf_collector.cpp             perf counting/sampling (later)
 ```
 
 Modified:
@@ -1519,12 +1562,12 @@ These need a decision before or during Phase 0/1:
     or only with `--report`? The design assumes raw lines are the
     default artifact.
 
-## 16. P0 implementation notes
+## 16. P0/P1 implementation notes
 
 The first implementation deliberately narrows the full design:
 
 - **Two BPF objects.** `bpf/trace.bpf.c` is untouched; `bpf/kernel/trace.bpf.c`
-  is loaded only for `--sched/--futex/--io/--block`. Kernel records use a
+  is loaded only when a kernel family is selected. Kernel records use a
   separate ring buffer, and `EventCollector` merges both streams by timestamp
   with a bounded reorder window.
 - **Stateless BPF.** The kernel object only filters target TIDs and emits
@@ -1533,7 +1576,9 @@ The first implementation deliberately narrows the full design:
   replay.
 - **Runtime tracefs offsets.** `KernelProbeManager` parses the `format` file
   for each enabled tracepoint and fills a `tp_config` array map. BPF reads
-  4- or 8-byte fields at those offsets; no `vmlinux.h` or per-kernel structs.
+  1/2/4/8-byte fields at those offsets; no `vmlinux.h` or per-kernel structs.
+  Array fields are addressed by their base name, which is used for the TCP
+  port/family fields and the IPv4 address bytes.
 - **Target TIDs.** Userspace takes `/proc/<pid>/task` tids and also learns
   kernel-visible TIDs from function uprobe events. The latter is necessary
   when the userspace and BPF PID namespaces differ. A switch that happens
@@ -1541,23 +1586,27 @@ The first implementation deliberately narrows the full design:
   `partial=yes`.
 - **Accounting.** `KernelTimeline` accounts at every function and kernel event
   boundary. Counters are aggregated by `(tid, depth, function_id)` rather than
-  per invocation in the MVP; this bounds memory for long attach sessions.
+  per invocation today; this bounds memory for long attach sessions.
   The report is per thread, not per root.
 - **Families.** Scheduler (`switch`, `wakeup`, `waking`, `wakeup_new`,
   `migrate`, `fork`, `exit`), futex enter/exit, the read/write/pread/pwrite/
-  fsync/fdatasync/openat/close/sync_file_range syscalls, and block
-  insert/issue/complete/requeue/error. Block requests are correlated by
+  fsync/fdatasync/openat/close/sync_file_range syscalls, block
+  insert/issue/complete/requeue/error, memory page faults and direct reclaim,
+  and network socket/connect/accept4/sendto/recvfrom/sendmsg/recvmsg/
+  epoll_wait/poll plus `tcp_retransmit_skb`. Block requests are correlated by
   `(dev, sector, nr_sector)` and report queue/device/total time.
-- **Attribution.** Scheduler and syscall events are direct; block events are
-  global. The timeline never charges a block completion to the running
-  thread. The report prints `partial=yes` when the observed interval does not
-  cover the whole story.
+- **Attribution.** Scheduler, syscall, and page-fault/reclaim events are
+  direct; block and TCP-retransmit events are global. The timeline never
+  charges a global record to the running thread. Direct reclaim outranks
+  futex/network/I/O when classifying a blocking reason, and page faults are
+  counted per thread and function in the report. The report prints
+  `partial=yes` when the observed interval does not cover the whole story.
 - **CLI.** Implemented: `--kernel` plus the secondary `--sched`, `--futex`,
-  `--io`, `--block`, `--events`, `--preset`, `--report`, `--merge-window`,
-  and `--require-events` options. `--ringbuf-size` sizes
-  both the function and kernel ring buffers. `--children`, `--tid`, and
-  `--system-wide` are not implemented yet.
-- **Deferred.** Network, memory, PMU, IRQ/workqueue, per-root kernel reports,
-  OTel span events for kernel records, and offline kernel-line replay. The
-  text parser currently ignores `@CATEGORY` lines, so function-only export
-  remains correct.
+  `--io`, `--block`, `--network`, `--memory`, `--events`, `--preset`,
+  `--report`, `--merge-window`, and `--require-events` options.
+  `--ringbuf-size` sizes both the function and kernel ring buffers.
+  `--children`, `--tid`, and `--system-wide` are not implemented yet.
+- **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, OTel span events
+  for kernel records, and offline kernel-line replay. The text parser
+  currently ignores `@CATEGORY` lines, so function-only export remains
+  correct.

@@ -124,6 +124,8 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/sched.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/syscall.bpf.h
     ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/block.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/mm.bpf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bpf/kernel/net.bpf.h
   COMMENT "Compiling kernel-event BPF program"
   VERBATIM
 )

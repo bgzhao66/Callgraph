@@ -23,8 +23,13 @@ struct KernelSelection {
     bool futex = false;
     bool io = false;
     bool block = false;
+    bool memory = false;
+    bool network = false;
 
-    bool any() const { return sched || futex || io || block; }
+    bool any() const
+    {
+        return sched || futex || io || block || memory || network;
+    }
 };
 
 // Owns the kernel-event BPF object, its maps, and tracepoint links.  The
