@@ -194,6 +194,12 @@ Kernel event options (--kernel):
           --memory          trace page faults and direct reclaim
           --events L        comma-separated: sched,futex,io,block,net,mm
           --preset P        latency (default), proxy, storage, computation, or full
+              latency       sched, futex, io, net syscalls
+              proxy         sched, futex, io, net syscalls, TCP retransmits
+              storage       sched, futex, io, direct reclaim
+              computation   sched, futex, direct reclaim, page faults
+              full          sched, futex, io, block, net syscalls, direct reclaim,
+                            page faults, TCP retransmits
           --report          append the per-thread kernel summary
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
           --require-events  fail if a requested tracepoint is unavailable
@@ -538,7 +544,7 @@ Presets select fine-grained scopes:
 
 | Preset | Covers | Excludes |
 | --- | --- | --- |
-| `latency` (default) | scheduler, futex, I/O syscalls, direct reclaim, network syscalls | block, page-fault points, global TCP retransmits |
+| `latency` (default) | scheduler, futex, I/O syscalls, network syscalls | block, direct reclaim, page-fault points, global TCP retransmits |
 | `proxy` | scheduler, futex, I/O syscalls, direct reclaim, network syscalls, global TCP retransmits | block |
 | `storage` | scheduler, futex, I/O syscalls, direct reclaim | block, network, page-fault points |
 | `computation` | scheduler, futex, direct reclaim, page-fault points | I/O syscalls, block, network |

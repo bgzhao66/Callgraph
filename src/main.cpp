@@ -115,10 +115,11 @@ struct Options {
     std::string trace_metadata;
 };
 
-// Help options use two levels: a master option and the options that refine or
-// require it.  Masters stay at the normal indent; secondary options are
-// indented four spaces further.  Descriptions share one column, so the option
-// names read as a table with a hierarchy in the first column.
+// Help options use up to three levels: a master option, the options that
+// refine or require it, and values nested under those options.  Masters stay
+// at the normal indent; each level is indented four spaces further.
+// Descriptions share one column, so the option names read as a table with a
+// hierarchy in the first column.
 struct HelpOption {
     const char* flags;
     const char* desc;
@@ -128,6 +129,7 @@ struct HelpOption {
 constexpr int kPrimaryShortIndent = 2;
 constexpr int kPrimaryIndent = 6;
 constexpr int kSecondaryIndent = 10;
+constexpr int kTertiaryIndent = 14;
 constexpr int kDescColumn = 28;
 
 void print_help_description(FILE* out, const char* desc, int column)
@@ -151,7 +153,7 @@ void print_help_option(FILE* out, const HelpOption& option)
     const int indent =
         option.level == 0
             ? (short_option ? kPrimaryShortIndent : kPrimaryIndent)
-            : kSecondaryIndent;
+            : option.level == 1 ? kSecondaryIndent : kTertiaryIndent;
     const int width = kDescColumn - indent;
     const int flags_length = static_cast<int>(std::strlen(option.flags));
 
@@ -234,6 +236,14 @@ void usage(FILE* out)
         {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
         {"--preset P",
          "latency (default), proxy, storage, computation, or full", 1},
+        {"latency", "sched, futex, io, net syscalls", 2},
+        {"proxy", "sched, futex, io, net syscalls, TCP retransmits", 2},
+        {"storage", "sched, futex, io, direct reclaim", 2},
+        {"computation", "sched, futex, direct reclaim, page faults", 2},
+        {"full",
+         "sched, futex, io, block, net syscalls, direct reclaim,\n"
+         "page faults, TCP retransmits",
+         2},
         {"--report", "append the per-thread kernel summary", 1},
         {"--merge-window D",
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
@@ -717,7 +727,6 @@ Options parse_args(int argc, char** argv)
             options.sched = true;
             options.futex = true;
             options.io = true;
-            options.memory = true;
             options.network = true;
         } else if (options.kernel_preset == "proxy") {
             options.sched = true;

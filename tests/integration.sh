@@ -82,6 +82,9 @@ fi
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Tracing options:'
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
+"$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
+"$BIN" run --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
+"$BIN" run --help | grep -q '^              full          sched, futex, io, block, net syscalls, direct reclaim,$'
 "$BIN" run --help | grep -q '^Live export options (--exporter):'
 "$BIN" run --help | grep -q '^Offline export options (callgraph export):'
 "$BIN" run --help | grep -q '^General options:'
@@ -350,7 +353,7 @@ preset_include='^(main|fsync_work[(][)]|memory_work[(][)]|network_work[(][)])$'
     >/dev/null 2>"$TMP/preset-latency.err"
 grep -q '@SCHED switch' "$TMP/preset-latency.trace"
 grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
-! grep -q '@MM page_fault' "$TMP/preset-latency.trace"
+! grep -q '@MM' "$TMP/preset-latency.trace"
 ! grep -q '@NET tcp_retransmit' "$TMP/preset-latency.trace"
 ! grep -q '@BLOCK' "$TMP/preset-latency.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-latency.err"

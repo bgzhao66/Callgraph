@@ -1134,7 +1134,7 @@ means network syscalls + TCP retransmits.
 
 | Preset | Intended workload | sched | futex | io | block | reclaim | faults | net | tcp |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `latency` (default) | generic request latency | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | — |
+| `latency` (default) | generic request latency | ✓ | ✓ | ✓ | — | — | — | ✓ | — |
 | `proxy` | proxies, gateways, load balancers | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
 | `storage` | databases, KV stores, file/object servers | ✓ | ✓ | ✓ | — | ✓ | — | — | — |
 | `computation` | CPU-bound workers, batch, numeric | ✓ | ✓ | — | — | ✓ | ✓ | — | — |
@@ -1142,12 +1142,11 @@ means network syscalls + TCP retransmits.
 
 Rationale:
 
-- `latency` covers every directly attributable scope that produces a wait:
-  runqueue/off-CPU, lock waits, syscall I/O, direct reclaim, and network
-  syscalls. It excludes block because block events are global, and excludes
-  page-fault points and global TCP retransmits because they are high-volume
-  and either not intervals or not attributable to a function. This keeps the
-  default stream bounded, attributable, and `partial` reasoning clean.
+- `latency` covers the common direct wait scopes: runqueue/off-CPU, lock
+  waits, syscall I/O, and network syscalls. It excludes block and global TCP
+  retransmits because they are global, and excludes direct reclaim and
+  page-fault points so the default does not enable memory-pressure
+  instrumentation. Use `--memory` (or a memory-oriented preset) for those.
 - `proxy` adds global TCP retransmits and drops block. It keeps io because
   socket `read`/`write` and `epoll_wait` interleave with proxying, and keeps
   sched/futex/reclaim because proxies still suffer scheduling, lock, and
