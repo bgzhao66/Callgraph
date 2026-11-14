@@ -277,6 +277,7 @@ Examples:
     sudo callgraph run --kernel --preset storage -- ./db
     sudo callgraph run --kernel --sched --futex --report -- ./demo
     sudo callgraph run --kernel --memory --network -- ./demo
+    sudo callgraph attach -p 12345 --kernel --preset latency
 
   Live export:
     sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo

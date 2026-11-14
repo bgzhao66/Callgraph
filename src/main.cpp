@@ -324,6 +324,7 @@ void usage(FILE* out)
             "    sudo callgraph run --kernel --preset storage -- ./db\n"
             "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
             "    sudo callgraph run --kernel --memory --network -- ./demo\n"
+            "    sudo callgraph attach -p 12345 --kernel --preset latency\n"
             "\n"
             "  Live export:\n"
             "    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
