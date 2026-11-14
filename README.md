@@ -147,65 +147,73 @@ sudo ./build/callgraph run -T --exporter otlp-json \
 
 ### Options
 
-Master options are listed at the normal indent; the options that refine or
-require them are indented beneath the master.
+Master options stay at the normal indent. Options that refine or require a
+master are indented four spaces further, and every description starts in the
+same column.
 
 ```
 Usage:
   callgraph run [options] -- program [args...]
   callgraph attach [options] -p PID
-  callgraph export --otel|--flame [options] --input TRACE
+  callgraph export --otel|--flame --input TRACE [options]
 
-  -o, --output FILE     write events to FILE (default: stdout)
-      --include GLOB    only trace functions matching GLOB (repeatable)
-      --exclude GLOB    skip functions matching GLOB (repeatable)
-      --regex           treat --include/--exclude as extended regex
-      --return-mode M   uretprobe (default) or ret (exception-safe)
-      --all-modules     trace every mapped ELF module
-      --module GLOB     also trace mapped modules matching GLOB
-  -T, --wall-clock      wall-clock timestamps (default: seconds since boot)
-      --max-depth N     print events with depth <= N (default: unlimited)
-      --indent N        indent names by depth*N spaces (default: 0)
-      --show-args       show function arguments after names (needs DWARF)
-      --histogram       append per-root call trees and latency histograms to the output
+Options:
+  -o, --output FILE         write events to FILE (default: stdout)
+      --include GLOB        only trace functions matching GLOB (repeatable)
+      --exclude GLOB        skip functions matching GLOB (repeatable)
+      --regex               treat --include/--exclude as extended regex
+      --return-mode M       uretprobe (default) or ret (exception-safe)
+      --no-rsp-resync       keep frames across stack switches (stackful
+                            runtimes such as ucontext, Boost.Context, Go);
+                            disables longjmp/siglongjmp depth repair
+      --all-modules         trace every mapped ELF module
+      --module GLOB         also trace mapped modules matching GLOB
+  -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
+      --max-depth N         print events with depth <= N (default: unlimited)
+      --indent N            indent names by depth*N spaces (default: 0)
+      --show-args           show function arguments after names (needs DWARF)
+      --histogram           append per-root call trees and latency histograms to the output
 
-      --kernel          enable correlated kernel event tracing
-              --sched           trace scheduler switch/wakeup events
-              --futex           trace futex syscall begin/end events
-              --io              trace read/write/fsync syscall events
-              --block           trace block request events (global)
-              --events L        comma-separated: sched,futex,io,block
-              --preset P        latency (default), database, cpu, or full
-              --report          append the per-thread kernel summary
-              --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
-              --require-events  fail if a requested tracepoint is unavailable
+      --kernel              enable correlated kernel event tracing
+          --sched           trace scheduler switch/wakeup events
+          --futex           trace futex syscall begin/end events
+          --io              trace read/write/fsync syscall events
+          --block           trace block request events (global)
+          --events L        comma-separated: sched,futex,io,block
+          --preset P        latency (default), database, cpu, or full
+          --report          append the per-thread kernel summary
+          --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
+          --require-events  fail if a requested tracepoint is unavailable
 
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
-      --ringbuf-size N  function and kernel ring buffer size, k/m/g suffix (default: 16m)
-      --dry-run         list resolved functions and exit
+      --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
+      --dry-run             list resolved functions and exit
 
-      --exporter M      stdout (default), otlp, otlp-http, or otlp-json
-              --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
-              --export-file FILE  output file for --exporter otlp-json
-              --service-name NAME
-                                   override service.name (default: exe basename)
-              --service-namespace NAME
-                                        override service.namespace
-              --trace-scope M   root (default), thread, or process
-              --batch-size N    spans per OTLP batch (default: 512)
-              --batch-bytes N   OTLP request size limit (default: 1m)
-              --flush-interval N  OTLP batch flush interval in ms (default: 1000)
-              --timeout-ms N    OTLP HTTP timeout (default: 5000)
-              --queue-spans N   exporter queue limit (default: 10000)
-              --header K=V      add an HTTP header (repeatable)
-              --compression M   none (default) or gzip (OTLP/HTTP only)
-              --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
-              --fail-on-export-error  exit non-zero if export fails
+      --exporter M          stdout (default), otlp, otlp-http, or otlp-json
+          --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
+          --export-file FILE
+                            output file for --exporter otlp-json
+          --service-name NAME
+                            override service.name (default: exe basename)
+          --service-namespace NAME
+                            override service.namespace
+          --trace-scope M   root (default), thread, or process
+          --batch-size N    spans per OTLP batch (default: 512)
+          --batch-bytes N   OTLP request size limit (default: 1m)
+          --flush-interval N
+                            OTLP batch flush interval in ms (default: 1000)
+          --timeout-ms N    OTLP HTTP timeout (default: 5000)
+          --queue-spans N   exporter queue limit (default: 10000)
+          --header K=V      add an HTTP header (repeatable)
+          --compression M   none (default) or gzip (OTLP/HTTP only)
+          --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
+          --fail-on-export-error
+                            exit non-zero if export fails
 
-      --trace-metadata FILE  write an offline-conversion sidecar
-  -v, --verbose         verbose diagnostics
-  -h, --help            show help
-      --version         show version
+      --trace-metadata FILE write an offline-conversion sidecar
+  -v, --verbose             verbose diagnostics
+  -h, --help                show help
+      --version             show version
 ```
 
 `callgraph export --otel` accepts `--input TRACE`, `--output FILE`,

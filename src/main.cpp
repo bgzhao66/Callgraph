@@ -113,8 +113,9 @@ enum class UsageMode { Run, Export };
 UsageMode g_usage_mode = UsageMode::Run;
 
 // Help options use two levels: a master option and the options that refine or
-// require it.  Masters stay at the normal column; secondary options are
-// indented eight spaces further and their descriptions shift with them.
+// require it.  Masters stay at the normal indent; secondary options are
+// indented four spaces further.  Descriptions share one column, so the option
+// names read as a table with a hierarchy in the first column.
 struct HelpOption {
     const char* flags;
     const char* desc;
@@ -123,9 +124,8 @@ struct HelpOption {
 
 constexpr int kPrimaryShortIndent = 2;
 constexpr int kPrimaryIndent = 6;
-constexpr int kPrimaryDescColumn = 24;
-constexpr int kSecondaryIndent = 14;
-constexpr int kSecondaryDescColumn = 32;
+constexpr int kSecondaryIndent = 10;
+constexpr int kDescColumn = 28;
 
 void print_help_description(FILE* out, const char* desc, int column)
 {
@@ -149,17 +149,14 @@ void print_help_option(FILE* out, const HelpOption& option)
         option.level == 0
             ? (short_option ? kPrimaryShortIndent : kPrimaryIndent)
             : kSecondaryIndent;
-    const int desc_column = option.level == 0 ? kPrimaryDescColumn
-                                              : kSecondaryDescColumn;
-    const int width = desc_column - indent;
+    const int width = kDescColumn - indent;
     const int flags_length = static_cast<int>(std::strlen(option.flags));
 
     if (flags_length >= width) {
-        // Long flags hang their description two spaces past the flag so the
-        // text never starts underneath the flag itself.
+        // Flags too long for the column put their description on the next
+        // line, still at the shared description column.
         fprintf(out, "%*s%s\n", indent, "", option.flags);
-        print_help_description(out, option.desc,
-                               indent + flags_length + 2);
+        print_help_description(out, option.desc, kDescColumn);
         return;
     }
 
@@ -170,7 +167,7 @@ void print_help_option(FILE* out, const HelpOption& option)
     fprintf(out, "%*s%-*s%.*s\n", indent, "", width, option.flags,
             first_length, option.desc);
     if (newline)
-        print_help_description(out, newline + 1, desc_column);
+        print_help_description(out, newline + 1, kDescColumn);
 }
 
 void print_help_options(FILE* out, std::initializer_list<HelpOption> options)

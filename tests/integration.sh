@@ -73,11 +73,11 @@ fi
 
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^      --kernel'
-"$BIN" run --help | grep -q '^              --events'
-"$BIN" run --help | grep -q '^              --endpoint'
+"$BIN" run --help | grep -q '^          --events'
+"$BIN" run --help | grep -q '^          --endpoint'
 "$BIN" export --help | grep -q '^      --otel'
 "$BIN" export --help | grep -q '^      --flame'
-"$BIN" export --otel --help | grep -q '^              --endpoint'
+"$BIN" export --otel --help | grep -q '^          --endpoint'
 "$BIN" export --flame --help | grep -q '^      --flame'
 
 echo "== OTLP offline conversion =="
