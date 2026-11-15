@@ -9,6 +9,7 @@
 
 #include "callgraph/event.h"
 #include "callgraph/kernel_event.h"
+#include "callgraph/kernel_span.h"
 
 namespace callgraph {
 
@@ -59,6 +60,7 @@ public:
     void set_target_tids(const std::vector<uint32_t>& tids);
     void add_target_tid(uint32_t tid);
     bool is_target(uint32_t tid) const;
+    void set_kernel_span_sink(KernelSpanSink* sink) { span_sink_ = sink; }
 
     // Must be called before CallStack applies the event: the interval that
     // ends at event.ts belongs to the old top frame.
@@ -81,6 +83,18 @@ private:
         uint64_t fd = 0;
         uint32_t nr = 0;
         uint32_t op = 0;
+        KernelEvent enter{};
+        uint64_t span_token = 0;
+        uint32_t user_depth = 0;
+    };
+
+    struct ReclaimInterval {
+        uint64_t begin_ts = 0;
+        uint64_t id = 0;
+        uint64_t order = 0;
+        uint64_t gfp = 0;
+        uint64_t span_token = 0;
+        uint32_t user_depth = 0;
     };
 
     struct ThreadRuntime {
@@ -93,9 +107,16 @@ private:
         uint32_t prev_state = 0;
         BlockReason reason = BlockReason::Other;
         std::vector<PendingOp> ops;
+        std::vector<ReclaimInterval> reclaims;
         uint32_t reclaim_depth = 0;
         uint64_t reclaim_begin_ns = 0;
         uint64_t reclaim_id = 0;
+        uint64_t offcpu_span_token = 0;
+        uint64_t offcpu_span_start_ns = 0;
+        uint32_t offcpu_user_depth = 0;
+        uint64_t runqueue_span_token = 0;
+        uint64_t runqueue_span_start_ns = 0;
+        uint32_t runqueue_user_depth = 0;
         bool partial = false;
         uint64_t out_of_order = 0;
     };
@@ -142,6 +163,18 @@ private:
     void account_until(uint32_t tid, uint64_t ts, const CallStack& stack);
     void add_account(uint32_t tid, uint32_t depth, uint64_t function_id,
                      uint64_t delta_ns);
+    uint64_t function_span_token(const CallStack& stack, uint32_t tid) const;
+    uint64_t innermost_span_token(uint32_t tid, const CallStack& stack) const;
+    uint64_t open_span(const CallStack& stack, uint32_t tid,
+                       uint32_t user_depth, uint8_t category,
+                       const std::string& name, uint64_t ts,
+                       std::vector<SpanAttribute> attributes);
+    void close_span(uint64_t token, uint64_t ts,
+                    std::vector<SpanAttribute> attributes, bool incomplete);
+    void emit_point(const CallStack& stack, uint32_t tid, uint32_t user_depth,
+                    uint8_t category, const std::string& name, uint64_t ts,
+                    std::vector<SpanAttribute> attributes,
+                    uint64_t parent_override = 0);
     BlockReason classify_block(const ThreadRuntime& thread) const;
     void on_sched_switch(const KernelEvent& event, const CallStack& stack);
     void on_sched_wakeup(const KernelEvent& event, const CallStack& stack);
@@ -159,6 +192,7 @@ private:
     Output& output_;
     int max_depth_;
     bool verbose_;
+    KernelSpanSink* span_sink_ = nullptr;
     uint64_t next_id_ = 1;
     uint64_t kernel_events_ = 0;
     uint64_t out_of_order_ = 0;

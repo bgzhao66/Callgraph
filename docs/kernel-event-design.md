@@ -3,8 +3,10 @@
 Status: **P0 and P1 implemented; P2 and PMU are proposals.** Implemented today:
 scheduler, futex, I/O syscalls, block records, memory (page faults and direct
 reclaim), and network (socket syscalls and global TCP retransmits), with a
-userspace `KernelTimeline` report. PMU, IRQ/workqueue, per-root kernel reports,
-OTel kernel span events, and offline kernel-line replay are not implemented.
+userspace `KernelTimeline` report. TID-specific kernel interval and point spans
+are exported to OTel when `--kernel` is combined with an OTel exporter. PMU,
+IRQ/workqueue, per-root kernel reports, global OTel kernel spans, and offline
+kernel-line replay are not implemented.
 Sections below describe the full target design; Section 16 records the
 implementation deviations.
 
@@ -121,7 +123,7 @@ The existing `bpf/trace.bpf.c` object, its 136-byte `cg_event`, and the
         CallStack                              KernelTimeline
         function lines                         kernel lines
         histogram                              interval accounting
-        OTel function spans                    OTel span events
+        OTel function spans                    OTel kernel child spans
 ```
 
 Reasons for two objects and two ring buffers:
@@ -1092,8 +1094,6 @@ callgraph attach --kernel --system-wide --sched
 | `--require-events` | fail if a requested tracepoint is unavailable |
 | `--pmu LIST` | hardware counters to open |
 | `--pmu-sampling PERIOD` | sampling period; omit for counting mode |
-| `--otel-kernel-events` | attach raw kernel events as OTel span events |
-| `--otel-kernel-spans` | emit derived intervals as child spans (off by default) |
 
 `--events` is deliberately namespaced under `--kernel` rather than being a
 generic top-level option, so it cannot be confused with function filters.
@@ -1125,7 +1125,7 @@ Validation:
 - `--tid` and `--children` are mutually exclusive.
 - `--report` without a kernel family is a usage error.
 - `--events` with `--exporter` is valid; kernel events go to the text
-  stream and, if enabled, to span events.
+  stream and, when the exporter is OTLP-based, to kernel child spans.
 - `--dry-run` lists selected functions and available kernel events without
   attaching.
 
@@ -1256,53 +1256,46 @@ defined.
 
 ### 9.3 OTel and Jaeger
 
-Raw kernel events become **span events** on the function span that owns the
-active frame:
+TID-specific kernel events become child spans automatically when `--kernel` is
+combined with `--exporter otlp`, `otlp-http`, or `otlp-json`. No separate
+enable flag is required.
+
+Interval spans are opened at the beginning event and nested under the
+innermost open kernel span, otherwise under the top user-function span:
 
 ```text
-span: process_request
-  event: futex_wait
-    time: 1234567901
-    attributes:
-      callgraph.kernel.category = FUTEX
-      callgraph.kernel.event = wait_begin
-      callgraph.kernel.id = 1001
-      callgraph.kernel.uaddr = 0x...
+pgaio_io_perform_synchronously          depth 29
+└── pread64                              depth 30
+    ├── page_fault.user                  depth 31   point
+    └── sched.off_cpu                    depth 31
+        ├── sched.wakeup                 depth 32   point
+        └── sched.runqueue               depth 32
 ```
 
-Derived exclusive intervals become attributes on the owning function span:
+Included intervals:
 
-```text
-callgraph.kernel.cpu_ns
-callgraph.kernel.runnable_ns
-callgraph.kernel.blocked_ns
-callgraph.kernel.blocked.futex_ns
-callgraph.kernel.blocked.io_ns
-callgraph.kernel.blocked.memory_ns
-callgraph.kernel.blocked.sleep_ns
-callgraph.kernel.blocked.other_ns
-callgraph.kernel.attribution = direct | preempted
-callgraph.kernel.partial = true
-```
+- FUTEX, IO, and NET syscall enter→exit.
+- Direct reclaim begin→end, including nested intervals.
+- Scheduler `off_cpu` and `runqueue`.
 
-`SpanSink` gains a default no-op kernel callback:
+Included point spans:
 
-```cpp
-virtual void on_kernel_event(uint32_t tid, uint64_t span_token,
-                             const KernelEvent& event) {}
-```
+- User and kernel page faults.
+- `sched.wakeup`, `sched.waking`, `sched.wakeup_new`.
+- `sched.migrate`, `proc.fork`, `proc.exit`.
 
-`SpanGenerator` attaches the event to the token's span, dropping it if the
-span has already closed. A per-span event cap (for example 128) prevents a
-high-frequency scheduler or block stream from exploding a trace; dropped
-events are counted in `callgraph.kernel.events_dropped`.
+Point spans are zero duration and carry `callgraph.kernel.point=true`. The
+page-fault tracepoint has no exit event, so fabricating a handling duration
+would distort latency; the enclosing syscall or `sched.off_cpu` span shows the
+stall.
 
-`--otel-kernel-spans` optionally creates child spans for derived intervals
-at or above a threshold, with `callgraph.kernel.span=true`. It is off by
-default because a long `epoll_wait` would otherwise add a span per loop
-iteration. Global events are not attached to arbitrary spans; an optional
-`--otel-global-kernel` attaches them to the root span with
-`attribution=global`.
+Each span carries `thread.id`, `callgraph.depth`, and
+`callgraph.kernel.user_depth`. `callgraph.depth` is the span-tree depth
+(parent depth + 1), while `user_depth` is the depth of the traced user frame.
+If no traced parent exists, the kernel span is dropped and counted.
+
+Global events are excluded: block requests and TCP retransmits remain
+text-only. Offline kernel replay remains unimplemented.
 
 ### 9.4 Offline replay
 
@@ -1323,7 +1316,8 @@ and `unknown_kernel_events`. `--show-args` and the legacy `[args]`
 handling remain function-only.
 
 `callgraph export --otel` replays function and kernel events through the same
-merger/timeline path, so span attributes and span events match a live trace.
+merger/timeline path, so span attributes and kernel child spans match a live
+trace.
 `callgraph export --flame` ignores kernel lines; folded stacks remain
 function-only.
 
@@ -1445,8 +1439,8 @@ Integration (`tests/integration.sh`, root only for tracing):
   consistent with `perf stat`; sampling produces a sample count.
 - `--report`: `cpu + blocked + runnable` is within tolerance of wall
   for a synthetic sleep workload.
-- `--exporter otlp-json` with kernel events: function spans carry
-  `callgraph.kernel.*` attributes and span events; no invalid OTLP.
+- `--exporter otlp-json` with kernel events: function spans and TID-specific
+  kernel child spans carry `callgraph.kernel.*` attributes; no invalid OTLP.
 - Offline replay of a hand-written trace with kernel lines matches live
   accounting.
 - Without kernel flags, output is byte-identical to the current build for a
@@ -1528,12 +1522,11 @@ approximate; denied access does not break other families.
 ### Phase 6: reports and OTel
 
 - Add `Kernel:` summary, exclusive per-function attribution, unit selection.
-- Add `SpanSink::on_kernel_event`, span events, attributes, caps.
+- Add `KernelSpanSink`, TID-specific interval and point child spans.
 - Add offline export parity and metadata.
-- Consider per-root pairing and optional interval spans.
 
 Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair and adds
-a correct kernel summary; OTLP JSON validates and Jaeger shows span events.
+a correct kernel summary; OTLP JSON validates and Jaeger shows kernel child spans.
 
 ## 14. File map
 
@@ -1569,7 +1562,7 @@ src/event_collector.cpp            drain/merge both streams
 src/output.cpp/.h                  emit_kernel, drop policy
 src/call_stack.cpp/.h              invocation/root IDs, active_frames
 src/trace_parser.cpp/.h            kernel lines, stats
-src/span_generator.cpp/.h          kernel span events/attributes
+src/span_generator.cpp/.h          kernel child spans/attributes
 include/callgraph/span.h           SpanSink kernel callback
 include/callgraph/trace_metadata.h kernel metadata
 tests/unit/test_main.cpp           unit coverage
@@ -1649,7 +1642,6 @@ The first implementation deliberately narrows the full design:
   scopes in Section 8 and stay additive with explicit family flags.
   `--ringbuf-size` sizes both the function and kernel ring buffers.
   `--children`, `--tid`, and `--system-wide` are not implemented yet.
-- **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, OTel span events
-  for kernel records, and offline kernel-line replay. The text parser
-  currently ignores `@CATEGORY` lines, so function-only export remains
-  correct.
+- **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, global OTel kernel
+  spans, and offline kernel-line replay. The text parser currently ignores
+  `@CATEGORY` lines, so function-only export remains correct.

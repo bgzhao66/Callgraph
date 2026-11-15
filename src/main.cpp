@@ -1048,6 +1048,22 @@ void print_outlier_stats(const SpanGenerator& generator)
             generator.outlier_threshold_ns());
 }
 
+void print_kernel_span_stats(const SpanGenerator& generator)
+{
+    if (generator.kernel_spans_closed() == 0 &&
+        generator.kernel_spans_point() == 0 &&
+        generator.kernel_spans_unparented() == 0 &&
+        generator.kernel_spans_sampled_out() == 0) {
+        return;
+    }
+    fprintf(stderr,
+            "callgraph: kernel spans: %" PRIu64 " interval, %" PRIu64
+            " point, %" PRIu64 " unparented, %" PRIu64 " sampled out\n",
+            generator.kernel_spans_closed(), generator.kernel_spans_point(),
+            generator.kernel_spans_unparented(),
+            generator.kernel_spans_sampled_out());
+}
+
 void fill_host_otel_config(OtelConfig& config)
 {
     struct utsname uts = {};
@@ -1950,6 +1966,9 @@ int main(int argc, char** argv)
                 });
         }
 
+        if (kernel_timeline && span_generator)
+            kernel_timeline->set_kernel_span_sink(span_generator.get());
+
         if (registry.names().empty())
             log_info("no functions matched yet; waiting for matching modules to load");
 
@@ -2018,6 +2037,7 @@ int main(int argc, char** argv)
         std::string report;
         if (kernel_timeline) {
             kernel_timeline->finish(ClockConverter::now_monotonic_ns(), stack);
+            kernel_timeline->set_kernel_span_sink(nullptr);
         }
         if (options.histogram) {
             stack.finish_statistics();
@@ -2079,6 +2099,8 @@ int main(int argc, char** argv)
             print_trace_buffer_stats(*span_generator);
         if (span_generator)
             print_outlier_stats(*span_generator);
+        if (span_generator)
+            print_kernel_span_stats(*span_generator);
 
         const uint64_t lost = probes.lost_events();
         const uint64_t events = stack.entries() + stack.returns();

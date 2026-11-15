@@ -6,15 +6,21 @@
 #include <utility>
 
 #include "callgraph/common.h"
+#include "callgraph/kernel_event.h"
 
 namespace callgraph {
 namespace {
 
 size_t span_record_cost(const SpanRecord& span)
 {
-    return 256 + span.function.name.size() + span.function.linkage_name.size() +
-           span.function.module_path.size() +
-           span.function.module_build_id.size() + span.arguments.size();
+    size_t cost = 256 + span.function.name.size() +
+                  span.function.linkage_name.size() +
+                  span.function.module_path.size() +
+                  span.function.module_build_id.size() +
+                  span.arguments.size();
+    for (const SpanAttribute& attribute : span.extra_attributes)
+        cost += 48 + attribute.key.size() + attribute.string_value.size();
+    return cost;
 }
 
 }  // namespace
@@ -245,14 +251,9 @@ void SpanGenerator::on_function_exit(uint32_t tid, uint64_t token,
         emit_(std::move(record));
 }
 
-void SpanGenerator::buffer_span(SpanRecord&& record)
+void SpanGenerator::append_trace_record(TraceBuffer& buffer,
+                                        SpanRecord&& record)
 {
-    const TraceId trace_id = record.context.trace_id;
-    auto [it, inserted] =
-        trace_buffers_.try_emplace(trace_id, TraceBuffer{});
-    (void)inserted;
-    TraceBuffer& buffer = it->second;
-
     // The root carries the trace duration even when the buffer has already
     // overflowed and its spans are being discarded.
     if (record.context.parent_span_id == 0) {
@@ -279,6 +280,179 @@ void SpanGenerator::buffer_span(SpanRecord&& record)
         trace_buffer_total_spans_ += 1;
         trace_buffer_total_bytes_ += cost;
     }
+}
+
+
+bool SpanGenerator::resolve_parent(uint64_t token, ParentInfo* info) const
+{
+    if (token == 0)
+        return false;
+
+    const auto function = open_.find(token);
+    if (function != open_.end()) {
+        info->trace_id = function->second.context.trace_id;
+        info->depth = function->second.depth;
+        info->baseline_sampled = function->second.baseline_sampled;
+        info->buffered = function->second.buffered;
+        return true;
+    }
+
+    const auto kernel = open_kernel_.find(token);
+    if (kernel != open_kernel_.end()) {
+        info->trace_id = kernel->second.context.trace_id;
+        info->depth = kernel->second.depth;
+        info->baseline_sampled = kernel->second.baseline_sampled;
+        info->buffered = kernel->second.buffered;
+        return true;
+    }
+
+    return false;
+}
+
+uint64_t SpanGenerator::on_kernel_enter(KernelSpanStart&& start)
+{
+    ParentInfo parent;
+    if (!resolve_parent(start.parent_token, &parent)) {
+        ++kernel_spans_unparented_;
+        return 0;
+    }
+    if (!parent.buffered && !parent.baseline_sampled) {
+        ++kernel_spans_sampled_out_;
+        return 0;
+    }
+
+    if (parent.buffered &&
+        trace_buffers_.find(parent.trace_id) == trace_buffers_.end()) {
+        ++kernel_spans_unparented_;
+        return 0;
+    }
+
+    OpenKernelSpan span;
+    span.context.trace_id = parent.trace_id;
+    span.context.span_id = context_manager_.next_span_id();
+    span.context.parent_span_id = start.parent_token;
+    span.tid = start.tid;
+    span.depth = parent.depth + 1;
+    span.user_depth = start.user_depth;
+    span.category = start.category;
+    span.start_ts = start.ts;
+    span.baseline_sampled = parent.baseline_sampled;
+    span.buffered = parent.buffered;
+    span.name = std::move(start.name);
+    span.thread_name = thread_name(start.tid);
+    span.attributes = std::move(start.attributes);
+    span.attributes.push_back(make_span_string(
+        "callgraph.kernel.category", kernel_category_name(start.category)));
+    span.attributes.push_back(
+        make_span_int("callgraph.kernel.user_depth", start.user_depth));
+
+    if (span.buffered)
+        trace_buffers_[parent.trace_id].open_spans += 1;
+
+    const uint64_t token = span.context.span_id;
+    open_kernel_.emplace(token, std::move(span));
+    return token;
+}
+
+void SpanGenerator::on_kernel_exit(uint64_t token, KernelSpanEnd&& end)
+{
+    auto it = open_kernel_.find(token);
+    if (it == open_kernel_.end())
+        return;
+
+    OpenKernelSpan open = std::move(it->second);
+    open_kernel_.erase(it);
+
+    SpanRecord record;
+    record.kernel = true;
+    record.context = open.context;
+    record.tid = open.tid;
+    record.depth = open.depth;
+    record.start_unix_ns = to_unix(open.start_ts);
+    record.end_unix_ns = to_unix(end.ts);
+    if (record.end_unix_ns < record.start_unix_ns)
+        record.end_unix_ns = record.start_unix_ns;
+    record.function.name = open.name;
+    record.thread_name = open.thread_name;
+    record.extra_attributes = std::move(open.attributes);
+    for (SpanAttribute& attribute : end.attributes)
+        record.extra_attributes.push_back(std::move(attribute));
+    record.extra_attributes.push_back(make_span_int(
+        "callgraph.kernel.duration_ns",
+        static_cast<int64_t>(record.end_unix_ns - record.start_unix_ns)));
+    if (end.incomplete) {
+        record.extra_attributes.push_back(
+            make_span_bool("callgraph.kernel.incomplete", true));
+    }
+
+    ++kernel_spans_closed_;
+    if (open.buffered) {
+        if (trace_buffers_.find(open.context.trace_id) ==
+            trace_buffers_.end()) {
+            ++kernel_spans_unparented_;
+            return;
+        }
+        buffer_span(std::move(record));
+    } else if (emit_) {
+        emit_(std::move(record));
+    }
+}
+
+void SpanGenerator::on_kernel_point(KernelSpanPoint&& point)
+{
+    ParentInfo parent;
+    if (!resolve_parent(point.parent_token, &parent)) {
+        ++kernel_spans_unparented_;
+        return;
+    }
+    if (!parent.buffered && !parent.baseline_sampled) {
+        ++kernel_spans_sampled_out_;
+        return;
+    }
+
+    SpanRecord record;
+    record.kernel = true;
+    record.context.trace_id = parent.trace_id;
+    record.context.span_id = context_manager_.next_span_id();
+    record.context.parent_span_id = point.parent_token;
+    record.tid = point.tid;
+    record.depth = parent.depth + 1;
+    record.start_unix_ns = to_unix(point.ts);
+    record.end_unix_ns = record.start_unix_ns;
+    record.function.name = std::move(point.name);
+    record.thread_name = thread_name(point.tid);
+    record.extra_attributes = std::move(point.attributes);
+    record.extra_attributes.push_back(make_span_string(
+        "callgraph.kernel.category", kernel_category_name(point.category)));
+    record.extra_attributes.push_back(
+        make_span_int("callgraph.kernel.user_depth", point.user_depth));
+    record.extra_attributes.push_back(
+        make_span_bool("callgraph.kernel.point", true));
+    record.extra_attributes.push_back(
+        make_span_int("callgraph.kernel.duration_ns", 0));
+
+    ++kernel_spans_point_;
+    if (parent.buffered) {
+        auto buffer = trace_buffers_.find(parent.trace_id);
+        if (buffer == trace_buffers_.end()) {
+            ++kernel_spans_unparented_;
+            return;
+        }
+        append_trace_record(buffer->second, std::move(record));
+    } else if (emit_) {
+        emit_(std::move(record));
+    }
+}
+
+void SpanGenerator::buffer_span(SpanRecord&& record)
+{
+    const TraceId trace_id = record.context.trace_id;
+    auto [it, inserted] =
+        trace_buffers_.try_emplace(trace_id, TraceBuffer{});
+    (void)inserted;
+    TraceBuffer& buffer = it->second;
+
+    append_trace_record(buffer, std::move(record));
 
     if (buffer.open_spans != 0)
         --buffer.open_spans;

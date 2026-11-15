@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "callgraph/span_context.h"
 
@@ -24,6 +26,60 @@ inline const char* span_close_reason_name(SpanCloseReason reason)
         return "shutdown";
     }
     return "unknown";
+}
+
+enum class SpanAttributeType : uint8_t {
+    String,
+    Int,
+    Double,
+    Bool,
+};
+
+// An additional typed span attribute, used by kernel spans.  Function spans
+// keep their fixed attribute set.
+struct SpanAttribute {
+    std::string key;
+    SpanAttributeType type = SpanAttributeType::String;
+    std::string string_value;
+    int64_t int_value = 0;
+    double double_value = 0.0;
+    bool bool_value = false;
+};
+
+inline SpanAttribute make_span_string(std::string key, std::string value)
+{
+    SpanAttribute attribute;
+    attribute.key = std::move(key);
+    attribute.type = SpanAttributeType::String;
+    attribute.string_value = std::move(value);
+    return attribute;
+}
+
+inline SpanAttribute make_span_int(std::string key, int64_t value)
+{
+    SpanAttribute attribute;
+    attribute.key = std::move(key);
+    attribute.type = SpanAttributeType::Int;
+    attribute.int_value = value;
+    return attribute;
+}
+
+inline SpanAttribute make_span_double(std::string key, double value)
+{
+    SpanAttribute attribute;
+    attribute.key = std::move(key);
+    attribute.type = SpanAttributeType::Double;
+    attribute.double_value = value;
+    return attribute;
+}
+
+inline SpanAttribute make_span_bool(std::string key, bool value)
+{
+    SpanAttribute attribute;
+    attribute.key = std::move(key);
+    attribute.type = SpanAttributeType::Bool;
+    attribute.bool_value = value;
+    return attribute;
 }
 
 // Immutable per-function metadata used while constructing span attributes.
@@ -51,6 +107,10 @@ struct SpanRecord {
     FunctionMetadata function;
     std::string thread_name;
     std::string arguments;
+    // Kernel-derived spans use the function name as the span name and carry
+    // typed attributes instead of source-code attributes.
+    bool kernel = false;
+    std::vector<SpanAttribute> extra_attributes;
     // Empirical quantile of this trace's duration, set on the root span when
     // outlier tail sampling is active.  Negative when unset.
     double quantile = -1.0;

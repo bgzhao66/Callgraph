@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "callgraph/clock_converter.h"
+#include "callgraph/kernel_span.h"
 #include "callgraph/span.h"
 #include "callgraph/span_context.h"
 #include "callgraph/trace_duration_histogram.h"
@@ -61,7 +62,7 @@ struct SpanGeneratorConfig {
     bool read_thread_names = false;
 };
 
-class SpanGenerator : public SpanSink {
+class SpanGenerator : public SpanSink, public KernelSpanSink {
 public:
     using Emit = std::function<void(SpanRecord&&)>;
     using EmitTrace = std::function<void(std::vector<SpanRecord>&&)>;
@@ -75,6 +76,10 @@ public:
 
     void on_function_exit(uint32_t tid, uint64_t token, uint64_t function_id,
                   uint64_t ts, SpanCloseReason reason) override;
+
+    uint64_t on_kernel_enter(KernelSpanStart&& start) override;
+    void on_kernel_exit(uint64_t token, KernelSpanEnd&& end) override;
+    void on_kernel_point(KernelSpanPoint&& point) override;
 
     uint64_t spans_closed() const { return spans_closed_; }
     uint64_t spans_sampled_out() const { return spans_sampled_out_; }
@@ -94,11 +99,43 @@ public:
         return spans_trace_buffer_dropped_;
     }
     size_t active_trace_buffers() const { return trace_buffers_.size(); }
+    uint64_t kernel_spans_closed() const { return kernel_spans_closed_; }
+    uint64_t kernel_spans_point() const { return kernel_spans_point_; }
+    uint64_t kernel_spans_unparented() const
+    {
+        return kernel_spans_unparented_;
+    }
+    uint64_t kernel_spans_sampled_out() const
+    {
+        return kernel_spans_sampled_out_;
+    }
+    size_t active_kernel_spans() const { return open_kernel_.size(); }
 
 private:
     struct TraceInfo {
         TraceId trace_id{};
         bool baseline_sampled = true;
+    };
+
+    struct ParentInfo {
+        TraceId trace_id{};
+        uint32_t depth = 0;
+        bool baseline_sampled = true;
+        bool buffered = false;
+    };
+
+    struct OpenKernelSpan {
+        SpanContext context;
+        uint32_t tid = 0;
+        uint32_t depth = 0;
+        uint32_t user_depth = 0;
+        uint8_t category = 0;
+        uint64_t start_ts = 0;
+        bool baseline_sampled = true;
+        bool buffered = false;
+        std::string name;
+        std::string thread_name;
+        std::vector<SpanAttribute> attributes;
     };
 
     struct OpenSpan {
@@ -128,6 +165,7 @@ private:
     TraceInfo trace_for_thread(uint32_t tid);
     TraceInfo trace_for_process();
     bool sample_root(uint32_t tid, uint64_t sequence) const;
+    bool resolve_parent(uint64_t token, ParentInfo* info) const;
     bool buffering_active() const
     {
         return config_.complete_traces || outlier_enabled();
@@ -137,6 +175,7 @@ private:
     void record_outlier_duration(const TraceBuffer& buffer);
     std::string thread_name(uint32_t tid);
     uint64_t to_unix(uint64_t ts) const;
+    void append_trace_record(TraceBuffer& buffer, SpanRecord&& record);
     void buffer_span(SpanRecord&& record);
     void flush_trace(TraceId trace_id, TraceBuffer& buffer);
     void drop_trace_buffer(TraceBuffer& buffer);
@@ -147,6 +186,7 @@ private:
     SpanContextManager context_manager_;
 
     std::unordered_map<uint64_t, OpenSpan> open_;
+    std::unordered_map<uint64_t, OpenKernelSpan> open_kernel_;
     std::map<TraceId, TraceBuffer> trace_buffers_;
     std::unordered_map<uint32_t, TraceInfo> thread_traces_;
     std::unordered_map<uint32_t, uint64_t> root_sequences_;
@@ -165,6 +205,10 @@ private:
     uint64_t outlier_threshold_ns_ = 0;
     uint64_t traces_outlier_filtered_ = 0;
     uint64_t spans_outlier_filtered_ = 0;
+    uint64_t kernel_spans_closed_ = 0;
+    uint64_t kernel_spans_point_ = 0;
+    uint64_t kernel_spans_unparented_ = 0;
+    uint64_t kernel_spans_sampled_out_ = 0;
 };
 
 }  // namespace callgraph

@@ -49,6 +49,24 @@ void add_double(Attributes* attributes, const char* key, double value)
     kv->mutable_value()->set_double_value(value);
 }
 
+void add_span_attribute(Attributes* attributes, const SpanAttribute& attribute)
+{
+    switch (attribute.type) {
+    case SpanAttributeType::String:
+        add_string(attributes, attribute.key.c_str(), attribute.string_value);
+        break;
+    case SpanAttributeType::Int:
+        add_int(attributes, attribute.key.c_str(), attribute.int_value);
+        break;
+    case SpanAttributeType::Double:
+        add_double(attributes, attribute.key.c_str(), attribute.double_value);
+        break;
+    case SpanAttributeType::Bool:
+        add_bool(attributes, attribute.key.c_str(), attribute.bool_value);
+        break;
+    }
+}
+
 std::string basename_of(const std::string& path)
 {
     const size_t slash = path.find_last_of('/');
@@ -126,17 +144,19 @@ void fill_span(trace::Span* out, const SpanRecord& span,
     out->set_end_time_unix_nano(span.end_unix_ns);
 
     Attributes* attributes = out->mutable_attributes();
-    add_string(attributes, "code.function.name", span.function.name);
-    add_string(attributes, "code.function", span.function.name);
-    if (!span.function.source_file.empty()) {
-        add_string(attributes, "code.filepath", span.function.source_file);
-        if (span.function.source_line != 0)
-            add_int(attributes, "code.lineno", span.function.source_line);
+    if (!span.kernel) {
+        add_string(attributes, "code.function.name", span.function.name);
+        add_string(attributes, "code.function", span.function.name);
+        if (!span.function.source_file.empty()) {
+            add_string(attributes, "code.filepath", span.function.source_file);
+            if (span.function.source_line != 0)
+                add_int(attributes, "code.lineno", span.function.source_line);
+        }
+        if (!span.function.linkage_name.empty())
+            add_string(attributes, "callgraph.linkage_name",
+                       span.function.linkage_name);
+        add_int(attributes, "callgraph.function_id", span.function_id);
     }
-    if (!span.function.linkage_name.empty())
-        add_string(attributes, "callgraph.linkage_name",
-                   span.function.linkage_name);
-    add_int(attributes, "callgraph.function_id", span.function_id);
     add_int(attributes, "callgraph.depth", span.depth);
     add_int(attributes, "thread.id", span.tid);
     if (!span.thread_name.empty())
@@ -146,24 +166,29 @@ void fill_span(trace::Span* out, const SpanRecord& span,
         add_double(attributes, "callgraph.quantile", span.quantile);
     if (config.attach_mode && span.context.parent_span_id == 0)
         add_bool(attributes, "callgraph.partial_stack", true);
-    if (!span.function.module_path.empty()) {
-        add_string(attributes, "callgraph.module",
-                   basename_of(span.function.module_path));
-        add_string(attributes, "callgraph.module.path",
-                   span.function.module_path);
+    if (!span.kernel) {
+        if (!span.function.module_path.empty()) {
+            add_string(attributes, "callgraph.module",
+                       basename_of(span.function.module_path));
+            add_string(attributes, "callgraph.module.path",
+                       span.function.module_path);
+        }
+        if (!span.function.module_build_id.empty())
+            add_string(attributes, "callgraph.module.build_id",
+                       span.function.module_build_id);
+        if (span.function.file_offset != 0)
+            add_int(attributes, "callgraph.file_offset",
+                    span.function.file_offset);
+        if (!span.arguments.empty())
+            add_string(attributes, "code.arguments", span.arguments);
+        if (span.incomplete) {
+            add_bool(attributes, "callgraph.incomplete", true);
+            add_string(attributes, "callgraph.end_reason",
+                       span_close_reason_name(span.reason));
+        }
     }
-    if (!span.function.module_build_id.empty())
-        add_string(attributes, "callgraph.module.build_id",
-                   span.function.module_build_id);
-    if (span.function.file_offset != 0)
-        add_int(attributes, "callgraph.file_offset", span.function.file_offset);
-    if (!span.arguments.empty())
-        add_string(attributes, "code.arguments", span.arguments);
-    if (span.incomplete) {
-        add_bool(attributes, "callgraph.incomplete", true);
-        add_string(attributes, "callgraph.end_reason",
-                   span_close_reason_name(span.reason));
-    }
+    for (const SpanAttribute& attribute : span.extra_attributes)
+        add_span_attribute(attributes, attribute);
 }
 
 }  // namespace

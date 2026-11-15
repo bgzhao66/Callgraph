@@ -85,9 +85,40 @@ TraceEvent make_event(uint64_t function_id, uint32_t tid, uint8_t type,
     return event;
 }
 
+KernelEvent make_kernel_event(uint16_t kind, uint8_t category, uint32_t tid,
+                              uint64_t ts)
+{
+    KernelEvent event = {};
+    event.kind = kind;
+    event.category = category;
+    event.tid = tid;
+    event.tgid = 1234;
+    event.ts = ts;
+    return event;
+}
+
 std::vector<std::string> make_names()
 {
     return {"main", "A(int)", "B(int)"};
+}
+
+const SpanAttribute* find_span_attr(const SpanRecord& span, const char* key)
+{
+    for (const SpanAttribute& attribute : span.extra_attributes) {
+        if (attribute.key == key)
+            return &attribute;
+    }
+    return nullptr;
+}
+
+const SpanRecord* find_span(const std::vector<SpanRecord>& spans,
+                            const std::string& name)
+{
+    for (const SpanRecord& span : spans) {
+        if (span.function.name == name)
+            return &span;
+    }
+    return nullptr;
 }
 
 // Histogram entries start with a bar line whose length depends on the root
@@ -1444,6 +1475,63 @@ void test_otlp_encoding()
     }
 }
 
+void test_otlp_kernel_span_encoding()
+{
+    SpanRecord span;
+    span.kernel = true;
+    span.context.trace_id[15] = 2;
+    span.context.span_id = 0x99;
+    span.context.parent_span_id = 0x11;
+    span.tid = 7;
+    span.depth = 3;
+    span.start_unix_ns = 100;
+    span.end_unix_ns = 200;
+    span.function.name = "read";
+    span.thread_name = "worker";
+    span.extra_attributes.push_back(
+        make_span_string("callgraph.kernel.event", "read"));
+    span.extra_attributes.push_back(
+        make_span_int("callgraph.kernel.ret", -1));
+    span.extra_attributes.push_back(
+        make_span_bool("callgraph.kernel.point", false));
+
+    OtelConfig config;
+    const std::string json = encode_otlp_request({span}, config);
+    CHECK(json.find("\"name\":\"read\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"callgraph.kernel.event\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"callgraph.kernel.ret\"") != std::string::npos);
+    CHECK(json.find("\"intValue\":\"-1\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"code.function.name\"") == std::string::npos);
+
+    if (otlp_protobuf_available()) {
+        const std::string protobuf = encode_otlp_protobuf({span}, config);
+        CHECK(!protobuf.empty());
+#ifdef CALLGRAPH_HAVE_OTLP_PROTO
+        opentelemetry::proto::collector::trace::v1::
+            ExportTraceServiceRequest request;
+        CHECK(request.ParseFromString(protobuf));
+        CHECK(request.resource_spans_size() == 1);
+        CHECK(request.resource_spans(0).scope_spans_size() == 1);
+        CHECK(request.resource_spans(0).scope_spans(0).spans_size() == 1);
+        const auto& encoded_span =
+            request.resource_spans(0).scope_spans(0).spans(0);
+        CHECK(encoded_span.name() == "read");
+        bool have_ret = false;
+        bool have_function = false;
+        for (const auto& attribute : encoded_span.attributes()) {
+            if (attribute.key() == "callgraph.kernel.ret") {
+                have_ret = true;
+                CHECK(attribute.value().int_value() == -1);
+            }
+            if (attribute.key() == "code.function.name")
+                have_function = true;
+        }
+        CHECK(have_ret);
+        CHECK(!have_function);
+#endif
+    }
+}
+
 void test_root_sampling()
 {
     const std::vector<std::string> names = {"main", "A(int)"};
@@ -2348,6 +2436,369 @@ void test_kernel_network()
     CHECK(report.find("blocked(net=400ns") != std::string::npos);
 }
 
+void test_kernel_span_export()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+    const std::string path = temp_path();
+
+    auto config = [&] {
+        SpanGeneratorConfig value;
+        value.seed_hi = 21;
+        value.seed_lo = 22;
+        value.timestamps_are_unix = true;
+        value.functions = &functions;
+        return value;
+    };
+
+    // Syscall interval with enter parameters and return value.
+    {
+        SpanGeneratorConfig builder = config();
+        std::vector<SpanRecord> spans;
+        SpanGenerator generator(builder, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({7});
+        timeline.set_kernel_span_sink(&generator);
+
+        auto enter = [&](uint64_t ts) {
+            TraceEvent event = make_event(0, 7, kEventEnter, ts);
+            timeline.on_function_event(event, stack);
+            stack.on_event(event);
+        };
+        auto exit = [&](uint64_t ts) {
+            TraceEvent event = make_event(0, 7, kEventExit, ts);
+            timeline.on_function_event(event, stack);
+            stack.on_event(event);
+        };
+
+        enter(100);
+        KernelEvent begin =
+            make_kernel_event(CG_KEV_FUTEX_ENTER, CG_KCAT_FUTEX, 7, 200);
+        begin.a = 202;
+        begin.b = 0x1234;
+        begin.c = 0;
+        begin.d = 9;
+        timeline.on_kernel_event(begin, stack);
+        KernelEvent end =
+            make_kernel_event(CG_KEV_FUTEX_EXIT, CG_KCAT_FUTEX, 7, 300);
+        end.a = 202;
+        end.b = 0;
+        timeline.on_kernel_event(end, stack);
+        exit(400);
+        timeline.finish(500, stack);
+        output.stop();
+
+        const SpanRecord* main = find_span(spans, "main");
+        const SpanRecord* futex = find_span(spans, "futex");
+        CHECK(main != nullptr);
+        CHECK(futex != nullptr);
+        if (main && futex) {
+            CHECK(main->kernel == false);
+            CHECK(futex->kernel);
+            CHECK(futex->context.parent_span_id == main->context.span_id);
+            CHECK(futex->context.trace_id == main->context.trace_id);
+            CHECK(futex->tid == 7);
+            CHECK(futex->depth == 1);
+            CHECK(futex->start_unix_ns == 200);
+            CHECK(futex->end_unix_ns == 300);
+            const SpanAttribute* category =
+                find_span_attr(*futex, "callgraph.kernel.category");
+            const SpanAttribute* event =
+                find_span_attr(*futex, "callgraph.kernel.event");
+            const SpanAttribute* ret =
+                find_span_attr(*futex, "callgraph.kernel.ret");
+            const SpanAttribute* duration =
+                find_span_attr(*futex, "callgraph.kernel.duration_ns");
+            CHECK(category != nullptr && category->string_value == "FUTEX");
+            CHECK(event != nullptr && event->string_value == "futex");
+            CHECK(ret != nullptr && ret->int_value == 0);
+            CHECK(duration != nullptr && duration->int_value == 100);
+        }
+    }
+
+    // Off-CPU and runqueue intervals, with the wakeup point nested under
+    // off-CPU before runqueue opens.
+    {
+        SpanGeneratorConfig builder = config();
+        builder.seed_hi += 2;
+        std::vector<SpanRecord> spans;
+        SpanGenerator generator(builder, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({9});
+        timeline.set_kernel_span_sink(&generator);
+
+        TraceEvent main_enter = make_event(0, 9, kEventEnter, 1000);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        KernelEvent out =
+            make_kernel_event(CG_KEV_SCHED_SWITCH, CG_KCAT_SCHED, 9, 1100);
+        out.peer_tid = 10;
+        out.a = 1;  // blocked
+        out.b = 120;
+        out.c = 120;
+        timeline.on_kernel_event(out, stack);
+
+        KernelEvent wake =
+            make_kernel_event(CG_KEV_SCHED_WAKEUP, CG_KCAT_SCHED, 9, 1200);
+        wake.peer_tid = 0;
+        wake.a = 120;
+        wake.c = 18;
+        timeline.on_kernel_event(wake, stack);
+
+        KernelEvent in =
+            make_kernel_event(CG_KEV_SCHED_SWITCH, CG_KCAT_SCHED, 10, 1300);
+        in.peer_tid = 9;
+        in.a = 0;
+        timeline.on_kernel_event(in, stack);
+
+        TraceEvent main_exit = make_event(0, 9, kEventExit, 1400);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+        timeline.finish(1500, stack);
+        output.stop();
+
+        const SpanRecord* main = find_span(spans, "main");
+        const SpanRecord* off_cpu = find_span(spans, "sched.off_cpu");
+        const SpanRecord* runqueue = find_span(spans, "sched.runqueue");
+        const SpanRecord* wakeup = find_span(spans, "sched.wakeup");
+        CHECK(main != nullptr);
+        CHECK(off_cpu != nullptr);
+        CHECK(runqueue != nullptr);
+        CHECK(wakeup != nullptr);
+        if (main && off_cpu && runqueue && wakeup) {
+            CHECK(off_cpu->context.parent_span_id == main->context.span_id);
+            CHECK(off_cpu->depth == 1);
+            CHECK(off_cpu->end_unix_ns - off_cpu->start_unix_ns == 200);
+            CHECK(runqueue->context.parent_span_id == off_cpu->context.span_id);
+            CHECK(runqueue->depth == 2);
+            CHECK(runqueue->end_unix_ns - runqueue->start_unix_ns == 100);
+            CHECK(wakeup->context.parent_span_id == off_cpu->context.span_id);
+            CHECK(wakeup->depth == 2);
+            CHECK(wakeup->start_unix_ns == wakeup->end_unix_ns);
+            const SpanAttribute* point =
+                find_span_attr(*wakeup, "callgraph.kernel.point");
+            CHECK(point != nullptr && point->bool_value);
+        }
+    }
+
+    // Page fault point and an unmatched syscall exit.
+    {
+        SpanGeneratorConfig builder = config();
+        builder.seed_hi += 4;
+        std::vector<SpanRecord> spans;
+        SpanGenerator generator(builder, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({11});
+        timeline.set_kernel_span_sink(&generator);
+
+        TraceEvent main_enter = make_event(0, 11, kEventEnter, 2000);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        KernelEvent fault = make_kernel_event(CG_KEV_PAGE_FAULT_USER,
+                                              CG_KCAT_MM, 11, 2100);
+        fault.a = 0xdead;
+        fault.b = 0xbeef;
+        fault.c = 5;
+        timeline.on_kernel_event(fault, stack);
+
+        KernelEvent read_end =
+            make_kernel_event(CG_KEV_READ_EXIT, CG_KCAT_IO, 11, 2200);
+        read_end.a = 0;
+        read_end.b = 7;
+        timeline.on_kernel_event(read_end, stack);
+
+        TraceEvent main_exit = make_event(0, 11, kEventExit, 2300);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+        timeline.finish(2400, stack);
+        output.stop();
+
+        const SpanRecord* main = find_span(spans, "main");
+        const SpanRecord* fault_span = find_span(spans, "page_fault.user");
+        const SpanRecord* read = find_span(spans, "read");
+        CHECK(main != nullptr);
+        CHECK(fault_span != nullptr);
+        CHECK(read != nullptr);
+        if (main && fault_span && read) {
+            CHECK(fault_span->start_unix_ns == fault_span->end_unix_ns);
+            CHECK(fault_span->context.parent_span_id == main->context.span_id);
+            CHECK(fault_span->depth == 1);
+            const SpanAttribute* address =
+                find_span_attr(*fault_span, "callgraph.kernel.address");
+            CHECK(address != nullptr && address->string_value == "0xdead");
+
+            CHECK(read->start_unix_ns == read->end_unix_ns);
+            CHECK(read->context.parent_span_id == main->context.span_id);
+            CHECK(read->depth == 1);
+            const SpanAttribute* ret =
+                find_span_attr(*read, "callgraph.kernel.ret");
+            const SpanAttribute* unmatched =
+                find_span_attr(*read, "callgraph.kernel.unmatched");
+            const SpanAttribute* incomplete =
+                find_span_attr(*read, "callgraph.kernel.incomplete");
+            CHECK(ret != nullptr && ret->int_value == 7);
+            CHECK(unmatched != nullptr && unmatched->bool_value);
+            CHECK(incomplete != nullptr && incomplete->bool_value);
+        }
+    }
+
+    // Nested direct-reclaim intervals.
+    {
+        SpanGeneratorConfig builder = config();
+        builder.seed_hi += 6;
+        std::vector<SpanRecord> spans;
+        SpanGenerator generator(builder, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({12});
+        timeline.set_kernel_span_sink(&generator);
+
+        TraceEvent main_enter = make_event(0, 12, kEventEnter, 3000);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        KernelEvent begin_outer = make_kernel_event(
+            CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, 12, 3100);
+        begin_outer.a = 0;
+        begin_outer.b = 0x1;
+        timeline.on_kernel_event(begin_outer, stack);
+        KernelEvent begin_inner = begin_outer;
+        begin_inner.ts = 3200;
+        timeline.on_kernel_event(begin_inner, stack);
+        KernelEvent end_inner = make_kernel_event(
+            CG_KEV_DIRECT_RECLAIM_END, CG_KCAT_MM, 12, 3300);
+        end_inner.a = 1;
+        timeline.on_kernel_event(end_inner, stack);
+        KernelEvent end_outer = end_inner;
+        end_outer.ts = 3400;
+        end_outer.a = 2;
+        timeline.on_kernel_event(end_outer, stack);
+
+        TraceEvent main_exit = make_event(0, 12, kEventExit, 3500);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+        timeline.finish(3600, stack);
+        output.stop();
+
+        const SpanRecord* main = find_span(spans, "main");
+        const SpanRecord* first = nullptr;
+        const SpanRecord* second = nullptr;
+        for (const SpanRecord& span : spans) {
+            if (span.function.name != "direct_reclaim")
+                continue;
+            if (!first)
+                first = &span;
+            else
+                second = &span;
+        }
+        CHECK(main != nullptr);
+        CHECK(first != nullptr);
+        CHECK(second != nullptr);
+        if (main && first && second) {
+            const bool first_is_inner =
+                first->end_unix_ns - first->start_unix_ns == 100;
+            const SpanRecord* inner = first_is_inner ? first : second;
+            const SpanRecord* outer = first_is_inner ? second : first;
+            CHECK(inner->context.parent_span_id == outer->context.span_id);
+            CHECK(inner->end_unix_ns - inner->start_unix_ns == 100);
+            CHECK(outer->context.parent_span_id == main->context.span_id);
+            CHECK(outer->end_unix_ns - outer->start_unix_ns == 300);
+            CHECK(outer->depth == 1);
+            CHECK(inner->depth == 2);
+        }
+    }
+
+    // Scheduler migration and process lifecycle points.
+    {
+        SpanGeneratorConfig builder = config();
+        builder.seed_hi += 8;
+        std::vector<SpanRecord> spans;
+        SpanGenerator generator(builder, [&](SpanRecord&& span) {
+            spans.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({13});
+        timeline.set_kernel_span_sink(&generator);
+
+        TraceEvent main_enter = make_event(0, 13, kEventEnter, 4000);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        KernelEvent migrate =
+            make_kernel_event(CG_KEV_SCHED_MIGRATE, CG_KCAT_SCHED, 13, 4100);
+        migrate.a = 120;
+        migrate.b = 1;
+        migrate.c = 2;
+        timeline.on_kernel_event(migrate, stack);
+
+        KernelEvent fork =
+            make_kernel_event(CG_KEV_PROC_FORK, CG_KCAT_SCHED, 13, 4200);
+        fork.peer_tid = 14;
+        timeline.on_kernel_event(fork, stack);
+
+        KernelEvent process_exit =
+            make_kernel_event(CG_KEV_PROC_EXIT, CG_KCAT_SCHED, 13, 4300);
+        process_exit.a = 120;
+        timeline.on_kernel_event(process_exit, stack);
+
+        timeline.finish(4400, stack);
+        stack.finish_spans(4400);
+        output.stop();
+
+        const SpanRecord* main = find_span(spans, "main");
+        const SpanRecord* migrate_span = find_span(spans, "sched.migrate");
+        const SpanRecord* fork_span = find_span(spans, "proc.fork");
+        const SpanRecord* exit_span = find_span(spans, "proc.exit");
+        CHECK(main != nullptr);
+        CHECK(migrate_span != nullptr);
+        CHECK(fork_span != nullptr);
+        CHECK(exit_span != nullptr);
+        if (main && migrate_span && fork_span && exit_span) {
+            CHECK(migrate_span->context.parent_span_id == main->context.span_id);
+            CHECK(fork_span->context.parent_span_id == main->context.span_id);
+            CHECK(exit_span->context.parent_span_id == main->context.span_id);
+            CHECK(migrate_span->start_unix_ns == migrate_span->end_unix_ns);
+            const SpanAttribute* dest =
+                find_span_attr(*migrate_span, "callgraph.kernel.dest_cpu");
+            const SpanAttribute* child =
+                find_span_attr(*fork_span, "callgraph.kernel.child");
+            CHECK(dest != nullptr && dest->int_value == 2);
+            CHECK(child != nullptr && child->int_value == 14);
+        }
+    }
+
+    unlink(path.c_str());
+}
+
 void test_kernel_global_report()
 {
     const auto names = make_names();
@@ -2408,6 +2859,7 @@ int main()
     test_kernel_block_correlation();
     test_kernel_memory();
     test_kernel_network();
+    test_kernel_span_export();
     test_kernel_global_report();
     test_kernel_output_global();
     test_basic_stack();
@@ -2433,6 +2885,7 @@ int main()
     test_outlier_sampling();
     test_outlier_overflow_keeps_duration();
     test_otlp_encoding();
+    test_otlp_kernel_span_encoding();
     test_otel_drop_stats();
     test_span_complete_traces();
     test_otel_trace_drop();

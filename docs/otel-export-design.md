@@ -195,6 +195,33 @@ Source attributes are omitted when DWARF is unavailable. Thread names are
 best-effort; restricted PID-namespace setups may not expose
 `/proc/<pid>/task/<tid>/comm`.
 
+### Kernel spans
+
+When `--kernel` is combined with an OTel exporter, TID-specific kernel events
+are exported as child spans of the innermost open kernel span or user
+function. They omit `code.*`, module, and argument attributes and use:
+
+| Attribute | Value |
+|---|---|
+| `callgraph.kernel.category` | `FUTEX`, `IO`, `NET`, `MM`, or `SCHED` |
+| `callgraph.kernel.event` | `futex`, `read`, `page_fault`, `off_cpu`, ... |
+| `callgraph.kernel.id` | Pairing ID where available |
+| `callgraph.kernel.user_depth` | Depth of the traced user frame at the event |
+| `callgraph.kernel.attribution` | Always `direct` (TID-attributed) |
+| `callgraph.kernel.duration_ns` | Span duration; `0` for point spans |
+| `callgraph.kernel.point` | Present on zero-duration point spans |
+| `callgraph.kernel.incomplete` | Present when the interval was not closed |
+| `callgraph.kernel.ret` | Signed syscall return value |
+
+Syscall spans add the enter parameters (`fd`, `count`, `flags`, `addr`,
+`len`, `uaddr`, `op`, ...) from the tracepoint payload. Direct reclaim adds
+`order`, `gfp`, and `nr_reclaimed`. Scheduler intervals and points add
+`state`, `reason`, `by`, `prio`, `cpu`, `orig_cpu`, `dest_cpu`, and `child` as
+appropriate. Page faults add `space`, `address`, `ip`, and `error`.
+
+Global block requests and TCP retransmits are not exported as spans; they
+remain in the text kernel stream and report.
+
 ## 6. Export architecture
 
 ```

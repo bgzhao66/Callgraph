@@ -123,6 +123,47 @@ void append_double_attr(std::string& out, const char* key, double value,
     out += "}}";
 }
 
+void append_signed_int_attr(std::string& out, const char* key, int64_t value,
+                            bool* first)
+{
+    if (!*first)
+        out.push_back(',');
+    *first = false;
+    out += '{';
+    append_key(out, "key");
+    append_escaped(out, key);
+    out += ',';
+    append_key(out, "value");
+    out += '{';
+    append_key(out, "intValue");
+    out.push_back('"');
+    out += std::to_string(value);
+    out += "\"}}";
+}
+
+void append_span_attribute(std::string& out, const SpanAttribute& attribute,
+                           bool* first)
+{
+    switch (attribute.type) {
+    case SpanAttributeType::String:
+        append_string_attr(out, attribute.key.c_str(),
+                           attribute.string_value, first);
+        break;
+    case SpanAttributeType::Int:
+        append_signed_int_attr(out, attribute.key.c_str(),
+                               attribute.int_value, first);
+        break;
+    case SpanAttributeType::Double:
+        append_double_attr(out, attribute.key.c_str(),
+                           attribute.double_value, first);
+        break;
+    case SpanAttributeType::Bool:
+        append_bool_attr(out, attribute.key.c_str(), attribute.bool_value,
+                         first);
+        break;
+    }
+}
+
 std::string hex_bytes(const uint8_t* data, size_t size)
 {
     static const char* digits = "0123456789abcdef";
@@ -193,20 +234,22 @@ void append_span(std::string& out, const SpanRecord& span,
     out.push_back('[');
     bool first = true;
 
-    append_string_attr(out, "code.function.name", span.function.name, &first);
-    append_string_attr(out, "code.function", span.function.name, &first);
-    if (!span.function.source_file.empty()) {
-        append_string_attr(out, "code.filepath", span.function.source_file,
-                           &first);
-        if (span.function.source_line != 0) {
-            append_int_attr(out, "code.lineno", span.function.source_line,
-                            &first);
+    if (!span.kernel) {
+        append_string_attr(out, "code.function.name", span.function.name, &first);
+        append_string_attr(out, "code.function", span.function.name, &first);
+        if (!span.function.source_file.empty()) {
+            append_string_attr(out, "code.filepath", span.function.source_file,
+                               &first);
+            if (span.function.source_line != 0) {
+                append_int_attr(out, "code.lineno", span.function.source_line,
+                                &first);
+            }
         }
+        if (!span.function.linkage_name.empty())
+            append_string_attr(out, "callgraph.linkage_name",
+                               span.function.linkage_name, &first);
+        append_int_attr(out, "callgraph.function_id", span.function_id, &first);
     }
-    if (!span.function.linkage_name.empty())
-        append_string_attr(out, "callgraph.linkage_name",
-                           span.function.linkage_name, &first);
-    append_int_attr(out, "callgraph.function_id", span.function_id, &first);
     append_int_attr(out, "callgraph.depth", span.depth, &first);
     append_int_attr(out, "thread.id", span.tid, &first);
     if (!span.thread_name.empty())
@@ -217,27 +260,31 @@ void append_span(std::string& out, const SpanRecord& span,
         append_double_attr(out, "callgraph.quantile", span.quantile, &first);
     if (config.attach_mode && span.context.parent_span_id == 0)
         append_bool_attr(out, "callgraph.partial_stack", true, &first);
-    if (!span.function.module_path.empty()) {
-        append_string_attr(out, "callgraph.module",
-                           basename_of(span.function.module_path), &first);
-        append_string_attr(out, "callgraph.module.path",
-                           span.function.module_path, &first);
+    if (!span.kernel) {
+        if (!span.function.module_path.empty()) {
+            append_string_attr(out, "callgraph.module",
+                               basename_of(span.function.module_path), &first);
+            append_string_attr(out, "callgraph.module.path",
+                               span.function.module_path, &first);
+        }
+        if (!span.function.module_build_id.empty()) {
+            append_string_attr(out, "callgraph.module.build_id",
+                               span.function.module_build_id, &first);
+        }
+        if (span.function.file_offset != 0) {
+            append_int_attr(out, "callgraph.file_offset",
+                            span.function.file_offset, &first);
+        }
+        if (!span.arguments.empty())
+            append_string_attr(out, "code.arguments", span.arguments, &first);
+        if (span.incomplete) {
+            append_bool_attr(out, "callgraph.incomplete", true, &first);
+            append_string_attr(out, "callgraph.end_reason",
+                               span_close_reason_name(span.reason), &first);
+        }
     }
-    if (!span.function.module_build_id.empty()) {
-        append_string_attr(out, "callgraph.module.build_id",
-                           span.function.module_build_id, &first);
-    }
-    if (span.function.file_offset != 0) {
-        append_int_attr(out, "callgraph.file_offset",
-                        span.function.file_offset, &first);
-    }
-    if (!span.arguments.empty())
-        append_string_attr(out, "code.arguments", span.arguments, &first);
-    if (span.incomplete) {
-        append_bool_attr(out, "callgraph.incomplete", true, &first);
-        append_string_attr(out, "callgraph.end_reason",
-                           span_close_reason_name(span.reason), &first);
-    }
+    for (const SpanAttribute& attribute : span.extra_attributes)
+        append_span_attribute(out, attribute, &first);
 
     out += "]}";
 }

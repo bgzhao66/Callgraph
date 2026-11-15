@@ -573,6 +573,37 @@ fi
 grep -q 'trace buffer: 1 completed' "$TMP/live-complete.err"
 grep -q 'callgraph.quantile' "$TMP/live-complete.json"
 
+echo "== OTLP kernel spans =="
+"$BIN" run -T --kernel --io --sched --memory \
+    --exporter otlp-json --export-file "$TMP/kernel-spans.json" --regex \
+    --include '^(main|fsync_work[(][)]|memory_work[(][)]|lock_work[(][)]|work[(]int[)]|network_work[(][)])$' \
+    -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-spans.err"
+grep -q 'kernel spans:' "$TMP/kernel-spans.err"
+grep -q '"key":"callgraph.kernel.event"' "$TMP/kernel-spans.json"
+grep -q '"key":"callgraph.kernel.category"' "$TMP/kernel-spans.json"
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TMP/kernel-spans.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
+by_id = {s["spanId"]: s for s in spans}
+kernel = [s for s in spans
+          if any(a["key"] == "callgraph.kernel.event" for a in s["attributes"])]
+assert kernel, "no kernel spans exported"
+names = {s["name"] for s in kernel}
+assert "fsync" in names or "openat" in names, names
+assert "sched.off_cpu" in names, names
+assert any(name.startswith("page_fault.") for name in names), names
+for span in kernel:
+    attrs = {a["key"]: a["value"] for a in span["attributes"]}
+    assert "callgraph.kernel.category" in attrs
+    assert "thread.id" in attrs
+    assert "callgraph.depth" in attrs
+    assert "code.function.name" not in attrs
+    assert span.get("parentSpanId") in by_id
+PY
+fi
+
 echo "== OTLP/HTTP protobuf export =="
 if command -v python3 >/dev/null 2>&1 && "$BIN" --version | grep -q 'otlp protobuf: yes'; then
     python3 - "$BIN" "$TMP/simple" <<'PY'

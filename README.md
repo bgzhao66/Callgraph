@@ -31,6 +31,8 @@ The current implementation includes:
   (`--exporter otlp-json`), and `callgraph export --otel` for existing text
   traces
 - folded-stack flamegraph export via `callgraph export --flame`
+- correlated kernel event tracing (`--kernel`) with OTel child spans for
+  TID-specific syscall, reclaim, scheduler, and page-fault activity
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
   stdout log rate limiting, source file/line attributes, and best-effort thread
   names
@@ -583,6 +585,15 @@ has no traced frame; `*` means the record is global (block events and TCP
 retransmits). Kernel lines are ignored by the function-line parser, so old
 traces still replay.
 
+When `--kernel` is combined with an OTel exporter, TID-specific kernel events
+are also exported as child spans. Syscall enter/exit, direct reclaim, and
+scheduler off-CPU/runqueue become interval spans; page faults, wakeups,
+migrations, fork, and exit become zero-duration point spans. The span tree
+nests the innermost kernel operation, so a blocking `pread64` contains its
+`sched.off_cpu` and `sched.runqueue` intervals. Every span carries
+`thread.id`, `callgraph.depth`, and `callgraph.kernel.user_depth`. Global block
+and TCP-retransmit records remain text-only.
+
 Presets select fine-grained scopes:
 
 | Preset | Covers | Excludes |
@@ -733,6 +744,13 @@ exporters (`otlp`, `otlp-http`), `otlp-json`, and offline `--otel` export to
 `--trace-buffer-bytes` (default `256m`) and `--trace-buffer-spans` (default
 `1000000`); a trace that exceeds either limit is dropped whole and counted as
 `trace-buffer-overflow`.
+
+With `--kernel`, OTel exports additionally contain TID-specific kernel child
+spans: syscall intervals, direct reclaim, scheduler off-CPU/runqueue, and
+zero-duration page-fault/wakeup/migration/fork/exit points. Kernel spans nest
+under the active function or innermost kernel operation and follow the same
+sampling and complete-trace buffering as function spans. Global block and
+TCP-retransmit records are not exported as spans.
 
 Root-trace sampling is available with `--sample-rate R` (`0..1`, default
 `1.0`). The decision is made once for the root and inherited by all
