@@ -2436,6 +2436,59 @@ void test_kernel_network()
     CHECK(report.find("blocked(net=400ns") != std::string::npos);
 }
 
+void test_kernel_text_ids_without_span_sink()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({15});
+
+        TraceEvent main_enter = make_event(0, 15, kEventEnter, 100);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        KernelEvent reclaim_begin = make_kernel_event(
+            CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, 15, 200);
+        reclaim_begin.a = 0;
+        reclaim_begin.b = 0x1;
+        timeline.on_kernel_event(reclaim_begin, stack);
+        KernelEvent reclaim_end = make_kernel_event(
+            CG_KEV_DIRECT_RECLAIM_END, CG_KCAT_MM, 15, 300);
+        reclaim_end.a = 1;
+        timeline.on_kernel_event(reclaim_end, stack);
+
+        KernelEvent futex_begin =
+            make_kernel_event(CG_KEV_FUTEX_ENTER, CG_KCAT_FUTEX, 15, 400);
+        futex_begin.a = 202;
+        futex_begin.b = 0x1234;
+        futex_begin.c = 0;
+        futex_begin.d = 9;
+        timeline.on_kernel_event(futex_begin, stack);
+        KernelEvent futex_end =
+            make_kernel_event(CG_KEV_FUTEX_EXIT, CG_KCAT_FUTEX, 15, 500);
+        futex_end.a = 202;
+        futex_end.b = 0;
+        timeline.on_kernel_event(futex_end, stack);
+
+        TraceEvent main_exit = make_event(0, 15, kEventExit, 600);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+        timeline.finish(700, stack);
+        output.stop();
+    }
+
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("@MM direct_reclaim_begin id=1") != std::string::npos);
+    CHECK(trace.find("@FUTEX wait_begin id=2") != std::string::npos);
+}
+
 void test_kernel_span_export()
 {
     const std::vector<std::string> names = {"main", "A(int)"};
@@ -2519,10 +2572,13 @@ void test_kernel_span_export()
                 find_span_attr(*futex, "callgraph.kernel.ret");
             const SpanAttribute* duration =
                 find_span_attr(*futex, "callgraph.kernel.duration_ns");
+            const SpanAttribute* user_depth =
+                find_span_attr(*futex, "callgraph.kernel.user_depth");
             CHECK(category != nullptr && category->string_value == "FUTEX");
             CHECK(event != nullptr && event->string_value == "futex");
             CHECK(ret != nullptr && ret->int_value == 0);
             CHECK(duration != nullptr && duration->int_value == 100);
+            CHECK(user_depth != nullptr && user_depth->int_value == 0);
         }
     }
 
@@ -2594,6 +2650,9 @@ void test_kernel_span_export()
             const SpanAttribute* point =
                 find_span_attr(*wakeup, "callgraph.kernel.point");
             CHECK(point != nullptr && point->bool_value);
+            const SpanAttribute* user_depth =
+                find_span_attr(*off_cpu, "callgraph.kernel.user_depth");
+            CHECK(user_depth != nullptr && user_depth->int_value == 0);
         }
     }
 
@@ -2647,7 +2706,10 @@ void test_kernel_span_export()
             CHECK(fault_span->depth == 1);
             const SpanAttribute* address =
                 find_span_attr(*fault_span, "callgraph.kernel.address");
+            const SpanAttribute* user_depth =
+                find_span_attr(*fault_span, "callgraph.kernel.user_depth");
             CHECK(address != nullptr && address->string_value == "0xdead");
+            CHECK(user_depth != nullptr && user_depth->int_value == 0);
 
             CHECK(read->start_unix_ns == read->end_unix_ns);
             CHECK(read->context.parent_span_id == main->context.span_id);
@@ -2799,6 +2861,83 @@ void test_kernel_span_export()
     unlink(path.c_str());
 }
 
+void test_kernel_span_depth_clamp()
+{
+    const std::vector<std::string> names = {"main"};
+    std::vector<FunctionMetadata> functions;
+    FunctionMetadata metadata;
+    metadata.name = "main";
+    functions.push_back(metadata);
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 31;
+    config.seed_lo = 32;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+
+    std::vector<SpanRecord> spans;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &generator);
+    const std::string path = temp_path();
+    Output output(path);
+    KernelTimeline timeline(output, -1, false);
+    timeline.set_target_tids({21});
+    timeline.set_kernel_span_sink(&generator);
+
+    TraceEvent main_enter = make_event(0, 21, kEventEnter, 100);
+    timeline.on_function_event(main_enter, stack);
+    stack.on_event(main_enter);
+
+    KernelEvent futex =
+        make_kernel_event(CG_KEV_FUTEX_ENTER, CG_KCAT_FUTEX, 21, 200);
+    futex.a = 202;
+    futex.b = 0x1234;
+    futex.c = 0;
+    futex.d = 9;
+    timeline.on_kernel_event(futex, stack);
+
+    // Simulate a lost/desynced function return while the syscall interval is
+    // still open.  The kernel span remains a valid parent, but there is no
+    // user frame left, so the user depth must be clamped to zero.
+    TraceEvent main_exit = make_event(0, 21, kEventExit, 300);
+    timeline.on_function_event(main_exit, stack);
+    stack.on_event(main_exit);
+
+    KernelEvent migrate =
+        make_kernel_event(CG_KEV_SCHED_MIGRATE, CG_KCAT_SCHED, 21, 400);
+    migrate.a = 120;
+    migrate.b = 1;
+    migrate.c = 2;
+    timeline.on_kernel_event(migrate, stack);
+
+    KernelEvent futex_end =
+        make_kernel_event(CG_KEV_FUTEX_EXIT, CG_KCAT_FUTEX, 21, 500);
+    futex_end.a = 202;
+    futex_end.b = 0;
+    timeline.on_kernel_event(futex_end, stack);
+
+    timeline.finish(600, stack);
+    output.stop();
+    unlink(path.c_str());
+
+    const SpanRecord* futex_span = find_span(spans, "futex");
+    const SpanRecord* migrate_span = find_span(spans, "sched.migrate");
+    CHECK(futex_span != nullptr);
+    CHECK(migrate_span != nullptr);
+    if (futex_span && migrate_span) {
+        CHECK(migrate_span->context.parent_span_id ==
+              futex_span->context.span_id);
+        const SpanAttribute* user_depth =
+            find_span_attr(*migrate_span, "callgraph.kernel.user_depth");
+        CHECK(user_depth != nullptr);
+        if (user_depth)
+            CHECK(user_depth->int_value == 0);
+    }
+}
+
 void test_kernel_global_report()
 {
     const auto names = make_names();
@@ -2859,7 +2998,9 @@ int main()
     test_kernel_block_correlation();
     test_kernel_memory();
     test_kernel_network();
+    test_kernel_text_ids_without_span_sink();
     test_kernel_span_export();
+    test_kernel_span_depth_clamp();
     test_kernel_global_report();
     test_kernel_output_global();
     test_basic_stack();

@@ -83,7 +83,6 @@ private:
         uint64_t fd = 0;
         uint32_t nr = 0;
         uint32_t op = 0;
-        KernelEvent enter{};
         uint64_t span_token = 0;
         uint32_t user_depth = 0;
     };

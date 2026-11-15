@@ -320,6 +320,12 @@ int depth_of(const CallStack& stack, uint32_t tid)
     return static_cast<int>(frames->size() - 1);
 }
 
+uint32_t span_user_depth(const CallStack& stack, uint32_t tid)
+{
+    const int depth = depth_of(stack, tid);
+    return depth < 0 ? 0 : static_cast<uint32_t>(depth);
+}
+
 uint64_t function_of(const CallStack& stack, uint32_t tid)
 {
     const auto* frames = stack.frames_for(tid);
@@ -727,21 +733,22 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
                          state_name(static_cast<uint32_t>(event.a)));
         emit_event(event, depth_of(stack, prev), "switch_out", attrs);
 
-        const uint32_t user_depth =
-            static_cast<uint32_t>(depth_of(stack, prev));
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "off_cpu", user_depth);
-        add_uint_attr(span_attrs, "id", thread.pending_switch_id);
-        add_uint_attr(span_attrs, "next", next);
-        add_string_attr(span_attrs, "state",
-                        state_name(static_cast<uint32_t>(event.a)));
-        add_string_attr(span_attrs, "reason",
-                        block_reason_name(thread.reason));
-        thread.offcpu_span_token =
-            open_span(stack, prev, user_depth, CG_KCAT_SCHED,
-                      "sched.off_cpu", event.ts, std::move(span_attrs));
-        thread.offcpu_span_start_ns = event.ts;
-        thread.offcpu_user_depth = user_depth;
+        if (span_sink_) {
+            const uint32_t user_depth = span_user_depth(stack, prev);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "off_cpu", user_depth);
+            add_uint_attr(span_attrs, "id", thread.pending_switch_id);
+            add_uint_attr(span_attrs, "next", next);
+            add_string_attr(span_attrs, "state",
+                            state_name(static_cast<uint32_t>(event.a)));
+            add_string_attr(span_attrs, "reason",
+                            block_reason_name(thread.reason));
+            thread.offcpu_span_token =
+                open_span(stack, prev, user_depth, CG_KCAT_SCHED,
+                          "sched.off_cpu", event.ts, std::move(span_attrs));
+            thread.offcpu_span_start_ns = event.ts;
+            thread.offcpu_user_depth = user_depth;
+        }
     }
 
     if (next_target) {
@@ -834,30 +841,31 @@ void KernelTimeline::on_sched_wakeup(const KernelEvent& event,
     emit_event(event, depth_of(stack, target), kernel_kind_name(event.kind),
                attrs);
 
-    const uint32_t user_depth =
-        static_cast<uint32_t>(depth_of(stack, target));
-    const std::string event_name = kernel_kind_name(event.kind);
-    std::vector<SpanAttribute> point_attrs;
-    add_common_span_attrs(point_attrs, event_name.c_str(), user_depth);
-    add_uint_attr(point_attrs, "id", thread.pending_switch_id);
-    add_uint_attr(point_attrs, "by", waker);
-    add_uint_attr(point_attrs, "cpu", event.c);
-    add_uint_attr(point_attrs, "prio", event.a);
-    emit_point(stack, target, user_depth, CG_KCAT_SCHED,
-               "sched." + event_name, event.ts, std::move(point_attrs));
+    if (span_sink_) {
+        const uint32_t user_depth = span_user_depth(stack, target);
+        const std::string event_name = kernel_kind_name(event.kind);
+        std::vector<SpanAttribute> point_attrs;
+        add_common_span_attrs(point_attrs, event_name.c_str(), user_depth);
+        add_uint_attr(point_attrs, "id", thread.pending_switch_id);
+        add_uint_attr(point_attrs, "by", waker);
+        add_uint_attr(point_attrs, "cpu", event.c);
+        add_uint_attr(point_attrs, "prio", event.a);
+        emit_point(stack, target, user_depth, CG_KCAT_SCHED,
+                   "sched." + event_name, event.ts, std::move(point_attrs));
 
-    if (started_runnable) {
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "runqueue", user_depth);
-        add_uint_attr(span_attrs, "id", thread.pending_switch_id);
-        add_uint_attr(span_attrs, "by", waker);
-        add_uint_attr(span_attrs, "cpu", event.c);
-        add_uint_attr(span_attrs, "prio", event.a);
-        thread.runqueue_span_token =
-            open_span(stack, target, user_depth, CG_KCAT_SCHED,
-                      "sched.runqueue", event.ts, std::move(span_attrs));
-        thread.runqueue_span_start_ns = event.ts;
-        thread.runqueue_user_depth = user_depth;
+        if (started_runnable) {
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "runqueue", user_depth);
+            add_uint_attr(span_attrs, "id", thread.pending_switch_id);
+            add_uint_attr(span_attrs, "by", waker);
+            add_uint_attr(span_attrs, "cpu", event.c);
+            add_uint_attr(span_attrs, "prio", event.a);
+            thread.runqueue_span_token =
+                open_span(stack, target, user_depth, CG_KCAT_SCHED,
+                          "sched.runqueue", event.ts, std::move(span_attrs));
+            thread.runqueue_span_start_ns = event.ts;
+            thread.runqueue_user_depth = user_depth;
+        }
     }
 }
 
@@ -873,8 +881,7 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
         op.id = next_id();
         op.nr = static_cast<uint32_t>(event.a);
         op.op = static_cast<uint32_t>(event.c);
-        op.enter = event;
-        op.user_depth = static_cast<uint32_t>(depth_of(stack, event.tid));
+        op.user_depth = span_user_depth(stack, event.tid);
         thread.ops.push_back(op);
 
         std::string attrs;
@@ -887,19 +894,21 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
                                : futex_is_wake(op.op) ? "wake" : "futex_begin";
         emit_event(event, depth_of(stack, event.tid), name, attrs);
 
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "futex", op.user_depth);
-        add_uint_attr(span_attrs, "id", op.id);
-        add_uint_attr(span_attrs, "nr", event.a);
-        add_string_attr(span_attrs, "operation",
-                        futex_is_wait(op.op)
-                            ? "wait"
-                            : futex_is_wake(op.op) ? "wake" : "other");
-        for (const ArgSpec& spec : enter_arg_specs(event.kind))
-            add_arg_attr(span_attrs, spec, event);
-        thread.ops.back().span_token =
-            open_span(stack, event.tid, op.user_depth, CG_KCAT_FUTEX,
-                      "futex", event.ts, std::move(span_attrs));
+        if (span_sink_) {
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "futex", op.user_depth);
+            add_uint_attr(span_attrs, "id", op.id);
+            add_uint_attr(span_attrs, "nr", event.a);
+            add_string_attr(span_attrs, "operation",
+                            futex_is_wait(op.op)
+                                ? "wait"
+                                : futex_is_wake(op.op) ? "wake" : "other");
+            for (const ArgSpec& spec : enter_arg_specs(event.kind))
+                add_arg_attr(span_attrs, spec, event);
+            thread.ops.back().span_token =
+                open_span(stack, event.tid, op.user_depth, CG_KCAT_FUTEX,
+                          "futex", event.ts, std::move(span_attrs));
+        }
         return;
     }
 
@@ -919,17 +928,18 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
         attrs += " unmatched=1";
         emit_event(event, depth_of(stack, event.tid), "futex_end", attrs);
 
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "futex",
-                              static_cast<uint32_t>(depth_of(stack, event.tid)));
-        add_uint_attr(span_attrs, "nr", event.a);
-        add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
-        add_bool_attr(span_attrs, "unmatched", true);
-        add_bool_attr(span_attrs, "incomplete", true);
-        emit_point(stack, event.tid,
-                   static_cast<uint32_t>(depth_of(stack, event.tid)),
-                   CG_KCAT_FUTEX, "futex", event.ts, std::move(span_attrs),
-                   function_span_token(stack, event.tid));
+        if (span_sink_) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "futex", user_depth);
+            add_uint_attr(span_attrs, "nr", event.a);
+            add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
+            add_bool_attr(span_attrs, "unmatched", true);
+            add_bool_attr(span_attrs, "incomplete", true);
+            emit_point(stack, event.tid, user_depth, CG_KCAT_FUTEX, "futex",
+                       event.ts, std::move(span_attrs),
+                       function_span_token(stack, event.tid));
+        }
         return;
     }
 
@@ -944,9 +954,11 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
                                                        : "futex_end";
     emit_event(event, depth_of(stack, event.tid), name, attrs);
 
-    std::vector<SpanAttribute> end_attrs;
-    add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
-    close_span(pending.span_token, event.ts, std::move(end_attrs), false);
+    if (span_sink_) {
+        std::vector<SpanAttribute> end_attrs;
+        add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
+        close_span(pending.span_token, event.ts, std::move(end_attrs), false);
+    }
 }
 
 void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
@@ -961,8 +973,7 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
         op.id = next_id();
         op.fd = event.b;
         op.nr = static_cast<uint32_t>(event.a);
-        op.enter = event;
-        op.user_depth = static_cast<uint32_t>(depth_of(stack, event.tid));
+        op.user_depth = span_user_depth(stack, event.tid);
         thread.ops.push_back(op);
 
         std::string attrs;
@@ -982,17 +993,20 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
         emit_event(event, depth_of(stack, event.tid),
                    kernel_io_event_name(event.kind), attrs);
 
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, syscall_name(event.kind).c_str(),
-                              op.user_depth);
-        add_uint_attr(span_attrs, "id", op.id);
-        add_uint_attr(span_attrs, "nr", event.a);
-        for (const ArgSpec& spec : enter_arg_specs(event.kind))
-            add_arg_attr(span_attrs, spec, event);
-        thread.ops.back().span_token =
-            open_span(stack, event.tid, op.user_depth, CG_KCAT_IO,
-                      syscall_name(event.kind), event.ts,
-                      std::move(span_attrs));
+        if (span_sink_) {
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs,
+                                  syscall_name(event.kind).c_str(),
+                                  op.user_depth);
+            add_uint_attr(span_attrs, "id", op.id);
+            add_uint_attr(span_attrs, "nr", event.a);
+            for (const ArgSpec& spec : enter_arg_specs(event.kind))
+                add_arg_attr(span_attrs, spec, event);
+            thread.ops.back().span_token =
+                open_span(stack, event.tid, op.user_depth, CG_KCAT_IO,
+                          syscall_name(event.kind), event.ts,
+                          std::move(span_attrs));
+        }
         return;
     }
 
@@ -1014,18 +1028,21 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
         emit_event(event, depth_of(stack, event.tid),
                    kernel_io_event_name(event.kind), attrs);
 
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, syscall_name(enter_kind).c_str(),
-                              static_cast<uint32_t>(depth_of(stack, event.tid)));
-        add_uint_attr(span_attrs, "nr", event.a);
-        add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
-        add_bool_attr(span_attrs, "unmatched", true);
-        add_bool_attr(span_attrs, "incomplete", true);
-        emit_point(stack, event.tid,
-                   static_cast<uint32_t>(depth_of(stack, event.tid)),
-                   CG_KCAT_IO, syscall_name(enter_kind), event.ts,
-                   std::move(span_attrs),
-                   function_span_token(stack, event.tid));
+        if (span_sink_) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs,
+                                  syscall_name(enter_kind).c_str(),
+                                  user_depth);
+            add_uint_attr(span_attrs, "nr", event.a);
+            add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
+            add_bool_attr(span_attrs, "unmatched", true);
+            add_bool_attr(span_attrs, "incomplete", true);
+            emit_point(stack, event.tid, user_depth, CG_KCAT_IO,
+                       syscall_name(enter_kind), event.ts,
+                       std::move(span_attrs),
+                       function_span_token(stack, event.tid));
+        }
         return;
     }
 
@@ -1037,9 +1054,11 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
     emit_event(event, depth_of(stack, event.tid),
                kernel_io_event_name(event.kind), attrs);
 
-    std::vector<SpanAttribute> end_attrs;
-    add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
-    close_span(pending.span_token, event.ts, std::move(end_attrs), false);
+    if (span_sink_) {
+        std::vector<SpanAttribute> end_attrs;
+        add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
+        close_span(pending.span_token, event.ts, std::move(end_attrs), false);
+    }
 }
 
 void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
@@ -1054,8 +1073,7 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
         op.id = next_id();
         op.fd = event.b;
         op.nr = static_cast<uint32_t>(event.a);
-        op.enter = event;
-        op.user_depth = static_cast<uint32_t>(depth_of(stack, event.tid));
+        op.user_depth = span_user_depth(stack, event.tid);
         thread.ops.push_back(op);
 
         std::string attrs;
@@ -1118,17 +1136,20 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
         emit_event(event, depth_of(stack, event.tid),
                    kernel_net_event_name(event.kind), attrs);
 
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, syscall_name(event.kind).c_str(),
-                              op.user_depth);
-        add_uint_attr(span_attrs, "id", op.id);
-        add_uint_attr(span_attrs, "nr", event.a);
-        for (const ArgSpec& spec : enter_arg_specs(event.kind))
-            add_arg_attr(span_attrs, spec, event);
-        thread.ops.back().span_token =
-            open_span(stack, event.tid, op.user_depth, CG_KCAT_NET,
-                      syscall_name(event.kind), event.ts,
-                      std::move(span_attrs));
+        if (span_sink_) {
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs,
+                                  syscall_name(event.kind).c_str(),
+                                  op.user_depth);
+            add_uint_attr(span_attrs, "id", op.id);
+            add_uint_attr(span_attrs, "nr", event.a);
+            for (const ArgSpec& spec : enter_arg_specs(event.kind))
+                add_arg_attr(span_attrs, spec, event);
+            thread.ops.back().span_token =
+                open_span(stack, event.tid, op.user_depth, CG_KCAT_NET,
+                          syscall_name(event.kind), event.ts,
+                          std::move(span_attrs));
+        }
         return;
     }
 
@@ -1157,23 +1178,27 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
     emit_event(event, depth_of(stack, event.tid),
                kernel_net_event_name(event.kind), attrs);
 
-    if (!found) {
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, syscall_name(enter_kind).c_str(),
-                              static_cast<uint32_t>(depth_of(stack, event.tid)));
-        add_uint_attr(span_attrs, "nr", event.a);
-        add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
-        add_bool_attr(span_attrs, "unmatched", true);
-        add_bool_attr(span_attrs, "incomplete", true);
-        emit_point(stack, event.tid,
-                   static_cast<uint32_t>(depth_of(stack, event.tid)),
-                   CG_KCAT_NET, syscall_name(enter_kind), event.ts,
-                   std::move(span_attrs),
-                   function_span_token(stack, event.tid));
-    } else {
-        std::vector<SpanAttribute> end_attrs;
-        add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
-        close_span(pending.span_token, event.ts, std::move(end_attrs), false);
+    if (span_sink_) {
+        if (!found) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs,
+                                  syscall_name(enter_kind).c_str(),
+                                  user_depth);
+            add_uint_attr(span_attrs, "nr", event.a);
+            add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
+            add_bool_attr(span_attrs, "unmatched", true);
+            add_bool_attr(span_attrs, "incomplete", true);
+            emit_point(stack, event.tid, user_depth, CG_KCAT_NET,
+                       syscall_name(enter_kind), event.ts,
+                       std::move(span_attrs),
+                       function_span_token(stack, event.tid));
+        } else {
+            std::vector<SpanAttribute> end_attrs;
+            add_int_attr(end_attrs, "ret", static_cast<int64_t>(event.b));
+            close_span(pending.span_token, event.ts, std::move(end_attrs),
+                       false);
+        }
     }
 }
 
@@ -1202,21 +1227,22 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
         append_hex_attr(attrs, "error", event.c);
         emit_event(event, depth, "page_fault", attrs);
 
-        const uint32_t user_depth =
-            depth < 0 ? 0 : static_cast<uint32_t>(depth);
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "page_fault", user_depth);
-        add_string_attr(span_attrs, "space",
-                        event.kind == CG_KEV_PAGE_FAULT_USER ? "user"
-                                                            : "kernel");
-        add_hex_attr(span_attrs, "address", event.a);
-        add_hex_attr(span_attrs, "ip", event.b);
-        add_hex_attr(span_attrs, "error", event.c);
-        emit_point(stack, event.tid, user_depth, CG_KCAT_MM,
-                   event.kind == CG_KEV_PAGE_FAULT_USER
-                       ? "page_fault.user"
-                       : "page_fault.kernel",
-                   event.ts, std::move(span_attrs));
+        if (span_sink_) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "page_fault", user_depth);
+            add_string_attr(span_attrs, "space",
+                            event.kind == CG_KEV_PAGE_FAULT_USER ? "user"
+                                                                : "kernel");
+            add_hex_attr(span_attrs, "address", event.a);
+            add_hex_attr(span_attrs, "ip", event.b);
+            add_hex_attr(span_attrs, "error", event.c);
+            emit_point(stack, event.tid, user_depth, CG_KCAT_MM,
+                       event.kind == CG_KEV_PAGE_FAULT_USER
+                           ? "page_fault.user"
+                           : "page_fault.kernel",
+                       event.ts, std::move(span_attrs));
+        }
         return;
     }
 
@@ -1234,23 +1260,24 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
         emit_event(event, depth_of(stack, event.tid),
                    "direct_reclaim_begin", attrs);
 
-        const uint32_t user_depth =
-            static_cast<uint32_t>(depth_of(stack, event.tid));
-        ReclaimInterval interval;
-        interval.begin_ts = event.ts;
-        interval.id = next_id();
-        interval.order = event.a;
-        interval.gfp = event.b;
-        interval.user_depth = user_depth;
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "direct_reclaim", user_depth);
-        add_uint_attr(span_attrs, "id", interval.id);
-        add_int_attr(span_attrs, "order", static_cast<int32_t>(event.a));
-        add_hex_attr(span_attrs, "gfp", event.b);
-        interval.span_token =
-            open_span(stack, event.tid, user_depth, CG_KCAT_MM,
-                      "direct_reclaim", event.ts, std::move(span_attrs));
-        thread.reclaims.push_back(interval);
+        if (span_sink_) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            ReclaimInterval interval;
+            interval.begin_ts = event.ts;
+            interval.id = next_id();
+            interval.order = event.a;
+            interval.gfp = event.b;
+            interval.user_depth = user_depth;
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "direct_reclaim", user_depth);
+            add_uint_attr(span_attrs, "id", interval.id);
+            add_int_attr(span_attrs, "order", static_cast<int32_t>(event.a));
+            add_hex_attr(span_attrs, "gfp", event.b);
+            interval.span_token =
+                open_span(stack, event.tid, user_depth, CG_KCAT_MM,
+                          "direct_reclaim", event.ts, std::move(span_attrs));
+            thread.reclaims.push_back(interval);
+        }
         return;
     }
 
@@ -1270,24 +1297,25 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
     }
     emit_event(event, depth_of(stack, event.tid), "direct_reclaim_end", attrs);
 
-    if (matched && !thread.reclaims.empty()) {
-        ReclaimInterval interval = thread.reclaims.back();
-        thread.reclaims.pop_back();
-        std::vector<SpanAttribute> end_attrs;
-        add_uint_attr(end_attrs, "nr_reclaimed", event.a);
-        close_span(interval.span_token, event.ts, std::move(end_attrs),
-                   false);
-    } else if (!matched) {
-        const uint32_t user_depth =
-            static_cast<uint32_t>(depth_of(stack, event.tid));
-        std::vector<SpanAttribute> span_attrs;
-        add_common_span_attrs(span_attrs, "direct_reclaim", user_depth);
-        add_uint_attr(span_attrs, "nr_reclaimed", event.a);
-        add_bool_attr(span_attrs, "unmatched", true);
-        add_bool_attr(span_attrs, "incomplete", true);
-        emit_point(stack, event.tid, user_depth, CG_KCAT_MM,
-                   "direct_reclaim", event.ts, std::move(span_attrs),
-                   function_span_token(stack, event.tid));
+    if (span_sink_) {
+        if (matched && !thread.reclaims.empty()) {
+            ReclaimInterval interval = thread.reclaims.back();
+            thread.reclaims.pop_back();
+            std::vector<SpanAttribute> end_attrs;
+            add_uint_attr(end_attrs, "nr_reclaimed", event.a);
+            close_span(interval.span_token, event.ts, std::move(end_attrs),
+                       false);
+        } else if (!matched) {
+            const uint32_t user_depth = span_user_depth(stack, event.tid);
+            std::vector<SpanAttribute> span_attrs;
+            add_common_span_attrs(span_attrs, "direct_reclaim", user_depth);
+            add_uint_attr(span_attrs, "nr_reclaimed", event.a);
+            add_bool_attr(span_attrs, "unmatched", true);
+            add_bool_attr(span_attrs, "incomplete", true);
+            emit_point(stack, event.tid, user_depth, CG_KCAT_MM,
+                       "direct_reclaim", event.ts, std::move(span_attrs),
+                       function_span_token(stack, event.tid));
+        }
     }
 }
 
@@ -1414,15 +1442,16 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             append_attr(attrs, "prio", event.a);
             emit_event(event, depth_of(stack, event.tid), "migrate", attrs);
 
-            const uint32_t user_depth =
-                static_cast<uint32_t>(depth_of(stack, event.tid));
-            std::vector<SpanAttribute> span_attrs;
-            add_common_span_attrs(span_attrs, "migrate", user_depth);
-            add_uint_attr(span_attrs, "orig_cpu", event.b);
-            add_uint_attr(span_attrs, "dest_cpu", event.c);
-            add_uint_attr(span_attrs, "prio", event.a);
-            emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
-                       "sched.migrate", event.ts, std::move(span_attrs));
+            if (span_sink_) {
+                const uint32_t user_depth = span_user_depth(stack, event.tid);
+                std::vector<SpanAttribute> span_attrs;
+                add_common_span_attrs(span_attrs, "migrate", user_depth);
+                add_uint_attr(span_attrs, "orig_cpu", event.b);
+                add_uint_attr(span_attrs, "dest_cpu", event.c);
+                add_uint_attr(span_attrs, "prio", event.a);
+                emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
+                           "sched.migrate", event.ts, std::move(span_attrs));
+            }
         }
         break;
     case CG_KEV_PROC_FORK:
@@ -1432,13 +1461,14 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             append_attr(attrs, "child", event.peer_tid);
             emit_event(event, depth_of(stack, event.tid), "fork", attrs);
 
-            const uint32_t user_depth =
-                static_cast<uint32_t>(depth_of(stack, event.tid));
-            std::vector<SpanAttribute> span_attrs;
-            add_common_span_attrs(span_attrs, "fork", user_depth);
-            add_uint_attr(span_attrs, "child", event.peer_tid);
-            emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
-                       "proc.fork", event.ts, std::move(span_attrs));
+            if (span_sink_) {
+                const uint32_t user_depth = span_user_depth(stack, event.tid);
+                std::vector<SpanAttribute> span_attrs;
+                add_common_span_attrs(span_attrs, "fork", user_depth);
+                add_uint_attr(span_attrs, "child", event.peer_tid);
+                emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
+                           "proc.fork", event.ts, std::move(span_attrs));
+            }
         }
         break;
     case CG_KEV_PROC_EXIT:
@@ -1448,28 +1478,31 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             append_attr(attrs, "prio", event.a);
             emit_event(event, depth_of(stack, event.tid), "exit", attrs);
 
-            const uint32_t user_depth =
-                static_cast<uint32_t>(depth_of(stack, event.tid));
-            std::vector<SpanAttribute> span_attrs;
-            add_common_span_attrs(span_attrs, "exit", user_depth);
-            add_uint_attr(span_attrs, "prio", event.a);
-            emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
-                       "proc.exit", event.ts, std::move(span_attrs));
+            if (span_sink_) {
+                const uint32_t user_depth = span_user_depth(stack, event.tid);
+                std::vector<SpanAttribute> span_attrs;
+                add_common_span_attrs(span_attrs, "exit", user_depth);
+                add_uint_attr(span_attrs, "prio", event.a);
+                emit_point(stack, event.tid, user_depth, CG_KCAT_SCHED,
+                           "proc.exit", event.ts, std::move(span_attrs));
 
-            auto thread = threads_.find(event.tid);
-            if (thread != threads_.end()) {
-                ThreadRuntime& runtime = thread->second;
-                if (runtime.runqueue_span_token != 0) {
-                    close_span(runtime.runqueue_span_token, event.ts, {}, true);
+                auto thread = threads_.find(event.tid);
+                if (thread != threads_.end()) {
+                    ThreadRuntime& runtime = thread->second;
+                    if (runtime.runqueue_span_token != 0) {
+                        close_span(runtime.runqueue_span_token, event.ts, {},
+                                   true);
+                    }
+                    if (runtime.offcpu_span_token != 0)
+                        close_span(runtime.offcpu_span_token, event.ts, {},
+                                   true);
+                    for (auto it = runtime.reclaims.rbegin();
+                         it != runtime.reclaims.rend(); ++it)
+                        close_span(it->span_token, event.ts, {}, true);
+                    for (auto it = runtime.ops.rbegin();
+                         it != runtime.ops.rend(); ++it)
+                        close_span(it->span_token, event.ts, {}, true);
                 }
-                if (runtime.offcpu_span_token != 0)
-                    close_span(runtime.offcpu_span_token, event.ts, {}, true);
-                for (auto it = runtime.reclaims.rbegin();
-                     it != runtime.reclaims.rend(); ++it)
-                    close_span(it->span_token, event.ts, {}, true);
-                for (auto it = runtime.ops.rbegin();
-                     it != runtime.ops.rend(); ++it)
-                    close_span(it->span_token, event.ts, {}, true);
             }
             exited_.insert(event.tid);
             threads_.erase(event.tid);
