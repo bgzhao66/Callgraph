@@ -1319,7 +1319,7 @@ depth. Unknown categories/kinds are counted in `ignored_lines`, not treated
 as errors.
 
 `TraceParseStats` gains `kernel_lines`, `kernel_events`, `bad_kernel_lines`,
-and `unknown_kernel_events`. `--input-show-args` and the legacy `[args]`
+and `unknown_kernel_events`. `--show-args` and the legacy `[args]`
 handling remain function-only.
 
 `callgraph export --otel` replays function and kernel events through the same

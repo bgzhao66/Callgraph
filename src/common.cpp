@@ -24,6 +24,14 @@ void vlog(const char* prefix, const char* fmt, va_list ap)
 
 }  // namespace
 
+uint64_t splitmix64(uint64_t value)
+{
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
 void fail(const char* fmt, ...)
 {
     char buf[2048];

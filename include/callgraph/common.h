@@ -24,6 +24,10 @@ std::string errno_string(int err);
 // Rewrites libbpf's opaque "unknown error (-N)" fragments into readable names
 // for kernel-internal errno values.
 std::string readable_error_message(const std::string& message);
+
+// Deterministic 64-bit mixer used by sampling and identifier generation.
+uint64_t splitmix64(uint64_t value);
+
 std::string demangle_symbol(const std::string& name);
 std::string hex_encode(const uint8_t* data, size_t len);
 std::string read_symlink(const std::string& path);

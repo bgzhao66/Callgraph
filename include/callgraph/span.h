@@ -51,6 +51,9 @@ struct SpanRecord {
     FunctionMetadata function;
     std::string thread_name;
     std::string arguments;
+    // Empirical quantile of this trace's duration, set on the root span when
+    // outlier tail sampling is active.  Negative when unset.
+    double quantile = -1.0;
     bool incomplete = false;
     SpanCloseReason reason = SpanCloseReason::Return;
 };

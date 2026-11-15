@@ -31,7 +31,8 @@ The current implementation includes:
   (`--exporter otlp-json`), and `callgraph export --otel` for existing text
   traces
 - folded-stack flamegraph export via `callgraph export --flame`
-- root-trace sampling, source file/line attributes, and best-effort thread
+- ingest and baseline root-trace sampling, latency-outlier tail sampling,
+  stdout log rate limiting, source file/line attributes, and best-effort thread
   names
 
 Not implemented yet: a `--summary` aggregated statistics mode and
@@ -48,7 +49,7 @@ child-process (`fork`) following.
 | libcurl (optional) | OTLP network export; `--exporter otlp-json` works without it |
 | protobuf + protoc (optional) | OTLP gRPC and OTLP/HTTP protobuf; JSON file export works without it |
 | DWARF debug info (`-g` or a separate debug file) | `--show-args` parameter names and types; source file/line attributes |
-| x86-64 | `--show-args` value capture (SysV ABI) |
+| x86-64 | `--show-args` live value capture (SysV ABI); offline suffix replay is architecture-independent |
 | `binutils-dev` (libopcodes) | optional; enables `--return-mode=ret` |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
 | ptrace permission | attach mode |
@@ -170,15 +171,19 @@ Tracing options:
       --regex               treat --include/--exclude as extended regex
       --return-mode M       uretprobe (default) or ret (exception-safe)
       --no-rsp-resync       keep frames across stack switches (stackful
-                            runtimes such as ucontext, Boost.Context, Go);
+                            runtimes such as ucontext, Boost.Context);
                             disables longjmp/siglongjmp depth repair
       --all-modules         trace every mapped ELF module
       --module GLOB         also trace mapped modules matching GLOB
   -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
       --max-depth N         print events with depth <= N (default: unlimited)
       --indent N            indent names by depth*N spaces (default: 0)
-      --show-args           show function arguments after names (needs DWARF)
+      --show-args           show function arguments after names (needs DWARF);
+                            preserve text suffixes in offline export
       --histogram           append per-root call trees and latency histograms to the output
+      --ingest-sample-rate R
+                            ingest root traces at rate R, 0..1 (default: 1)
+      --log-rate-limit N    limit stdout event lines per second (default: 0, off)
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
       --dry-run             list resolved functions and exit
@@ -224,14 +229,18 @@ Live export options (--exporter):
           --queue-spans N   exporter queue limit (default: 10000)
           --header K=V      add an HTTP header (repeatable)
           --compression M   none (default) or gzip (OTLP/HTTP only)
-          --sample-rate R   root-trace sampling rate, 0..1 (default: 1)
+          --sample-rate R   baseline root-trace sampling rate, 0..1 (default: 1)
           --fail-on-export-error
                             exit non-zero if export fails
-          --complete-traces export only complete traces (network endpoints)
+          --complete-traces export only complete traces
               --trace-buffer-bytes SIZE
                             trace buffer byte limit (default: 256m)
               --trace-buffer-spans N
                             trace buffer span limit (default: 1000000)
+              --outlier-latency-quantile Q
+                            export traces above the trace-duration Q
+                            quantile; annotates root spans with
+                            callgraph.quantile (root scope)
 
 Offline export options (callgraph export):
   Convert an existing text trace without root.  --otel emits an
@@ -251,7 +260,16 @@ Offline export options (callgraph export):
                             root (default), thread, or process
           --trace-id-seed HEX
                             deterministic trace IDs
-          --sample-rate R   root-trace sampling rate, 0..1
+          --sample-rate R   baseline root-trace sampling rate, 0..1
+          --complete-traces export only complete traces
+              --trace-buffer-bytes SIZE
+                            trace buffer byte limit (default: 256m)
+              --trace-buffer-spans N
+                            trace buffer span limit (default: 1000000)
+              --outlier-latency-quantile Q
+                            export traces above the trace-duration Q
+                            quantile; annotates root spans with
+                            callgraph.quantile (root scope)
           --batch-size N    spans per OTLP batch (default: 512)
           --batch-bytes N   request size limit (default: 1m)
           --flush-interval N
@@ -262,14 +280,12 @@ Offline export options (callgraph export):
           --compression M   none (default) or gzip
           --fail-on-export-error
                             exit non-zero if export fails
-          --input-show-args preserve --show-args suffixes as attributes
       --flame               convert a text trace to folded stacks for flame graphs
   -o, --output FILE         write the converted output to FILE (default: stdout)
 
   --output and --endpoint are alternatives; --otel requires one.
   --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
   protobuf use --exporter otlp or --exporter otlp-http.
-  --complete-traces applies to --endpoint exports, not --output.
 
 General options:
   -v, --verbose             verbose diagnostics
@@ -385,10 +401,16 @@ With `--show-args`, entry events append the captured parameter values:
 Arguments are shown only on `->` lines. Parameter names and types come from
 DWARF, so the target must be compiled with `-g` (or have separate debug info).
 The values are captured at function entry. Return events do not repeat them.
+Exported spans carry the formatted values as one `code.arguments` string;
+the attribute is omitted for functions with no parameters or when no DWARF
+signature is available. The same flag replays existing text-trace suffixes when
+converting with `callgraph export --otel`.
 
 Limitations:
 
-- `--show-args` currently supports the x86-64 SysV ABI only.
+- `--show-args` live capture currently supports the x86-64 SysV ABI only;
+  offline text-suffix replay (`callgraph export --otel --show-args`) is not
+  architecture-dependent.
 - Floating-point arguments passed in XMM registers are printed as `?`, because
   the uprobe `pt_regs` context does not contain XMM state. Stack-passed
   `float`/`double` values can still be decoded.
@@ -438,6 +460,19 @@ In attach mode, tracing starts at the first function call after attachment.
 Frames that were already on the stack when the probes were attached are not
 known, so depth is relative to the attach point (the first observed frame is
 depth 0).
+
+### Ingest sampling and log rate limiting
+
+`--ingest-sample-rate R` (`0..1`, default `1.0`) decides at each root entry
+whether the trace is ingested. A rejected root suppresses both its text lines
+and its spans; the stack is still tracked so returns and depth remain correct
+for accepted traces. Kernel events are not affected.
+
+`--log-rate-limit N` limits stdout event lines to `N` per second using a token
+bucket over event timestamps. `0` (the default) disables the limit. It applies
+only to stdout, so file output keeps the complete line stream, and it does not
+affect `--histogram` or exported spans. Suppressed lines are counted in the
+final summary.
 
 ### Latency histogram
 
@@ -692,17 +727,28 @@ implemented.
 By default, spans are exported as they close. A long-lived root can therefore
 appear in Jaeger without its trace name until it returns or attach exits.
 `--complete-traces` buffers each trace until all its spans have closed and a
-root is present, then exports the trace root-first. It applies only to network
-exporters (`otlp`, `otlp-http`, and offline `--endpoint`). Buffer limits are
-controlled by `--trace-buffer-bytes` (default `256m`) and
-`--trace-buffer-spans` (default `1000000`); a trace that exceeds either limit
-is dropped whole and counted as `trace-buffer-overflow`.
+root is present, then exports the trace root-first. It is valid for network
+exporters (`otlp`, `otlp-http`), `otlp-json`, and offline `--otel` export to
+`--output` or `--endpoint`. Buffer limits are controlled by
+`--trace-buffer-bytes` (default `256m`) and `--trace-buffer-spans` (default
+`1000000`); a trace that exceeds either limit is dropped whole and counted as
+`trace-buffer-overflow`.
 
 Root-trace sampling is available with `--sample-rate R` (`0..1`, default
 `1.0`). The decision is made once for the root and inherited by all
 descendants, so Jaeger never receives a retained root with sampled-out
-children. For more advanced policies, send complete traces through an
-OpenTelemetry Collector and tail-sample there.
+children.
+
+`--outlier-latency-quantile Q` (`0 < Q < 1`, for example `0.99`) adds tail
+sampling and requires `--complete-traces`. The tracer keeps a histogram of
+completed trace durations and exports any trace above the `Q` quantile even
+when `--sample-rate` would drop it; other traces still follow the baseline
+`--sample-rate`. The first 100 traces form a warm-up and follow the baseline
+sample. Every exported root span carries `callgraph.quantile`, the empirical
+quantile of its duration, while outlier mode is active. The histogram describes
+whole traces, so it is most meaningful with `--trace-scope root`. For more
+advanced policies, send complete traces through an OpenTelemetry Collector and
+tail-sample there.
 
 Source file and line attributes require DWARF; functions without debug info
 simply omit them. Thread names are read from
@@ -747,8 +793,8 @@ remote, or suspend-affected traces.
 
 Text conversion limitations: it has no stable function IDs (same-demangled-name
 static functions in different modules can merge), and `--show-args` suffixes
-are stripped and preserved as `callgraph.arguments` only when
-`--input-show-args` is given. Native export avoids both limitations.  The text
+are stripped and preserved as `code.arguments` only when
+`--show-args` is given. Native export avoids both limitations.  The text
 depth column is authoritative for nesting: an entry at the same depth as the
 current top closes that frame first, so consecutive depth-0 calls are siblings
 rather than parent and child.

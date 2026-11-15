@@ -187,7 +187,7 @@ Offline text conversion uses the same rule:
 | `callgraph.depth` | Instrumented call depth |
 | `callgraph.root` | True for depth-0 spans |
 | `callgraph.partial_stack` | Attach-mode root with unknown caller |
-| `callgraph.arguments` | Formatted `--show-args` suffix |
+| `code.arguments` | Formatted `--show-args` suffix; omitted when empty |
 | `callgraph.incomplete` | Closed by desync or shutdown |
 | `callgraph.end_reason` | `desync` or `shutdown` |
 
@@ -277,26 +277,58 @@ Function tracing can produce very high span rates. The exporter provides:
   `queue-bytes-full`, `trace-queue-full`, `no-sink`, `encode-failed`,
   `send-failed`, `write-failed`);
 - instrumentation filters (`--include`, `--exclude`);
-- root-trace sampling (`--sample-rate 0..1`).
+- ingest sampling (`--ingest-sample-rate 0..1`);
+- baseline root-trace sampling (`--sample-rate 0..1`);
+- latency-outlier tail sampling (`--outlier-latency-quantile`);
+- stdout log rate limiting (`--log-rate-limit`).
 
-Root-trace sampling is consistent: the decision is made once for the root and
-inherited by every descendant. A retained root never has sampled-out children.
-The default is no sampling (`1.0`). For tail sampling, forward complete traces
-through an OpenTelemetry Collector.
+Ingest sampling is decided at the root entry and inherited by every descendant.
+A rejected root produces neither text nor spans, but the stack is still
+reconstructed so accepted traces keep correct depths. It is a userspace gate;
+kernel events are unaffected.
+
+Baseline root-trace sampling is consistent: the decision is made once for the
+root and inherited by every descendant. A retained root never has sampled-out
+children. The default is no sampling (`1.0`). For tail sampling, either use
+`--outlier-latency-quantile` or forward complete traces through an
+OpenTelemetry Collector.
+
+`--log-rate-limit N` limits text lines per second with a token bucket over
+event timestamps. `0` disables it. It applies only to stdout, does not affect
+`--histogram`, and never gates spans.
 
 ### 8.1 Complete-trace export
 
 By default, spans are exported as they close, so a long-lived root can appear
 in Jaeger without its trace name until it returns or the attach session ends.
-`--complete-traces` (network exporters only) buffers each trace until all its
-spans have closed and a root span is present, then exports the trace
-root-first.
+`--complete-traces` buffers each trace until all its spans have closed and a
+root span is present, then exports the trace root-first. It is valid for
+network exporters, `otlp-json`, and offline `--otel` export to `--output` or
+`--endpoint`.
 
 The buffer is bounded by `--trace-buffer-bytes` (default `256m`) and
 `--trace-buffer-spans` (default `1000000`). A trace that exceeds either limit
 is discarded whole and counted as `trace-buffer-overflow`; no partial trace is
 sent. The exporter queue accepts complete traces as a unit and reports
 `trace-queue-full` if the whole trace will not fit.
+
+### 8.2 Latency-outlier tail sampling
+
+`--outlier-latency-quantile Q` (`0 < Q < 1`, for example `0.99`) requires
+`--complete-traces`. The generator keeps a log-scale histogram of completed
+trace durations, one sample per root trace, with 64 octaves of 16 sub-buckets
+(about 6% resolution). The first 100 traces are warm-up and follow the baseline
+`--sample-rate`. After that a trace is exported when its duration lies above
+the `Q` quantile of the observed distribution, even if the baseline sample
+would have dropped it. Non-outlier traces still follow `--sample-rate`.
+
+Every exported root span carries `callgraph.quantile` (double), the empirical
+quantile of its duration, while outlier mode is active; this includes warm-up
+and baseline-sampled traces. Intentional outlier filtering is counted as
+`traces_outlier_filtered`/`spans_outlier_filtered`, not as an exporter drop
+reason. Overflowed traces still contribute their root duration to the
+histogram. The distribution describes whole traces, so it is most meaningful
+with `--trace-scope root`.
 
 ## 9. Incomplete traces and errors
 
@@ -336,9 +368,14 @@ callgraph attach -p 12345 \
 callgraph run --exporter otlp --sample-rate 0.1 \
     --include 'Database::*' -- ./my_app
 
-# File/offline paths
-callgraph run --exporter otlp-json --export-file trace.otlp.json -- ./my_app
-callgraph export --otel --input trace.log --output spans.json
+# Tail sampling: keep slow traces even with a low baseline sample
+callgraph run --exporter otlp --complete-traces \
+    --sample-rate 0.01 --outlier-latency-quantile 0.99 -- ./my_app
+
+# File/offline paths (complete traces are available for both)
+callgraph run --exporter otlp-json --export-file trace.otlp.json \
+    --complete-traces -- ./my_app
+callgraph export --otel --input trace.log --output spans.json --complete-traces
 callgraph export --flame --input trace.log --output stacks.folded
 ```
 

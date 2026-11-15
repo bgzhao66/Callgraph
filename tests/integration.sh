@@ -82,7 +82,7 @@ fi
 echo "== complete traces CLI gating =="
 if "$BIN" run --complete-traces --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
-    echo "expected --complete-traces without a network exporter to fail" >&2
+    echo "expected --complete-traces without an exporter to fail" >&2
     exit 1
 fi
 if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
@@ -90,6 +90,15 @@ if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
     echo "expected trace-buffer options without --complete-traces to fail" >&2
     exit 1
 fi
+if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+    --outlier-latency-quantile 0.99 --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected --outlier-latency-quantile without --complete-traces to fail" >&2
+    exit 1
+fi
+"$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+    --complete-traces --outlier-latency-quantile 0.99 --dry-run \
+    -- "$TMP/simple" >/dev/null
 
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Tracing options:'
@@ -107,9 +116,14 @@ echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^          --endpoint'
 "$BIN" run --help | grep -q '^          --complete-traces'
 "$BIN" run --help | grep -q '^              --trace-buffer-bytes SIZE'
+"$BIN" run --help | grep -q '^              --outlier-latency-quantile Q'
+"$BIN" run --help | grep -q '^      --ingest-sample-rate R'
+"$BIN" run --help | grep -q '^      --log-rate-limit N'
 "$BIN" export --help | grep -q '^      --otel'
 "$BIN" export --help | grep -q '^      --flame'
 "$BIN" export --otel --help | grep -q '^          --endpoint'
+"$BIN" export --otel --help | grep -q '^          --complete-traces'
+"$BIN" export --otel --help | grep -q '^              --outlier-latency-quantile Q'
 "$BIN" export --flame --help | grep -q '^      --flame'
 "$BIN" --help > "$TMP/help.txt"
 for args in "run --help" "attach --help" "export --help" \
@@ -135,15 +149,40 @@ EOF
     --service-name demo --trace-id-seed 1234 2>"$TMP/otel.err"
 grep -q 'converted 6 events' "$TMP/otel.err"
 grep -q '3 OTLP span(s)' "$TMP/otel.err"
-if "$BIN" export --otel --input "$TMP/otel.trace" \
+"$BIN" export --otel --input "$TMP/otel.trace" \
     --output "$TMP/complete-out.json" --complete-traces \
+    2>"$TMP/complete.err"
+grep -q 'trace buffer: 1 completed' "$TMP/complete.err"
+grep -q '"resourceSpans"' "$TMP/complete-out.json"
+if "$BIN" export --otel --input "$TMP/otel.trace" \
+    --output "$TMP/outlier-only.json" --outlier-latency-quantile 0.99 \
     >/dev/null 2>&1; then
-    echo "expected offline --complete-traces without --endpoint to fail" >&2
+    echo "expected offline --outlier-latency-quantile without --complete-traces to fail" >&2
     exit 1
 fi
+"$BIN" export --otel --input "$TMP/otel.trace" \
+    --output "$TMP/outlier.json" --complete-traces \
+    --outlier-latency-quantile 0.99 2>"$TMP/outlier.err"
+grep -q 'outlier sampling' "$TMP/outlier.err"
+grep -q 'callgraph.quantile' "$TMP/outlier.json"
 grep -q '"resourceSpans"' "$TMP/otel.json"
 grep -q '"service.name","value":{"stringValue":"demo"}' "$TMP/otel.json"
 grep -q '"name":"C(int)"' "$TMP/otel.json"
+cat > "$TMP/args-offline.trace" <<'EOF'
+2026-11-12T10:00:00.000000000+00:00 100 : 0 -> main
+2026-11-12T10:00:00.000001000+00:00 100 : 1 -> C(int) (x=3)
+2026-11-12T10:00:00.000002000+00:00 100 : 1 <- C(int)
+2026-11-12T10:00:00.000003000+00:00 100 : 0 <- main
+EOF
+"$BIN" export --otel --input "$TMP/args-offline.trace" \
+    --output "$TMP/args-offline.json" --show-args 2>/dev/null
+grep -q '"key":"code.arguments"' "$TMP/args-offline.json"
+grep -q '"stringValue":"(x=3)"' "$TMP/args-offline.json"
+if "$BIN" export --otel --input "$TMP/args-offline.trace" \
+    --output "$TMP/args-unused.json" --input-show-args >/dev/null 2>&1; then
+    echo "expected --input-show-args to be removed" >&2
+    exit 1
+fi
 "$BIN" export --otel --input "$TMP/otel.trace" --output "$TMP/sampled.json" \
     --sample-rate 0 2>/dev/null
 if command -v python3 >/dev/null 2>&1; then
@@ -390,6 +429,20 @@ grep -q ' : 3 <- A(int)' "$TMP/simple.trace"
 grep -q ' : 0 <- main' "$TMP/simple.trace"
 grep -q '0 lost' "$TMP/simple.err"
 
+echo "== ingest sampling and log rate limit =="
+"$BIN" run -o "$TMP/ingest.trace" --ingest-sample-rate 0 --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>"$TMP/ingest.err"
+test ! -s "$TMP/ingest.trace"
+grep -q 'ingest-sampled out 1 root trace(s)' "$TMP/ingest.err"
+
+"$BIN" run --log-rate-limit 1 --histogram --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >"$TMP/limited.trace" 2>"$TMP/limited.err"
+test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited.trace")" -lt 8
+grep -q 'rate-limited [1-9][0-9]* event line(s)' "$TMP/limited.err"
+grep -q '^Histograms:$' "$TMP/limited.trace"
+
 echo "== kernel events: scheduler, futex, I/O =="
 "$BIN" run --kernel --sched --futex --io --report \
     -o "$TMP/kernel.trace" --regex \
@@ -512,6 +565,13 @@ assert int(attributes["code.lineno"]["intValue"]) > 0
 assert attributes["callgraph.module"]["stringValue"] == "simple"
 PY
 fi
+
+"$BIN" run -T --exporter otlp-json --export-file "$TMP/live-complete.json" \
+    --complete-traces --outlier-latency-quantile 0.99 --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>"$TMP/live-complete.err"
+grep -q 'trace buffer: 1 completed' "$TMP/live-complete.err"
+grep -q 'callgraph.quantile' "$TMP/live-complete.json"
 
 echo "== OTLP/HTTP protobuf export =="
 if command -v python3 >/dev/null 2>&1 && "$BIN" --version | grep -q 'otlp protobuf: yes'; then

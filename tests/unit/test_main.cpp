@@ -23,6 +23,7 @@
 #include "callgraph/otlp_proto.h"
 #include "callgraph/output.h"
 #include "callgraph/span_generator.h"
+#include "callgraph/trace_duration_histogram.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
 #include "callgraph/trace_parser.h"
@@ -1380,6 +1381,8 @@ void test_otlp_encoding()
     span.function.source_file = "/tmp/app.cpp";
     span.function.source_line = 17;
     span.thread_name = "worker-1";
+    span.quantile = 0.9875;
+    span.arguments = "(x=3)";
 
     OtelConfig config;
     config.service_name = "demo";
@@ -1403,6 +1406,10 @@ void test_otlp_encoding()
     CHECK(json.find("\"key\":\"code.filepath\"") != std::string::npos);
     CHECK(json.find("\"key\":\"code.lineno\"") != std::string::npos);
     CHECK(json.find("\"key\":\"callgraph.module\"") != std::string::npos);
+    CHECK(json.find("\"key\":\"callgraph.quantile\"") != std::string::npos);
+    CHECK(json.find("\"doubleValue\":0.9875") != std::string::npos);
+    CHECK(json.find("\"key\":\"code.arguments\"") != std::string::npos);
+    CHECK(json.find("\"stringValue\":\"(x=3)\"") != std::string::npos);
 
     if (otlp_protobuf_available()) {
         const std::string protobuf = encode_otlp_protobuf({span}, config);
@@ -1419,6 +1426,20 @@ void test_otlp_encoding()
         CHECK(encoded_span.name() == "A\"\\B");
         CHECK(encoded_span.trace_id().size() == 16);
         CHECK(encoded_span.span_id().size() == 8);
+        bool have_quantile = false;
+        bool have_arguments = false;
+        for (const auto& attribute : encoded_span.attributes()) {
+            if (attribute.key() == "callgraph.quantile") {
+                have_quantile = true;
+                CHECK(attribute.value().double_value() == 0.9875);
+            }
+            if (attribute.key() == "code.arguments") {
+                have_arguments = true;
+                CHECK(attribute.value().string_value() == "(x=3)");
+            }
+        }
+        CHECK(have_quantile);
+        CHECK(have_arguments);
 #endif
     }
 }
@@ -1467,6 +1488,194 @@ void test_root_sampling()
     kept_stack.on_event(make_event(1, 31, kEventExit, 300));
     kept_stack.on_event(make_event(0, 31, kEventExit, 400));
     CHECK(kept.size() == 2);
+}
+
+void test_trace_duration_histogram()
+{
+    TraceDurationHistogram empty;
+    CHECK(empty.count() == 0);
+    CHECK(empty.quantile(0.99) == 0);
+    CHECK(empty.cdf(1000) == 0.0);
+
+    TraceDurationHistogram hist;
+    for (uint64_t i = 1; i <= 1000; ++i)
+        hist.add(i * 1000);
+    CHECK(hist.count() == 1000);
+
+    const uint64_t p50 = hist.quantile(0.5);
+    const uint64_t p99 = hist.quantile(0.99);
+    CHECK(p50 >= 480000 && p50 <= 520000);
+    CHECK(p99 >= 980000 && p99 <= 1000000);
+    CHECK(hist.cdf(1000) > 0.0);
+    CHECK(hist.cdf(1000) < 0.01);
+    CHECK(hist.cdf(1000000) > 0.99);
+    CHECK(hist.cdf(1000000) <= 1.0);
+
+    TraceDurationHistogram zeros;
+    zeros.add(0);
+    CHECK(zeros.count() == 1);
+    CHECK(zeros.quantile(0.5) == 0);
+}
+
+void test_ingest_sampling_and_log_rate_limit()
+{
+    const auto names = make_names();
+
+    std::vector<SpanRecord> spans;
+    SpanGeneratorConfig config;
+    config.seed_hi = 5;
+    config.seed_lo = 6;
+    config.timestamps_are_unix = true;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+
+    const std::string path = temp_path();
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, false, &generator);
+        stack.set_ingest_sample_rate(0.0);
+        stack.on_event(make_event(0, 60, kEventEnter, 100));
+        stack.on_event(make_event(1, 60, kEventEnter, 200));
+        stack.on_event(make_event(1, 60, kEventExit, 300));
+        stack.on_event(make_event(0, 60, kEventExit, 400));
+        CHECK(stack.entries() == 2);
+        CHECK(stack.returns() == 2);
+        CHECK(stack.desyncs() == 0);
+        CHECK(stack.ingest_skipped_roots() == 1);
+        output.stop();
+    }
+    CHECK(spans.empty());
+    CHECK(read_lines(path).empty());
+    unlink(path.c_str());
+
+    const std::string limited_path = temp_path();
+    {
+        Output output(limited_path);
+        CallStack stack(names, output, -1, false);
+        stack.set_log_rate_limit(2);
+        stack.on_event(make_event(0, 61, kEventEnter, 0));
+        stack.on_event(make_event(1, 61, kEventEnter, 0));
+        stack.on_event(make_event(1, 61, kEventExit, 0));
+        stack.on_event(make_event(0, 61, kEventExit, 0));
+        CHECK(stack.lines_suppressed() == 2);
+        stack.on_event(make_event(0, 61, kEventEnter, 1000000000ULL));
+        stack.on_event(make_event(0, 61, kEventExit, 1000000000ULL));
+        output.stop();
+    }
+    const auto lines = read_lines(limited_path);
+    CHECK(lines.size() == 4);
+    unlink(limited_path.c_str());
+}
+
+void test_outlier_sampling()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 7;
+    config.seed_lo = 8;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    config.sample_rate = 0.0;
+    config.complete_traces = true;
+    config.outlier_quantile = 0.9;
+    config.outlier_warmup_traces = 3;
+    config.trace_buffer_spans = 100;
+    config.trace_buffer_bytes = 1 << 20;
+
+    std::vector<SpanRecord> exported;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        exported.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &generator);
+
+    uint64_t ts = 0;
+    auto trace = [&](uint32_t tid, uint64_t duration) {
+        stack.on_event(make_event(0, tid, kEventEnter, ts));
+        stack.on_event(make_event(1, tid, kEventEnter, ts + 10));
+        stack.on_event(make_event(1, tid, kEventExit, ts + 20));
+        stack.on_event(make_event(0, tid, kEventExit, ts + duration));
+        ts += duration + 1000;
+    };
+
+    // The warm-up and the uniform workload follow the baseline sample, which
+    // is zero here, so only the final long trace is exported.
+    for (int i = 0; i < 23; ++i)
+        trace(50 + static_cast<uint32_t>(i), 1000);
+    trace(99, 100000);
+
+    CHECK(generator.outlier_traces_seen() == 24);
+    CHECK(generator.traces_outlier_filtered() == 23);
+    CHECK(generator.spans_outlier_filtered() == 46);
+    CHECK(generator.traces_flushed() == 1);
+    CHECK(generator.outlier_threshold_ns() > 0);
+    CHECK(exported.size() == 2);
+
+    const SpanRecord* root = nullptr;
+    for (const auto& span : exported) {
+        if (span.context.parent_span_id == 0)
+            root = &span;
+        else
+            CHECK(span.quantile < 0.0);
+    }
+    CHECK(root != nullptr);
+    if (root) {
+        CHECK(root->quantile > 0.9);
+        CHECK(root->quantile <= 1.0);
+        CHECK(root->end_unix_ns - root->start_unix_ns == 100000);
+    }
+}
+
+void test_outlier_overflow_keeps_duration()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 9;
+    config.seed_lo = 10;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    config.complete_traces = true;
+    config.outlier_quantile = 0.9;
+    config.outlier_warmup_traces = 0;
+    config.trace_buffer_spans = 1;
+    config.trace_buffer_bytes = 1 << 20;
+
+    std::vector<SpanRecord> exported;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        exported.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &generator);
+
+    uint64_t ts = 0;
+    auto trace = [&](uint32_t tid, uint64_t duration) {
+        stack.on_event(make_event(0, tid, kEventEnter, ts));
+        stack.on_event(make_event(1, tid, kEventEnter, ts + 10));
+        stack.on_event(make_event(1, tid, kEventExit, ts + 20));
+        stack.on_event(make_event(0, tid, kEventExit, ts + duration));
+        ts += duration + 1000;
+    };
+    trace(70, 1000);
+    trace(71, 2000);
+
+    CHECK(generator.traces_overflowed() == 2);
+    CHECK(generator.outlier_traces_seen() == 2);
+    CHECK(exported.empty());
 }
 
 void test_flame_graph_sink()
@@ -1535,7 +1744,7 @@ void test_text_parser()
                         &builder);
 
         TraceParseOptions options;
-        options.input_show_args = true;
+        options.show_args = true;
         uint64_t last_ts = 0;
         const TraceParseStats stats = parse_text_trace(
             path, stack, names, functions, nullptr, options, &last_ts);
@@ -2219,6 +2428,10 @@ int main()
     test_span_unwind_on_enter();
     test_span_trace_scope();
     test_root_sampling();
+    test_trace_duration_histogram();
+    test_ingest_sampling_and_log_rate_limit();
+    test_outlier_sampling();
+    test_outlier_overflow_keeps_duration();
     test_otlp_encoding();
     test_otel_drop_stats();
     test_span_complete_traces();

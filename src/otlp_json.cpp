@@ -104,6 +104,25 @@ void append_bool_attr(std::string& out, const char* key, bool value,
     out += "}}";
 }
 
+void append_double_attr(std::string& out, const char* key, double value,
+                        bool* first)
+{
+    if (!*first)
+        out.push_back(',');
+    *first = false;
+    out += '{';
+    append_key(out, "key");
+    append_escaped(out, key);
+    out += ',';
+    append_key(out, "value");
+    out += '{';
+    append_key(out, "doubleValue");
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%.17g", value);
+    out += buffer;
+    out += "}}";
+}
+
 std::string hex_bytes(const uint8_t* data, size_t size)
 {
     static const char* digits = "0123456789abcdef";
@@ -194,6 +213,8 @@ void append_span(std::string& out, const SpanRecord& span,
         append_string_attr(out, "thread.name", span.thread_name, &first);
     append_bool_attr(out, "callgraph.root",
                      span.context.parent_span_id == 0, &first);
+    if (span.quantile >= 0.0)
+        append_double_attr(out, "callgraph.quantile", span.quantile, &first);
     if (config.attach_mode && span.context.parent_span_id == 0)
         append_bool_attr(out, "callgraph.partial_stack", true, &first);
     if (!span.function.module_path.empty()) {
@@ -211,7 +232,7 @@ void append_span(std::string& out, const SpanRecord& span,
                         span.function.file_offset, &first);
     }
     if (!span.arguments.empty())
-        append_string_attr(out, "callgraph.arguments", span.arguments, &first);
+        append_string_attr(out, "code.arguments", span.arguments, &first);
     if (span.incomplete) {
         append_bool_attr(out, "callgraph.incomplete", true, &first);
         append_string_attr(out, "callgraph.end_reason",

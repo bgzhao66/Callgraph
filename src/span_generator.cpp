@@ -10,14 +10,6 @@
 namespace callgraph {
 namespace {
 
-uint64_t splitmix64(uint64_t value)
-{
-    value += 0x9e3779b97f4a7c15ULL;
-    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
-    return value ^ (value >> 31);
-}
-
 size_t span_record_cost(const SpanRecord& span)
 {
     return 256 + span.function.name.size() + span.function.linkage_name.size() +
@@ -86,7 +78,7 @@ SpanGenerator::TraceInfo SpanGenerator::new_trace(uint32_t tid,
 {
     TraceInfo info;
     info.trace_id = context_manager_.new_trace(tid, sequence);
-    info.sampled = sample_root(tid, sequence);
+    info.baseline_sampled = sample_root(tid, sequence);
     return info;
 }
 
@@ -155,7 +147,7 @@ uint64_t SpanGenerator::on_function_enter(uint32_t tid, uint64_t function_id,
         auto parent = open_.find(parent_token);
         if (parent != open_.end()) {
             trace.trace_id = parent->second.context.trace_id;
-            trace.sampled = parent->second.sampled;
+            trace.baseline_sampled = parent->second.baseline_sampled;
         } else {
             // The parent is unknown (for example after a stray event).  Treat
             // the call as a root rather than dropping the span.
@@ -188,12 +180,21 @@ uint64_t SpanGenerator::on_function_enter(uint32_t tid, uint64_t function_id,
     span.tid = tid;
     span.depth = depth;
     span.start_ts = ts;
-    span.sampled = trace.sampled;
+    span.baseline_sampled = trace.baseline_sampled;
+    // With tail sampling every trace has to be buffered, because its duration
+    // is only known once the root closes.  Plain --complete-traces can skip
+    // traces that the baseline sample already rejected.
+    span.buffered = buffering_active() &&
+                    (outlier_enabled() || trace.baseline_sampled);
     span.thread_name = thread_name(tid);
     span.arguments = arguments;
 
-    if (config_.complete_traces && trace.sampled)
-        trace_buffers_[trace.trace_id].open_spans += 1;
+    if (span.buffered) {
+        auto [it, inserted] = trace_buffers_.try_emplace(trace.trace_id);
+        if (inserted)
+            it->second.baseline_sampled = trace.baseline_sampled;
+        it->second.open_spans += 1;
+    }
 
     const uint64_t token = span.context.span_id;
     open_.emplace(token, std::move(span));
@@ -210,11 +211,12 @@ void SpanGenerator::on_function_exit(uint32_t tid, uint64_t token,
         return;
 
     OpenSpan& open = it->second;
-    if (!open.sampled) {
+    if (!open.buffered && !open.baseline_sampled) {
         ++spans_sampled_out_;
         open_.erase(it);
         return;
     }
+    const bool buffered = open.buffered;
 
     SpanRecord record;
     record.context = open.context;
@@ -237,7 +239,7 @@ void SpanGenerator::on_function_exit(uint32_t tid, uint64_t token,
 
     open_.erase(it);
     ++spans_closed_;
-    if (config_.complete_traces)
+    if (buffered)
         buffer_span(std::move(record));
     else if (emit_)
         emit_(std::move(record));
@@ -250,6 +252,14 @@ void SpanGenerator::buffer_span(SpanRecord&& record)
         trace_buffers_.try_emplace(trace_id, TraceBuffer{});
     (void)inserted;
     TraceBuffer& buffer = it->second;
+
+    // The root carries the trace duration even when the buffer has already
+    // overflowed and its spans are being discarded.
+    if (record.context.parent_span_id == 0) {
+        buffer.has_root = true;
+        buffer.root_start_unix_ns = record.start_unix_ns;
+        buffer.root_end_unix_ns = record.end_unix_ns;
+    }
 
     const size_t cost = span_record_cost(record);
     if (buffer.overflowed) {
@@ -268,8 +278,6 @@ void SpanGenerator::buffer_span(SpanRecord&& record)
         buffer.bytes += cost;
         trace_buffer_total_spans_ += 1;
         trace_buffer_total_bytes_ += cost;
-        if (buffer.spans.back().context.parent_span_id == 0)
-            buffer.has_root = true;
     }
 
     if (buffer.open_spans != 0)
@@ -278,16 +286,53 @@ void SpanGenerator::buffer_span(SpanRecord&& record)
     if (buffer.open_spans != 0)
         return;
 
-    if (buffer.overflowed) {
-        trace_buffers_.erase(it);
-    } else if (buffer.has_root) {
-        flush_trace(trace_id, buffer);
-        trace_buffers_.erase(it);
-    } else {
+    if (!buffer.has_root) {
         ++traces_orphaned_;
         drop_trace_buffer(buffer);
         trace_buffers_.erase(it);
+        return;
     }
+
+    if (buffer.overflowed) {
+        // Overflowed traces still describe a real trace duration, so they
+        // keep feeding the tail-sampling distribution.
+        if (outlier_enabled())
+            record_outlier_duration(buffer);
+        trace_buffers_.erase(it);
+        return;
+    }
+
+    flush_trace(trace_id, buffer);
+    trace_buffers_.erase(it);
+}
+
+uint64_t SpanGenerator::trace_duration(const TraceBuffer& buffer) const
+{
+    return buffer.root_end_unix_ns >= buffer.root_start_unix_ns
+               ? buffer.root_end_unix_ns - buffer.root_start_unix_ns
+               : 0;
+}
+
+bool SpanGenerator::outlier_keep(TraceBuffer& buffer)
+{
+    // Until the histogram has seen enough traces there is no meaningful
+    // threshold, so warm-up traces follow the baseline sample only.
+    if (outlier_hist_.count() < config_.outlier_warmup_traces)
+        return buffer.baseline_sampled;
+
+    outlier_threshold_ns_ = outlier_hist_.quantile(config_.outlier_quantile);
+    // Compare the empirical position of this trace rather than the raw bucket
+    // lower bound.  A uniform workload otherwise puts every trace in the same
+    // bucket as the threshold and classifies all of them as outliers.
+    if (outlier_hist_.cdf(trace_duration(buffer)) >
+        config_.outlier_quantile)
+        return true;
+    return buffer.baseline_sampled;
+}
+
+void SpanGenerator::record_outlier_duration(const TraceBuffer& buffer)
+{
+    outlier_hist_.add(trace_duration(buffer));
 }
 
 void SpanGenerator::flush_trace(TraceId trace_id, TraceBuffer& buffer)
@@ -295,10 +340,34 @@ void SpanGenerator::flush_trace(TraceId trace_id, TraceBuffer& buffer)
     (void)trace_id;
     trace_buffer_total_spans_ -= buffer.spans.size();
     trace_buffer_total_bytes_ -= buffer.bytes;
+
+    double quantile = -1.0;
+    if (outlier_enabled()) {
+        const bool keep = outlier_keep(buffer);
+        record_outlier_duration(buffer);
+        quantile = outlier_hist_.cdf(trace_duration(buffer));
+        if (!keep) {
+            ++traces_outlier_filtered_;
+            spans_outlier_filtered_ += buffer.spans.size();
+            buffer.spans.clear();
+            buffer.bytes = 0;
+            return;
+        }
+    }
+
     std::stable_sort(buffer.spans.begin(), buffer.spans.end(),
                      [](const SpanRecord& a, const SpanRecord& b) {
                          return a.depth < b.depth;
                      });
+
+    if (quantile >= 0.0) {
+        // Every exported trace is annotated while tail sampling is active,
+        // including warm-up and baseline-sampled traces.
+        for (SpanRecord& span : buffer.spans) {
+            if (span.context.parent_span_id == 0)
+                span.quantile = quantile;
+        }
+    }
 
     if (emit_trace_) {
         emit_trace_(std::move(buffer.spans));

@@ -2,16 +2,10 @@
 
 #include <random>
 
+#include "callgraph/common.h"
+
 namespace callgraph {
 namespace {
-
-uint64_t splitmix64(uint64_t value)
-{
-    value += 0x9e3779b97f4a7c15ULL;
-    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
-    return value ^ (value >> 31);
-}
 
 void store_be64(uint8_t* out, uint64_t value)
 {

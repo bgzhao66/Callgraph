@@ -13,7 +13,7 @@ class CallStack;
 struct TraceMetadata;
 
 struct TraceParseOptions {
-    bool input_show_args = false;
+    bool show_args = false;
     bool have_monotonic_offset = false;
     uint64_t monotonic_offset_ns = 0;
     // OTel export needs Unix timestamps; flamegraph export does not.

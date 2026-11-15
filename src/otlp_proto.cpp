@@ -42,6 +42,13 @@ void add_bool(Attributes* attributes, const char* key, bool value)
     kv->mutable_value()->set_bool_value(value);
 }
 
+void add_double(Attributes* attributes, const char* key, double value)
+{
+    common::KeyValue* kv = attributes->Add();
+    kv->set_key(key);
+    kv->mutable_value()->set_double_value(value);
+}
+
 std::string basename_of(const std::string& path)
 {
     const size_t slash = path.find_last_of('/');
@@ -135,6 +142,8 @@ void fill_span(trace::Span* out, const SpanRecord& span,
     if (!span.thread_name.empty())
         add_string(attributes, "thread.name", span.thread_name);
     add_bool(attributes, "callgraph.root", span.context.parent_span_id == 0);
+    if (span.quantile >= 0.0)
+        add_double(attributes, "callgraph.quantile", span.quantile);
     if (config.attach_mode && span.context.parent_span_id == 0)
         add_bool(attributes, "callgraph.partial_stack", true);
     if (!span.function.module_path.empty()) {
@@ -149,7 +158,7 @@ void fill_span(trace::Span* out, const SpanRecord& span,
     if (span.function.file_offset != 0)
         add_int(attributes, "callgraph.file_offset", span.function.file_offset);
     if (!span.arguments.empty())
-        add_string(attributes, "callgraph.arguments", span.arguments);
+        add_string(attributes, "code.arguments", span.arguments);
     if (span.incomplete) {
         add_bool(attributes, "callgraph.incomplete", true);
         add_string(attributes, "callgraph.end_reason",

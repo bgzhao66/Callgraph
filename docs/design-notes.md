@@ -321,7 +321,7 @@ gRPC framing. A build without protobuf can still use
 network export, batching, retries, custom headers, and gzip are compiled in
 when libcurl is available. The exporter queue is bounded and never blocks the
 ring-buffer collector. `--show-args` values are exported as one
-`callgraph.arguments` string to avoid high-cardinality per-argument keys.
+`code.arguments` string to avoid high-cardinality per-argument keys.
 
 Root-trace sampling (`--sample-rate`) decides once per root and is inherited by
 descendants so retained traces keep their full child tree. Source file/line
@@ -365,9 +365,10 @@ trees; kernel lines use a separate `@CATEGORY` format and never change depth.
 - Modules are discovered by polling `/proc/<pid>/maps` (about every 100 ms).
   Calls in a library's constructors before the first poll are missed.
 - `ret` mode is x86-only and requires libopcodes.
-- `--show-args` is x86-64 SysV only. Register-passed floating-point arguments are
-  unavailable because uprobe `pt_regs` has no XMM state, and pointers are not
-  dereferenced.
+- `--show-args` live capture is x86-64 SysV only. Register-passed floating-point
+  arguments are unavailable because uprobe `pt_regs` has no XMM state, and
+  pointers are not dereferenced. Offline `export --otel --show-args` only
+  replays text suffixes and is architecture-independent.
 - Child processes created with `fork` are not followed.
 - `run` mode leaves the child's stdout connected to the same stream as the
   trace; use `-o` to separate them.

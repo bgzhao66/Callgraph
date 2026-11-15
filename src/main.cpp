@@ -71,6 +71,8 @@ struct Options {
     size_t indent_step = 0;
     bool show_args = false;
     bool histogram = false;
+    double ingest_sample_rate = 1.0;
+    uint64_t log_rate_limit = 0;
     bool kernel = false;
     bool sched = false;
     bool futex = false;
@@ -114,6 +116,8 @@ struct Options {
     bool fail_on_export_error = false;
     double sample_rate = 1.0;
     bool complete_traces = false;
+    double outlier_latency_quantile = 0.0;
+    bool outlier_latency_quantile_set = false;
     size_t trace_buffer_bytes = 256ull << 20;
     size_t trace_buffer_spans = 1000000;
     bool trace_buffer_option_used = false;
@@ -211,7 +215,7 @@ void usage(FILE* out)
         {"--return-mode M", "uretprobe (default) or ret (exception-safe)"},
         {"--no-rsp-resync",
          "keep frames across stack switches (stackful\n"
-         "runtimes such as ucontext, Boost.Context, Go);\n"
+         "runtimes such as ucontext, Boost.Context);\n"
          "disables longjmp/siglongjmp depth repair"},
         {"--all-modules", "trace every mapped ELF module"},
         {"--module GLOB", "also trace mapped modules matching GLOB"},
@@ -219,9 +223,15 @@ void usage(FILE* out)
          "wall-clock timestamps (default: seconds since boot)"},
         {"--max-depth N", "print events with depth <= N (default: unlimited)"},
         {"--indent N", "indent names by depth*N spaces (default: 0)"},
-        {"--show-args", "show function arguments after names (needs DWARF)"},
+        {"--show-args",
+         "show function arguments after names (needs DWARF);\n"
+         "preserve text suffixes in offline export"},
         {"--histogram",
          "append per-root call trees and latency histograms to the output"},
+        {"--ingest-sample-rate R",
+         "ingest root traces at rate R, 0..1 (default: 1)"},
+        {"--log-rate-limit N",
+         "limit stdout event lines per second (default: 0, off)"},
         {"--probe-batch-size N",
          "functions per uprobe_multi link (default: 1000)"},
         {"--ringbuf-size N",
@@ -277,14 +287,19 @@ void usage(FILE* out)
         {"--queue-spans N", "exporter queue limit (default: 10000)", 1},
         {"--header K=V", "add an HTTP header (repeatable)", 1},
         {"--compression M", "none (default) or gzip (OTLP/HTTP only)", 1},
-        {"--sample-rate R", "root-trace sampling rate, 0..1 (default: 1)", 1},
+        {"--sample-rate R",
+         "baseline root-trace sampling rate, 0..1 (default: 1)", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
-        {"--complete-traces",
-         "export only complete traces (network endpoints)", 1},
+        {"--complete-traces", "export only complete traces", 1},
         {"--trace-buffer-bytes SIZE",
          "trace buffer byte limit (default: 256m)", 2},
         {"--trace-buffer-spans N",
          "trace buffer span limit (default: 1000000)", 2},
+        {"--outlier-latency-quantile Q",
+         "export traces above the trace-duration Q\n"
+         "quantile; annotates root spans with\n"
+         "callgraph.quantile (root scope)",
+         2},
     });
 
     fprintf(out,
@@ -304,7 +319,18 @@ void usage(FILE* out)
          "assume the trace came from this host/boot session", 1},
         {"--trace-scope MODE", "root (default), thread, or process", 1},
         {"--trace-id-seed HEX", "deterministic trace IDs", 1},
-        {"--sample-rate R", "root-trace sampling rate, 0..1", 1},
+        {"--sample-rate R",
+         "baseline root-trace sampling rate, 0..1", 1},
+        {"--complete-traces", "export only complete traces", 1},
+        {"--trace-buffer-bytes SIZE",
+         "trace buffer byte limit (default: 256m)", 2},
+        {"--trace-buffer-spans N",
+         "trace buffer span limit (default: 1000000)", 2},
+        {"--outlier-latency-quantile Q",
+         "export traces above the trace-duration Q\n"
+         "quantile; annotates root spans with\n"
+         "callgraph.quantile (root scope)",
+         2},
         {"--batch-size N", "spans per OTLP batch (default: 512)", 1},
         {"--batch-bytes N", "request size limit (default: 1m)", 1},
         {"--flush-interval N",
@@ -314,8 +340,6 @@ void usage(FILE* out)
         {"--header K=V", "add an HTTP header (repeatable)", 1},
         {"--compression M", "none (default) or gzip", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
-        {"--input-show-args",
-         "preserve --show-args suffixes as attributes", 1},
         {"--flame", "convert a text trace to folded stacks for flame graphs"},
         {"-o, --output FILE",
          "write the converted output to FILE (default: stdout)"},
@@ -325,7 +349,6 @@ void usage(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
-            "  --complete-traces applies to --endpoint exports, not --output.\n"
             "\n");
 
     print_help_section(out, "General options", {
@@ -441,6 +464,30 @@ size_t parse_size(const std::string& text, const std::string& option)
     if (*end != '\0')
         usage_error("invalid value for %s: '%s'", option.c_str(), text.c_str());
     return static_cast<size_t>(value);
+}
+
+double parse_fraction(const std::string& text, const std::string& option)
+{
+    char* end = nullptr;
+    errno = 0;
+    const double value = strtod(text.c_str(), &end);
+    if (errno != 0 || end == text.c_str() || *end != '\0' ||
+        !std::isfinite(value) || value < 0.0 || value > 1.0) {
+        usage_error("%s must be between 0 and 1", option.c_str());
+    }
+    return value;
+}
+
+double parse_quantile(const std::string& text, const std::string& option)
+{
+    char* end = nullptr;
+    errno = 0;
+    const double value = strtod(text.c_str(), &end);
+    if (errno != 0 || end == text.c_str() || *end != '\0' ||
+        !std::isfinite(value) || value <= 0.0 || value >= 1.0) {
+        usage_error("%s must be between 0 and 1 (exclusive)", option.c_str());
+    }
+    return value;
 }
 
 uint64_t parse_duration_ns(const std::string& text, const std::string& option)
@@ -683,15 +730,15 @@ Options parse_args(int argc, char** argv)
             options.compression = value();
             mark_export_option();
         } else if (arg == "--sample-rate") {
-            const std::string rate = value();
-            char* end = nullptr;
-            errno = 0;
-            options.sample_rate = strtod(rate.c_str(), &end);
-            if (errno != 0 || end == rate.c_str() || *end != '\0' ||
-                !std::isfinite(options.sample_rate) ||
-                options.sample_rate < 0.0 || options.sample_rate > 1.0) {
-                usage_error("--sample-rate must be between 0 and 1");
-            }
+            options.sample_rate = parse_fraction(value(), arg);
+            mark_export_option();
+        } else if (arg == "--ingest-sample-rate") {
+            options.ingest_sample_rate = parse_fraction(value(), arg);
+        } else if (arg == "--log-rate-limit") {
+            options.log_rate_limit = parse_size(value(), arg);
+        } else if (arg == "--outlier-latency-quantile") {
+            options.outlier_latency_quantile = parse_quantile(value(), arg);
+            options.outlier_latency_quantile_set = true;
             mark_export_option();
         } else if (arg == "--fail-on-export-error") {
             options.fail_on_export_error = true;
@@ -834,10 +881,9 @@ Options parse_args(int argc, char** argv)
         usage_error("export options are not valid with --exporter stdout");
     if (options.trace_buffer_option_used && !options.complete_traces)
         usage_error("--trace-buffer options require --complete-traces");
+    if (options.outlier_latency_quantile_set && !options.complete_traces)
+        usage_error("--outlier-latency-quantile requires --complete-traces");
     if (options.complete_traces) {
-        if (exporter_mode != "otlp" && exporter_mode != "otlp-http")
-            usage_error("--complete-traces requires --exporter otlp or "
-                        "--exporter otlp-http");
         if (options.trace_buffer_bytes == 0 ||
             options.trace_buffer_spans == 0)
             usage_error("--trace-buffer limits must be >= 1");
@@ -988,6 +1034,20 @@ void print_trace_buffer_stats(const SpanGenerator& generator)
     }
 }
 
+void print_outlier_stats(const SpanGenerator& generator)
+{
+    if (!generator.outlier_enabled())
+        return;
+    fprintf(stderr,
+            "callgraph: outlier sampling: %" PRIu64 " trace(s) seen, "
+            "%" PRIu64 " trace(s) filtered, %" PRIu64 " span(s) filtered, "
+            "threshold %" PRIu64 " ns\n",
+            generator.outlier_traces_seen(),
+            generator.traces_outlier_filtered(),
+            generator.spans_outlier_filtered(),
+            generator.outlier_threshold_ns());
+}
+
 void fill_host_otel_config(OtelConfig& config)
 {
     struct utsname uts = {};
@@ -1017,7 +1077,7 @@ struct ExportOptions {
     std::string trace_scope = "root";
     bool trace_scope_set = false;
     double sample_rate = 1.0;
-    bool input_show_args = false;
+    bool show_args = false;
     bool have_seed = false;
     uint64_t seed_hi = 0;
     uint64_t seed_lo = 0;
@@ -1030,6 +1090,8 @@ struct ExportOptions {
     std::string compression = "none";
     bool fail_on_error = false;
     bool complete_traces = false;
+    double outlier_latency_quantile = 0.0;
+    bool outlier_latency_quantile_set = false;
     size_t trace_buffer_bytes = 256ull << 20;
     size_t trace_buffer_spans = 1000000;
     bool trace_buffer_option_used = false;
@@ -1102,18 +1164,14 @@ ExportOptions parse_export_args(int argc, char** argv)
             options.trace_scope_set = true;
             mark_otel_option();
         } else if (arg == "--sample-rate") {
-            const std::string rate = value();
-            char* end = nullptr;
-            errno = 0;
-            options.sample_rate = strtod(rate.c_str(), &end);
-            if (errno != 0 || end == rate.c_str() || *end != '\0' ||
-                !std::isfinite(options.sample_rate) ||
-                options.sample_rate < 0.0 || options.sample_rate > 1.0) {
-                usage_error("--sample-rate must be between 0 and 1");
-            }
+            options.sample_rate = parse_fraction(value(), arg);
             mark_otel_option();
-        } else if (arg == "--input-show-args") {
-            options.input_show_args = true;
+        } else if (arg == "--outlier-latency-quantile") {
+            options.outlier_latency_quantile = parse_quantile(value(), arg);
+            options.outlier_latency_quantile_set = true;
+            mark_otel_option();
+        } else if (arg == "--show-args") {
+            options.show_args = true;
             mark_otel_option();
         } else if (arg == "--trace-id-seed") {
             const std::string seed = value();
@@ -1190,13 +1248,11 @@ ExportOptions parse_export_args(int argc, char** argv)
         usage_error("export --otel --output requires a file path, not '-'");
     if (options.trace_buffer_option_used && !options.complete_traces)
         usage_error("--trace-buffer options require --complete-traces");
-    if (options.complete_traces) {
-        if (options.endpoint.empty())
-            usage_error("--complete-traces requires --endpoint");
-        if (options.trace_buffer_bytes == 0 ||
-            options.trace_buffer_spans == 0)
-            usage_error("--trace-buffer limits must be >= 1");
-    }
+    if (options.outlier_latency_quantile_set && !options.complete_traces)
+        usage_error("--outlier-latency-quantile requires --complete-traces");
+    if (options.complete_traces &&
+        (options.trace_buffer_bytes == 0 || options.trace_buffer_spans == 0))
+        usage_error("--trace-buffer limits must be >= 1");
     if (options.batch_spans == 0 || options.batch_bytes == 0 ||
         options.queue_spans == 0)
         usage_error("batch and queue sizes must be >= 1");
@@ -1295,6 +1351,7 @@ int run_otel_export(const ExportOptions& options)
     builder_config.pid = pid;
     builder_config.read_thread_names = false;
     builder_config.complete_traces = options.complete_traces;
+    builder_config.outlier_quantile = options.outlier_latency_quantile;
     builder_config.trace_buffer_bytes = options.trace_buffer_bytes;
     builder_config.trace_buffer_spans = options.trace_buffer_spans;
     std::vector<FunctionMetadata> functions;
@@ -1316,7 +1373,7 @@ int run_otel_export(const ExportOptions& options)
                     &builder);
 
     TraceParseOptions parse_options;
-    parse_options.input_show_args = options.input_show_args;
+    parse_options.show_args = options.show_args;
     parse_options.have_monotonic_offset = have_offset;
     parse_options.monotonic_offset_ns = offset;
 
@@ -1340,6 +1397,7 @@ int run_otel_export(const ExportOptions& options)
     print_otel_drop_stats(exporter);
     if (options.complete_traces)
         print_trace_buffer_stats(builder);
+    print_outlier_stats(builder);
 
     return exporter.failed() != 0 && options.fail_on_error ? 1 : 0;
 }
@@ -1879,6 +1937,7 @@ int main(int argc, char** argv)
             builder_config.pid = target;
             builder_config.read_thread_names = true;
             builder_config.complete_traces = options.complete_traces;
+            builder_config.outlier_quantile = options.outlier_latency_quantile;
             builder_config.trace_buffer_bytes = options.trace_buffer_bytes;
             builder_config.trace_buffer_spans = options.trace_buffer_spans;
             span_generator = std::make_unique<SpanGenerator>(
@@ -1899,6 +1958,11 @@ int main(int argc, char** argv)
                         output, options.max_depth, options.verbose,
                         options.histogram, span_generator.get());
         stack.set_rsp_resync(!options.no_rsp_resync);
+        stack.set_ingest_sample_rate(options.ingest_sample_rate);
+        // Rate limiting is a stdout convenience; file output and the
+        // histogram trailer keep their complete line stream.
+        if (options.output.empty() || options.output == "-")
+            stack.set_log_rate_limit(options.log_rate_limit);
 
         if (is_child) {
             ProcessController::detach(target);
@@ -2000,8 +2064,21 @@ int main(int argc, char** argv)
             fprintf(stderr, "callgraph: sampled out %" PRIu64 " span(s)\n",
                     span_generator->spans_sampled_out());
         }
+        if (stack.ingest_skipped_roots() != 0) {
+            fprintf(stderr,
+                    "callgraph: ingest-sampled out %" PRIu64
+                    " root trace(s)\n",
+                    stack.ingest_skipped_roots());
+        }
+        if (stack.lines_suppressed() != 0) {
+            fprintf(stderr,
+                    "callgraph: rate-limited %" PRIu64 " event line(s)\n",
+                    stack.lines_suppressed());
+        }
         if (span_generator && options.complete_traces)
             print_trace_buffer_stats(*span_generator);
+        if (span_generator)
+            print_outlier_stats(*span_generator);
 
         const uint64_t lost = probes.lost_events();
         const uint64_t events = stack.entries() + stack.returns();

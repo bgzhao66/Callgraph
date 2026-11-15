@@ -196,6 +196,7 @@ add_executable(callgraph
   src/kernel_timeline.cpp
   src/latency_stats.cpp
   src/histogram_report.cpp
+  src/trace_duration_histogram.cpp
   src/output.cpp
   src/process_controller.cpp
   src/event_collector.cpp
@@ -268,6 +269,7 @@ if(BUILD_TESTING)
     src/kernel_timeline.cpp
     src/latency_stats.cpp
     src/histogram_report.cpp
+    src/trace_duration_histogram.cpp
     src/output.cpp
     src/clock_converter.cpp
     src/span_context.cpp

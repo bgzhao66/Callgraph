@@ -226,7 +226,7 @@ TraceParseStats parse_text_trace(
         event.func_id = id_it->second;
         event.type = enter ? kEventEnter : kEventExit;
         stack.on_event(event,
-                       options.input_show_args ? arguments : std::string{},
+                       options.show_args ? arguments : std::string{},
                        depth);
 
         *last_ts = ts;

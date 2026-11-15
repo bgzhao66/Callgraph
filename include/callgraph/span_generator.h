@@ -11,6 +11,7 @@
 #include "callgraph/clock_converter.h"
 #include "callgraph/span.h"
 #include "callgraph/span_context.h"
+#include "callgraph/trace_duration_histogram.h"
 
 namespace callgraph {
 
@@ -43,6 +44,12 @@ struct SpanGeneratorConfig {
     // children because of sampling.
     double sample_rate = 1.0;
 
+    // Tail sampling: export every trace whose root-span duration is above
+    // this quantile of the trace-duration distribution, in addition to the
+    // baseline sample.  0 disables the filter.  Requires complete traces.
+    double outlier_quantile = 0.0;
+    size_t outlier_warmup_traces = 100;
+
     // Buffer a whole trace until all its spans close and a root is present.
     // When false, spans are emitted as they close.
     bool complete_traces = false;
@@ -74,6 +81,14 @@ public:
     uint64_t traces_flushed() const { return traces_flushed_; }
     uint64_t traces_overflowed() const { return traces_overflowed_; }
     uint64_t traces_orphaned() const { return traces_orphaned_; }
+    uint64_t traces_outlier_filtered() const
+    {
+        return traces_outlier_filtered_;
+    }
+    uint64_t spans_outlier_filtered() const { return spans_outlier_filtered_; }
+    uint64_t outlier_traces_seen() const { return outlier_hist_.count(); }
+    uint64_t outlier_threshold_ns() const { return outlier_threshold_ns_; }
+    bool outlier_enabled() const { return config_.outlier_quantile > 0.0; }
     uint64_t spans_trace_buffer_dropped() const
     {
         return spans_trace_buffer_dropped_;
@@ -83,7 +98,7 @@ public:
 private:
     struct TraceInfo {
         TraceId trace_id{};
-        bool sampled = true;
+        bool baseline_sampled = true;
     };
 
     struct OpenSpan {
@@ -92,7 +107,8 @@ private:
         uint32_t tid = 0;
         uint32_t depth = 0;
         uint64_t start_ts = 0;
-        bool sampled = true;
+        bool baseline_sampled = true;
+        bool buffered = false;
         std::string thread_name;
         std::string arguments;
     };
@@ -103,12 +119,22 @@ private:
         size_t open_spans = 0;
         bool has_root = false;
         bool overflowed = false;
+        bool baseline_sampled = true;
+        uint64_t root_start_unix_ns = 0;
+        uint64_t root_end_unix_ns = 0;
     };
 
     TraceInfo new_trace(uint32_t tid, uint64_t sequence);
     TraceInfo trace_for_thread(uint32_t tid);
     TraceInfo trace_for_process();
     bool sample_root(uint32_t tid, uint64_t sequence) const;
+    bool buffering_active() const
+    {
+        return config_.complete_traces || outlier_enabled();
+    }
+    uint64_t trace_duration(const TraceBuffer& buffer) const;
+    bool outlier_keep(TraceBuffer& buffer);
+    void record_outlier_duration(const TraceBuffer& buffer);
     std::string thread_name(uint32_t tid);
     uint64_t to_unix(uint64_t ts) const;
     void buffer_span(SpanRecord&& record);
@@ -135,6 +161,10 @@ private:
     uint64_t spans_trace_buffer_dropped_ = 0;
     size_t trace_buffer_total_bytes_ = 0;
     size_t trace_buffer_total_spans_ = 0;
+    TraceDurationHistogram outlier_hist_;
+    uint64_t outlier_threshold_ns_ = 0;
+    uint64_t traces_outlier_filtered_ = 0;
+    uint64_t spans_outlier_filtered_ = 0;
 };
 
 }  // namespace callgraph

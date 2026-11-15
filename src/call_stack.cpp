@@ -49,6 +49,50 @@ void CallStack::emit_line(uint64_t ts, uint32_t tid, uint32_t depth,
         output_->emit(ts, tid, depth, arrow, name);
 }
 
+bool CallStack::ingest_root(uint32_t tid)
+{
+    if (ingest_sample_rate_ >= 1.0)
+        return true;
+    if (ingest_sample_rate_ <= 0.0)
+        return false;
+
+    const uint64_t sequence = ingest_sequences_[tid]++;
+    const uint64_t value =
+        splitmix64(0x9e3779b97f4a7c15ULL ^
+                   (static_cast<uint64_t>(tid) << 32) ^
+                   (sequence * 0xbf58476d1ce4e5b9ULL));
+    const uint64_t threshold =
+        static_cast<uint64_t>(ingest_sample_rate_ * 1000000.0);
+    return (value % 1000000ULL) < threshold;
+}
+
+bool CallStack::log_allowed(uint64_t ts)
+{
+    if (log_rate_limit_ == 0)
+        return true;
+
+    const double capacity =
+        static_cast<double>(log_rate_limit_ > 1 ? log_rate_limit_ : 1);
+    if (!log_bucket_started_) {
+        log_tokens_ = capacity;
+        log_last_ts_ = ts;
+        log_bucket_started_ = true;
+    } else if (ts > log_last_ts_) {
+        const double elapsed = static_cast<double>(ts - log_last_ts_);
+        log_tokens_ += elapsed * static_cast<double>(log_rate_limit_) / 1e9;
+        if (log_tokens_ > capacity)
+            log_tokens_ = capacity;
+        log_last_ts_ = ts;
+    }
+
+    if (log_tokens_ < 1.0) {
+        ++lines_suppressed_;
+        return false;
+    }
+    log_tokens_ -= 1.0;
+    return true;
+}
+
 size_t CallStack::close_skipped_frames(uint32_t tid,
                                        std::vector<CallFrame>& frames,
                                        size_t keep, uint64_t ts)
@@ -61,6 +105,8 @@ size_t CallStack::close_skipped_frames(uint32_t tid,
     if (sink_) {
         for (size_t i = frames.size(); i > keep; --i) {
             const CallFrame& frame = frames[i - 1];
+            if (!frame.traced)
+                continue;
             sink_->on_function_exit(tid, frame.span_token, frame.function_id,
                                     ts, SpanCloseReason::Desync);
         }
@@ -129,6 +175,18 @@ void CallStack::on_event(const TraceEvent& event,
 
         const uint32_t depth = static_cast<uint32_t>(state.frames.size());
 
+        bool traced = true;
+        bool logged = true;
+        if (state.frames.empty()) {
+            traced = ingest_root(event.tid);
+            logged = traced;
+            if (!traced)
+                ++ingest_skipped_roots_;
+        } else {
+            traced = state.frames.back().traced;
+            logged = state.frames.back().logged;
+        }
+
         std::string arguments = arguments_override;
         if (arguments.empty() && signatures_ &&
             event.func_id < signatures_->size()) {
@@ -141,19 +199,21 @@ void CallStack::on_event(const TraceEvent& event,
         if (!arguments.empty())
             display += " " + arguments;
 
-        if (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_))
+        if (logged &&
+            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
+            log_allowed(event.ts))
             emit_line(event.ts, event.tid, depth, "->", display);
 
         const uint64_t parent_token =
             state.frames.empty() ? 0 : state.frames.back().span_token;
         uint64_t span_token = 0;
-        if (sink_) {
+        if (sink_ && traced) {
             span_token = sink_->on_function_enter(event.tid, event.func_id, depth,
                                          event.ts, arguments, parent_token);
         }
 
         state.frames.push_back(
-            {event.func_id, event.ts, span_token, event.sp});
+            {event.func_id, event.ts, span_token, event.sp, traced, logged});
         ++entries_;
         return;
     }
@@ -197,7 +257,9 @@ void CallStack::on_event(const TraceEvent& event,
                     name.c_str(), skipped);
     }
 
-    if (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_))
+    if (frame.logged &&
+        (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
+        log_allowed(event.ts))
         emit_line(event.ts, event.tid, depth, "<-", name);
 
     if (collect_latency_) {
@@ -212,7 +274,7 @@ void CallStack::on_event(const TraceEvent& event,
         stats_.record(event.tid, path_scratch_, duration);
     }
 
-    if (sink_) {
+    if (sink_ && frame.traced) {
         sink_->on_function_exit(event.tid, frame.span_token, frame.function_id,
                         event.ts, SpanCloseReason::Return);
     }
@@ -258,6 +320,8 @@ void CallStack::finish_spans(uint64_t stop_ts)
 
     for (const auto& [tid, state] : threads_) {
         for (auto it = state.frames.rbegin(); it != state.frames.rend(); ++it) {
+            if (!it->traced)
+                continue;
             sink_->on_function_exit(tid, it->span_token, it->function_id, stop_ts,
                             SpanCloseReason::Shutdown);
         }
