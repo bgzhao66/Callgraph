@@ -1265,7 +1265,7 @@ innermost open kernel span, otherwise under the top user-function span:
 
 ```text
 pgaio_io_perform_synchronously          depth 29
-└── pread64                              depth 30
+└── @pread64                             depth 30
     ├── page_fault.user                  depth 31   point
     └── sched.off_cpu                    depth 31
         ├── sched.wakeup                 depth 32   point
@@ -1274,7 +1274,9 @@ pgaio_io_perform_synchronously          depth 29
 
 Included intervals:
 
-- FUTEX, IO, and NET syscall enter→exit.
+- FUTEX, IO, and NET syscall enter→exit, named `@<syscall>` (for example
+  `@read`, `@openat`, `@sendto`). The `callgraph.kernel.event` attribute keeps
+  the unprefixed syscall name.
 - Direct reclaim begin→end, including nested intervals.
 - Scheduler `off_cpu` and `runqueue`.
 

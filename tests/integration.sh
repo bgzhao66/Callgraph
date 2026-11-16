@@ -591,7 +591,7 @@ kernel = [s for s in spans
           if any(a["key"] == "callgraph.kernel.event" for a in s["attributes"])]
 assert kernel, "no kernel spans exported"
 names = {s["name"] for s in kernel}
-assert "fsync" in names or "openat" in names, names
+assert "@fsync" in names or "@openat" in names, names
 assert "sched.off_cpu" in names, names
 assert any(name.startswith("page_fault.") for name in names), names
 for span in kernel:

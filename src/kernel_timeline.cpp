@@ -295,6 +295,11 @@ std::string syscall_name(uint16_t enter_kind)
     return value;
 }
 
+std::string syscall_span_name(uint16_t enter_kind)
+{
+    return "@" + syscall_name(enter_kind);
+}
+
 std::string format_ns(uint64_t ns)
 {
     char buffer[64];
@@ -907,7 +912,7 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
                 add_arg_attr(span_attrs, spec, event);
             thread.ops.back().span_token =
                 open_span(stack, event.tid, op.user_depth, CG_KCAT_FUTEX,
-                          "futex", event.ts, std::move(span_attrs));
+                          "@futex", event.ts, std::move(span_attrs));
         }
         return;
     }
@@ -936,7 +941,7 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
             add_int_attr(span_attrs, "ret", static_cast<int64_t>(event.b));
             add_bool_attr(span_attrs, "unmatched", true);
             add_bool_attr(span_attrs, "incomplete", true);
-            emit_point(stack, event.tid, user_depth, CG_KCAT_FUTEX, "futex",
+            emit_point(stack, event.tid, user_depth, CG_KCAT_FUTEX, "@futex",
                        event.ts, std::move(span_attrs),
                        function_span_token(stack, event.tid));
         }
@@ -1004,7 +1009,7 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
                 add_arg_attr(span_attrs, spec, event);
             thread.ops.back().span_token =
                 open_span(stack, event.tid, op.user_depth, CG_KCAT_IO,
-                          syscall_name(event.kind), event.ts,
+                          syscall_span_name(event.kind), event.ts,
                           std::move(span_attrs));
         }
         return;
@@ -1039,7 +1044,7 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
             add_bool_attr(span_attrs, "unmatched", true);
             add_bool_attr(span_attrs, "incomplete", true);
             emit_point(stack, event.tid, user_depth, CG_KCAT_IO,
-                       syscall_name(enter_kind), event.ts,
+                       syscall_span_name(enter_kind), event.ts,
                        std::move(span_attrs),
                        function_span_token(stack, event.tid));
         }
@@ -1147,7 +1152,7 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
                 add_arg_attr(span_attrs, spec, event);
             thread.ops.back().span_token =
                 open_span(stack, event.tid, op.user_depth, CG_KCAT_NET,
-                          syscall_name(event.kind), event.ts,
+                          syscall_span_name(event.kind), event.ts,
                           std::move(span_attrs));
         }
         return;
@@ -1190,7 +1195,7 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
             add_bool_attr(span_attrs, "unmatched", true);
             add_bool_attr(span_attrs, "incomplete", true);
             emit_point(stack, event.tid, user_depth, CG_KCAT_NET,
-                       syscall_name(enter_kind), event.ts,
+                       syscall_span_name(enter_kind), event.ts,
                        std::move(span_attrs),
                        function_span_token(stack, event.tid));
         } else {

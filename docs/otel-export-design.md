@@ -214,7 +214,10 @@ function. They omit `code.*`, module, and argument attributes and use:
 | `callgraph.kernel.ret` | Signed syscall return value |
 
 Syscall spans add the enter parameters (`fd`, `count`, `flags`, `addr`,
-`len`, `uaddr`, `op`, ...) from the tracepoint payload. Direct reclaim adds
+`len`, `uaddr`, `op`, ...) from the tracepoint payload. Syscall span names are
+prefixed with `@` (`@read`, `@openat`, `@sendto`) to distinguish them from
+user-function spans; `callgraph.kernel.event` keeps the unprefixed syscall
+name. Direct reclaim adds
 `order`, `gfp`, and `nr_reclaimed`. Scheduler intervals and points add
 `state`, `reason`, `by`, `prio`, `cpu`, `orig_cpu`, `dest_cpu`, and `child` as
 appropriate. Page faults add `space`, `address`, `ip`, and `error`.

@@ -2552,7 +2552,7 @@ void test_kernel_span_export()
         output.stop();
 
         const SpanRecord* main = find_span(spans, "main");
-        const SpanRecord* futex = find_span(spans, "futex");
+        const SpanRecord* futex = find_span(spans, "@futex");
         CHECK(main != nullptr);
         CHECK(futex != nullptr);
         if (main && futex) {
@@ -2696,7 +2696,7 @@ void test_kernel_span_export()
 
         const SpanRecord* main = find_span(spans, "main");
         const SpanRecord* fault_span = find_span(spans, "page_fault.user");
-        const SpanRecord* read = find_span(spans, "read");
+        const SpanRecord* read = find_span(spans, "@read");
         CHECK(main != nullptr);
         CHECK(fault_span != nullptr);
         CHECK(read != nullptr);
@@ -2720,9 +2720,12 @@ void test_kernel_span_export()
                 find_span_attr(*read, "callgraph.kernel.unmatched");
             const SpanAttribute* incomplete =
                 find_span_attr(*read, "callgraph.kernel.incomplete");
+            const SpanAttribute* event =
+                find_span_attr(*read, "callgraph.kernel.event");
             CHECK(ret != nullptr && ret->int_value == 7);
             CHECK(unmatched != nullptr && unmatched->bool_value);
             CHECK(incomplete != nullptr && incomplete->bool_value);
+            CHECK(event != nullptr && event->string_value == "read");
         }
     }
 
@@ -2923,7 +2926,7 @@ void test_kernel_span_depth_clamp()
     output.stop();
     unlink(path.c_str());
 
-    const SpanRecord* futex_span = find_span(spans, "futex");
+    const SpanRecord* futex_span = find_span(spans, "@futex");
     const SpanRecord* migrate_span = find_span(spans, "sched.migrate");
     CHECK(futex_span != nullptr);
     CHECK(migrate_span != nullptr);

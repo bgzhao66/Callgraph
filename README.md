@@ -588,11 +588,13 @@ traces still replay.
 When `--kernel` is combined with an OTel exporter, TID-specific kernel events
 are also exported as child spans. Syscall enter/exit, direct reclaim, and
 scheduler off-CPU/runqueue become interval spans; page faults, wakeups,
-migrations, fork, and exit become zero-duration point spans. The span tree
-nests the innermost kernel operation, so a blocking `pread64` contains its
-`sched.off_cpu` and `sched.runqueue` intervals. Every span carries
-`thread.id`, `callgraph.depth`, and `callgraph.kernel.user_depth`. Global block
-and TCP-retransmit records remain text-only.
+migrations, fork, and exit become zero-duration point spans. Syscall span names
+start with `@` (for example `@pread64`, `@sendto`) to distinguish them from
+user-function spans. The span tree nests the innermost kernel operation, so a
+blocking `@pread64` contains its `sched.off_cpu` and `sched.runqueue` intervals.
+Every span carries `thread.id`, `callgraph.depth`, and
+`callgraph.kernel.user_depth`. Global block and TCP-retransmit records remain
+text-only.
 
 Presets select fine-grained scopes:
 
