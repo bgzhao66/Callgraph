@@ -23,7 +23,7 @@ The current implementation includes:
 - `uprobe_multi` attachment with per-function cookies and individual-uprobe fallback
 - entry and return events over a BPF ring buffer
 - per-TID call-stack reconstruction, recursion, multi-threaded tracing
-- include/exclude filters, maximum displayed depth, dry-run listing
+- scope/exclude filters, maximum displayed depth, dry-run listing
 - optional function argument values from DWARF (`--show-args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 - OTLP export for Jaeger: gRPC (`--exporter otlp`), OTLP/HTTP with
@@ -117,7 +117,7 @@ sudo ./build/callgraph attach -p 12345
 
 # Only your code, with full regex syntax
 sudo ./build/callgraph attach -p 12345 --regex \
-    --include '^(main|Database::)' --exclude 'Database::Debug'
+    --scope '^(main|Database::)' --exclude 'Database::Debug'
 
 # Exception-using C++ program: avoid uretprobe unwinding breakage
 sudo ./build/callgraph run --return-mode ret -- ./my_app
@@ -171,9 +171,9 @@ Usage:
 
 Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
-      --include GLOB        only trace functions matching GLOB (repeatable)
+      --scope GLOB          only trace functions matching GLOB (repeatable)
       --exclude GLOB        skip functions matching GLOB (repeatable)
-      --regex               treat --include/--exclude as extended regex
+      --regex               treat --scope/--exclude as extended regex
       --return-mode M       uretprobe (default) or ret (exception-safe)
       --no-rsp-resync       keep frames across stack switches (stackful
                             runtimes such as ucontext, Boost.Context);
@@ -301,11 +301,11 @@ General options:
 Examples:
   Trace a program:
     sudo callgraph run -- ./demo
-    sudo callgraph run --include 'Database::*' -- ./demo
+    sudo callgraph run --scope 'Database::*' -- ./demo
     callgraph run --dry-run -- ./demo
 
   Attach to a running process:
-    sudo callgraph attach -p 12345 --include 'Database::*'
+    sudo callgraph attach -p 12345 --scope 'Database::*'
 
   Correlated kernel events:
     sudo callgraph run --kernel --preset latency -- ./demo
@@ -347,8 +347,10 @@ trace via `--input`; `--otel` requires either `--output FILE` or
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;
-`--regex` switches to C++ `std::regex` (ECMAScript) syntax. Include wins over
-the default "everything"; exclude then removes matches.
+`--regex` switches to C++ `std::regex` (ECMAScript) syntax. A non-empty
+`--scope` wins over the default "everything"; `--exclude` then removes matches.
+`--scope` selects which functions are instrumented; it is unrelated to
+`--trace-scope`, which controls how exported OTel spans are grouped.
 
 The main executable is always considered. `--all-modules` adds every mapped
 ELF file that has a usable symbol table; `--module GLOB` adds matching mapped
@@ -436,7 +438,7 @@ exact.
 ### Depth semantics and filtering
 
 Filtering happens at instrumentation time. A function excluded by
-`--include`/`--exclude` produces no events and does not contribute a frame, so
+`--scope`/`--exclude` produces no events and does not contribute a frame, so
 `depth` counts only instrumented frames:
 
 ```
@@ -451,9 +453,9 @@ Filtering happens at instrumentation time. A function excluded by
 - Omitting the option leaves the depth unlimited (the default).
 - `0` keeps only the root frame.
 - `N >= 1` keeps the root plus `N` additional levels below it.
-- **Root:** with `--include`, the outermost include-matched frame on each
+- **Root:** with `--scope`, the outermost scope-matched frame on each
   thread is the relative root and the pattern defines the traced subtree.
-  Without `--include`, depth 0 of the thread's global tracked stack is the root.
+  Without `--scope`, depth 0 of the thread's global tracked stack is the root.
 - Frames deeper than the cut are not reconstructed: they produce no text,
   spans, or histogram entries. Their returns are still consumed so retained
   depths pair correctly.
@@ -580,7 +582,7 @@ Histograms:
   as `name  [incomplete]` and in the histogram section as
   `calls=0  [incomplete]`.
 - `--max-depth` and `--indent` do not affect the histogram; `--max-depth` only
-  hides event lines. `--include`/`--exclude` still apply at instrumentation
+  hides event lines. `--scope`/`--exclude` still apply at instrumentation
   time, so excluded functions do not appear.
 - A recursive call is expanded once in the tree and marked `[recursive]`; its
   histogram entry is also marked `[recursive]` instead of being expanded

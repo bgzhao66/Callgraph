@@ -59,7 +59,7 @@ struct Options {
     std::string command;
     pid_t pid = -1;
     std::string output;
-    std::vector<std::string> include;
+    std::vector<std::string> scope;
     std::vector<std::string> exclude;
     bool use_regex = false;
     std::string return_mode = "uretprobe";
@@ -209,9 +209,9 @@ void usage(FILE* out)
 
     print_help_section(out, "Tracing options", {
         {"-o, --output FILE", "write events to FILE (default: stdout)"},
-        {"--include GLOB", "only trace functions matching GLOB (repeatable)"},
+        {"--scope GLOB", "only trace functions matching GLOB (repeatable)"},
         {"--exclude GLOB", "skip functions matching GLOB (repeatable)"},
-        {"--regex", "treat --include/--exclude as extended regex"},
+        {"--regex", "treat --scope/--exclude as extended regex"},
         {"--return-mode M", "uretprobe (default) or ret (exception-safe)"},
         {"--no-rsp-resync",
          "keep frames across stack switches (stackful\n"
@@ -363,11 +363,11 @@ void usage(FILE* out)
             "Examples:\n"
             "  Trace a program:\n"
             "    sudo callgraph run -- ./demo\n"
-            "    sudo callgraph run --include 'Database::*' -- ./demo\n"
+            "    sudo callgraph run --scope 'Database::*' -- ./demo\n"
             "    callgraph run --dry-run -- ./demo\n"
             "\n"
             "  Attach to a running process:\n"
-            "    sudo callgraph attach -p 12345 --include 'Database::*'\n"
+            "    sudo callgraph attach -p 12345 --scope 'Database::*'\n"
             "\n"
             "  Correlated kernel events:\n"
             "    sudo callgraph run --kernel --preset latency -- ./demo\n"
@@ -603,8 +603,8 @@ Options parse_args(int argc, char** argv)
 
         if (arg == "-o" || arg == "--output") {
             options.output = value();
-        } else if (arg == "--include") {
-            options.include.push_back(value());
+        } else if (arg == "--scope") {
+            options.scope.push_back(value());
         } else if (arg == "--exclude") {
             options.exclude.push_back(value());
         } else if (arg == "--regex") {
@@ -1475,14 +1475,14 @@ int run_export(const ExportOptions& options)
 
 class FunctionFilter {
 public:
-    FunctionFilter(const std::vector<std::string>& include,
+    FunctionFilter(const std::vector<std::string>& scope,
                    const std::vector<std::string>& exclude, bool use_regex)
-        : include_(include), exclude_(exclude), use_regex_(use_regex)
+        : scope_(scope), exclude_(exclude), use_regex_(use_regex)
     {
         if (use_regex_) {
             try {
-                for (const auto& pattern : include_)
-                    include_re_.emplace_back(pattern);
+                for (const auto& pattern : scope_)
+                    scope_re_.emplace_back(pattern);
                 for (const auto& pattern : exclude_)
                     exclude_re_.emplace_back(pattern);
             } catch (const std::regex_error& error) {
@@ -1493,7 +1493,7 @@ public:
 
     bool keep(const FunctionInfo& function) const
     {
-        if (!include_.empty() && !matches(function, include_, include_re_))
+        if (!scope_.empty() && !matches(function, scope_, scope_re_))
             return false;
         if (!exclude_.empty() && matches(function, exclude_, exclude_re_))
             return false;
@@ -1520,10 +1520,10 @@ private:
         return false;
     }
 
-    std::vector<std::string> include_;
+    std::vector<std::string> scope_;
     std::vector<std::string> exclude_;
     bool use_regex_;
-    std::vector<std::regex> include_re_;
+    std::vector<std::regex> scope_re_;
     std::vector<std::regex> exclude_re_;
 };
 
@@ -1777,7 +1777,7 @@ int main(int argc, char** argv)
             exe = ProcessController::exe_path(target);
         }
 
-        FunctionFilter filter(options.include, options.exclude, options.use_regex);
+        FunctionFilter filter(options.scope, options.exclude, options.use_regex);
 
         std::vector<std::string> initial_paths;
         initial_paths.push_back(exe);
