@@ -186,6 +186,13 @@ void merge_histogram(LatencyHistogram& target, const LatencyHistogram& source)
         target.buckets[i] += source.buckets[i];
 }
 
+void merge_kernel_histogram(KernelHistogram& target,
+                            const KernelHistogram& source)
+{
+    merge_histogram(target.histogram, source.histogram);
+    target.incomplete = target.incomplete || source.incomplete;
+}
+
 // One bar per histogram entry.  Its length is the function's inclusive time
 // relative to the root span's duration, so it shows how much of the tree's
 // elapsed time this node accounts for.  Bucket counts share the bar: latency
@@ -301,6 +308,7 @@ struct HistogramEntry {
     uint64_t function_id = 0;
     std::string name;
     LatencyHistogram histogram;
+    std::map<std::string, KernelHistogram> kernel;
     bool has_histogram = false;
     bool recursive = false;
     bool incomplete = false;
@@ -308,8 +316,10 @@ struct HistogramEntry {
 
 }  // namespace
 
-std::string format_histogram_report(const LatencyStats& stats,
-                                    const std::vector<std::string>& names)
+std::string format_histogram_report(
+    const LatencyStats& stats, const std::vector<std::string>& names,
+    const std::unordered_map<uint32_t, KernelEventHistograms>*
+        kernel_histograms)
 {
     const auto& threads = stats.threads();
     if (threads.empty())
@@ -334,6 +344,13 @@ std::string format_histogram_report(const LatencyStats& stats,
         out += "=== thread " + std::to_string(tid) + " ===\n";
 
         const ThreadLatency& thread = threads.at(tid);
+
+        const KernelEventHistograms* thread_kernel = nullptr;
+        if (kernel_histograms) {
+            const auto kernel_it = kernel_histograms->find(tid);
+            if (kernel_it != kernel_histograms->end())
+                thread_kernel = &kernel_it->second;
+        }
 
         // Completed call paths: parent path -> child paths.  Keying by the
         // whole path keeps a node's total consistent with the subtree beneath
@@ -387,7 +404,7 @@ std::string format_histogram_report(const LatencyStats& stats,
         std::vector<TreeLine> tree_lines;
         auto record = [&](uint32_t depth, uint64_t function_id,
                           const LatencyHistogram* hist, bool recursive,
-                          bool incomplete) {
+                          bool incomplete, const CallPath& path) {
             const HistogramKey key{depth, function_id};
             auto found = entry_index.find(key);
             if (found == entry_index.end()) {
@@ -405,6 +422,15 @@ std::string format_histogram_report(const LatencyStats& stats,
             if (hist) {
                 merge_histogram(entry.histogram, *hist);
                 entry.has_histogram = hist->calls != 0;
+            }
+
+            if (thread_kernel) {
+                const auto path_it = thread_kernel->find(path);
+                if (path_it != thread_kernel->end()) {
+                    for (const auto& [event, kernel_hist] : path_it->second)
+                        merge_kernel_histogram(entry.kernel[event],
+                                               kernel_hist);
+                }
             }
         };
 
@@ -434,6 +460,29 @@ std::string format_histogram_report(const LatencyStats& stats,
                                           root_total_ns);
                 else
                     out += "   calls=0  [incomplete]\n";
+
+                if (!entry.kernel.empty()) {
+                    // Kernel samples stay separate from the user-frame
+                    // histogram.  Bars are relative to the owning frame so
+                    // they show how much of it the kernel event accounts for.
+                    const uint64_t kernel_total_ns =
+                        entry.has_histogram ? entry.histogram.total_ns
+                                            : root_total_ns;
+                    out += "   kernel:\n";
+                    for (const auto& [event, kernel_hist] : entry.kernel) {
+                        out += "     ";
+                        out += event;
+                        if (kernel_hist.incomplete)
+                            out += "  [incomplete]";
+                        out += '\n';
+                        if (kernel_hist.histogram.calls != 0)
+                            append_histogram_body(out, kernel_hist.histogram,
+                                                  "       ",
+                                                  kernel_total_ns);
+                        else
+                            out += "       calls=0  [incomplete]\n";
+                    }
+                }
             }
         };
 
@@ -455,7 +504,7 @@ std::string format_histogram_report(const LatencyStats& stats,
                     parent_prefix + (is_last ? kBlank : kVertical);
 
                 const bool recursive = path_functions.contains(function_id);
-                record(depth, function_id, &it->second, recursive, false);
+                record(depth, function_id, &it->second, recursive, false, path);
                 append_tree_node(tree_lines, line_prefix, name_of(function_id),
                                  recursive ? "  [recursive]" : "",
                                  it->second.total_ns, true);
@@ -497,13 +546,13 @@ std::string format_histogram_report(const LatencyStats& stats,
                 const auto edge = thread.paths.find(node_path);
                 if (edge != thread.paths.end()) {
                     record(static_cast<uint32_t>(index), node, &edge->second,
-                           false, true);
+                           false, true, node_path);
                     append_tree_node(tree_lines, line_prefix, name_of(node),
                                      "  [incomplete]", edge->second.total_ns,
                                      true);
                 } else {
                     record(static_cast<uint32_t>(index), node, nullptr, false,
-                           true);
+                           true, node_path);
                     append_tree_node(tree_lines, line_prefix, name_of(node),
                                      "  [incomplete]", 0, false);
                 }
@@ -584,7 +633,7 @@ std::string format_histogram_report(const LatencyStats& stats,
             if (live) {
                 render_live(0, "", false);
             } else {
-                record(0, root.back(), &it->second, false, false);
+                record(0, root.back(), &it->second, false, false, root);
                 append_tree_node(tree_lines, "", name_of(root.back()), "",
                                  it->second.total_ns, true);
                 const bool inserted =

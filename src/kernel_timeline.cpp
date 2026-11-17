@@ -448,6 +448,58 @@ uint64_t KernelTimeline::next_id()
     return next_id_++;
 }
 
+void KernelTimeline::record_kernel_histogram(uint32_t tid,
+                                             const CallStack& stack,
+                                             const std::string& event,
+                                             uint64_t ns, bool incomplete)
+{
+    if (!collect_histograms_)
+        return;
+
+    const auto* frames = stack.frames_for(tid);
+    if (!frames || frames->empty())
+        return;
+
+    CallPath path;
+    path.reserve(frames->size());
+    for (const CallFrame& frame : *frames)
+        path.push_back(frame.function_id);
+
+    KernelHistogram& entry = kernel_histograms_[tid][std::move(path)][event];
+    entry.histogram.add(ns);
+    entry.incomplete = entry.incomplete || incomplete;
+}
+
+void KernelTimeline::record_open_intervals(uint32_t tid, uint64_t ts,
+                                           const CallStack& stack)
+{
+    if (!collect_histograms_)
+        return;
+
+    auto it = threads_.find(tid);
+    if (it == threads_.end())
+        return;
+
+    ThreadRuntime& thread = it->second;
+    if (thread.offcpu_since_ns != 0 && ts >= thread.offcpu_since_ns)
+        record_kernel_histogram(tid, stack, "sched.off_cpu",
+                                ts - thread.offcpu_since_ns, true);
+    if (thread.runnable_since_ns != 0 && ts >= thread.runnable_since_ns)
+        record_kernel_histogram(tid, stack, "sched.runqueue",
+                                ts - thread.runnable_since_ns, true);
+    for (const PendingOp& op : thread.ops) {
+        if (ts >= op.ts)
+            record_kernel_histogram(tid, stack, syscall_span_name(op.kind),
+                                    ts - op.ts, true);
+    }
+    // Only the outermost reclaim interval is recorded when it closes, so do
+    // the same for one still open at shutdown.  `reclaims` is populated only
+    // when a span sink is attached, so it cannot be used here.
+    if (thread.reclaim_depth != 0 && ts >= thread.reclaim_begin_ns)
+        record_kernel_histogram(tid, stack, "direct_reclaim",
+                                ts - thread.reclaim_begin_ns, true);
+}
+
 void KernelTimeline::add_account(uint32_t tid, uint32_t depth,
                                  uint64_t function_id, uint64_t delta_ns)
 {
@@ -715,6 +767,16 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
             thread.offcpu_span_token = 0;
         }
 
+        // Lost events can leave an interval open across another switch-out.
+        // Record it as incomplete before starting the new interval.
+        if (thread.offcpu_since_ns != 0 && event.ts >= thread.offcpu_since_ns)
+            record_kernel_histogram(prev, stack, "sched.off_cpu",
+                                    event.ts - thread.offcpu_since_ns, true);
+        if (thread.runnable_since_ns != 0 &&
+            event.ts >= thread.runnable_since_ns)
+            record_kernel_histogram(prev, stack, "sched.runqueue",
+                                    event.ts - thread.runnable_since_ns, true);
+
         if (thread.state == CpuState::Unknown) {
             thread.partial = true;
             thread_counters_[prev].partial = true;
@@ -781,6 +843,14 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
             thread.offcpu_span_token = 0;
         }
 
+        if (thread.offcpu_since_ns != 0 && event.ts >= thread.offcpu_since_ns)
+            record_kernel_histogram(next, stack, "sched.off_cpu", offcpu,
+                                    partial);
+        if (thread.runnable_since_ns != 0 &&
+            event.ts >= thread.runnable_since_ns)
+            record_kernel_histogram(next, stack, "sched.runqueue", runqueue,
+                                    partial);
+
         thread.partial = thread.partial || partial;
         if (partial)
             thread_counters_[next].partial = true;
@@ -845,6 +915,11 @@ void KernelTimeline::on_sched_wakeup(const KernelEvent& event,
     append_attr(attrs, "prio", event.a);
     emit_event(event, depth_of(stack, target), kernel_kind_name(event.kind),
                attrs);
+
+    if (collect_histograms_)
+        record_kernel_histogram(
+            target, stack,
+            "sched." + std::string(kernel_kind_name(event.kind)), 0);
 
     if (span_sink_) {
         const uint32_t user_depth = span_user_depth(stack, target);
@@ -933,6 +1008,11 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
         attrs += " unmatched=1";
         emit_event(event, depth_of(stack, event.tid), "futex_end", attrs);
 
+        if (collect_histograms_)
+            record_kernel_histogram(event.tid, stack,
+                                    syscall_span_name(CG_KEV_FUTEX_ENTER), 0,
+                                    true);
+
         if (span_sink_) {
             const uint32_t user_depth = span_user_depth(stack, event.tid);
             std::vector<SpanAttribute> span_attrs;
@@ -958,6 +1038,11 @@ void KernelTimeline::on_futex(const KernelEvent& event, const CallStack& stack)
                            : futex_is_wake(pending.op) ? "wake_end"
                                                        : "futex_end";
     emit_event(event, depth_of(stack, event.tid), name, attrs);
+
+    if (collect_histograms_ && event.ts >= pending.ts)
+        record_kernel_histogram(event.tid, stack,
+                                syscall_span_name(CG_KEV_FUTEX_ENTER),
+                                event.ts - pending.ts);
 
     if (span_sink_) {
         std::vector<SpanAttribute> end_attrs;
@@ -1033,6 +1118,10 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
         emit_event(event, depth_of(stack, event.tid),
                    kernel_io_event_name(event.kind), attrs);
 
+        if (collect_histograms_)
+            record_kernel_histogram(event.tid, stack,
+                                    syscall_span_name(enter_kind), 0, true);
+
         if (span_sink_) {
             const uint32_t user_depth = span_user_depth(stack, event.tid);
             std::vector<SpanAttribute> span_attrs;
@@ -1058,6 +1147,11 @@ void KernelTimeline::on_io(const KernelEvent& event, const CallStack& stack)
         append_attr(attrs, "duration_ns", event.ts - pending.ts);
     emit_event(event, depth_of(stack, event.tid),
                kernel_io_event_name(event.kind), attrs);
+
+    if (collect_histograms_ && event.ts >= pending.ts)
+        record_kernel_histogram(event.tid, stack,
+                                syscall_span_name(enter_kind),
+                                event.ts - pending.ts);
 
     if (span_sink_) {
         std::vector<SpanAttribute> end_attrs;
@@ -1183,6 +1277,16 @@ void KernelTimeline::on_net(const KernelEvent& event, const CallStack& stack)
     emit_event(event, depth_of(stack, event.tid),
                kernel_net_event_name(event.kind), attrs);
 
+    if (collect_histograms_) {
+        if (!found)
+            record_kernel_histogram(event.tid, stack,
+                                    syscall_span_name(enter_kind), 0, true);
+        else if (event.ts >= pending.ts)
+            record_kernel_histogram(event.tid, stack,
+                                    syscall_span_name(enter_kind),
+                                    event.ts - pending.ts);
+    }
+
     if (span_sink_) {
         if (!found) {
             const uint32_t user_depth = span_user_depth(stack, event.tid);
@@ -1231,6 +1335,13 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
         append_hex_attr(attrs, "ip", event.b);
         append_hex_attr(attrs, "error", event.c);
         emit_event(event, depth, "page_fault", attrs);
+
+        if (collect_histograms_)
+            record_kernel_histogram(
+                event.tid, stack,
+                event.kind == CG_KEV_PAGE_FAULT_USER ? "page_fault.user"
+                                                     : "page_fault.kernel",
+                0);
 
         if (span_sink_) {
             const uint32_t user_depth = span_user_depth(stack, event.tid);
@@ -1301,6 +1412,18 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
         append_attr(attrs, "nr_reclaimed", event.a);
     }
     emit_event(event, depth_of(stack, event.tid), "direct_reclaim_end", attrs);
+
+    if (collect_histograms_) {
+        if (matched) {
+            if (thread.reclaim_depth == 0 &&
+                event.ts >= thread.reclaim_begin_ns)
+                record_kernel_histogram(event.tid, stack, "direct_reclaim",
+                                        event.ts - thread.reclaim_begin_ns);
+        } else {
+            record_kernel_histogram(event.tid, stack, "direct_reclaim", 0,
+                                    true);
+        }
+    }
 
     if (span_sink_) {
         if (matched && !thread.reclaims.empty()) {
@@ -1447,6 +1570,9 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             append_attr(attrs, "prio", event.a);
             emit_event(event, depth_of(stack, event.tid), "migrate", attrs);
 
+            if (collect_histograms_)
+                record_kernel_histogram(event.tid, stack, "sched.migrate", 0);
+
             if (span_sink_) {
                 const uint32_t user_depth = span_user_depth(stack, event.tid);
                 std::vector<SpanAttribute> span_attrs;
@@ -1466,6 +1592,9 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             append_attr(attrs, "child", event.peer_tid);
             emit_event(event, depth_of(stack, event.tid), "fork", attrs);
 
+            if (collect_histograms_)
+                record_kernel_histogram(event.tid, stack, "proc.fork", 0);
+
             if (span_sink_) {
                 const uint32_t user_depth = span_user_depth(stack, event.tid);
                 std::vector<SpanAttribute> span_attrs;
@@ -1482,6 +1611,11 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
             std::string attrs;
             append_attr(attrs, "prio", event.a);
             emit_event(event, depth_of(stack, event.tid), "exit", attrs);
+
+            if (collect_histograms_) {
+                record_kernel_histogram(event.tid, stack, "proc.exit", 0);
+                record_open_intervals(event.tid, event.ts, stack);
+            }
 
             if (span_sink_) {
                 const uint32_t user_depth = span_user_depth(stack, event.tid);
@@ -1559,6 +1693,7 @@ void KernelTimeline::finish(uint64_t stop_ts, const CallStack& stack)
     }
     for (uint32_t tid : tids) {
         account_until(tid, stop_ts, stack);
+        record_open_intervals(tid, stop_ts, stack);
         auto& thread = threads_[tid];
         if (thread.runqueue_span_token != 0) {
             close_span(thread.runqueue_span_token, stop_ts, {}, true);

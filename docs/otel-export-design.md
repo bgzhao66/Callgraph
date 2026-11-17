@@ -225,6 +225,11 @@ appropriate. Page faults add `space`, `address`, `ip`, and `error`.
 Global block requests and TCP retransmits are not exported as spans; they
 remain in the text kernel stream and report.
 
+With `--histogram`, the same TID-attributed kernel events are also aggregated
+into per-user-frame kernel latency histograms. They use the same `@<syscall>`,
+`sched.off_cpu`/`sched.runqueue`, `direct_reclaim`, and point-event labels as
+the spans, and global block/TCP records remain text-only.
+
 ## 6. Export architecture
 
 ```

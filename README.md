@@ -561,6 +561,47 @@ Histograms:
   histogram entry is also marked `[recursive]` instead of being expanded
   forever.
 
+### Kernel event histograms
+
+`--histogram --kernel` adds kernel-event latency histograms to the same report.
+Each user-frame histogram entry is followed by a separate `kernel:` block for
+the kernel events observed on that exact call path:
+
+```
+1. A(int)
+   ----------------------------------
+   calls=1  total=1.70us  avg=1.70us  min=1.70us  max=1.70us
+   [ 1.02us, 2.05us)  1
+   kernel:
+     @futex
+       -----------------------
+       calls=1  total=1.00us  avg=1.00us  min=1.00us  max=1.00us
+       [ 0.51us, 1.02us)  1
+     @read
+       ----
+       calls=1  total=200ns  avg=200ns  min=200ns  max=200ns
+       [ 128ns, 256ns)  1
+     page_fault.user
+       calls=1  total=0ns  avg=0ns  min=0ns  max=0ns
+       [ 0ns, 1ns)  1
+```
+
+- Samples are keyed by the full root-first call path, so two roots that call the
+  same function at the same depth keep separate kernel histograms, and a kernel
+  event appears under the user frame that was on the stack when it happened.
+- Syscall intervals use the same `@<syscall>` names as kernel spans (`@read`,
+  `@openat`, `@sendto`). Scheduler intervals are `sched.off_cpu` and
+  `sched.runqueue`; direct reclaim is `direct_reclaim`.
+- Page faults, wakeups, migrations, fork, and exit are point events. They have
+  zero duration and are counted in the `[0ns, 1ns)` bucket.
+- Kernel bars are scaled against the owning user frame's inclusive total, so
+  they show how much of that frame the kernel event accounts for.
+- Intervals that were cut short are still included and marked `[incomplete]`:
+  an unmatched syscall exit, an interval still open at shutdown, or a scheduler
+  interval that began before the thread state was known.
+- Global block requests and TCP retransmits have no user stack and remain in the
+  text-only `Kernel:` summary.
+
 ### Kernel events
 
 `--kernel` enables a second, correlated event stream for kernel activity.
@@ -594,7 +635,8 @@ user-function spans. The span tree nests the innermost kernel operation, so a
 blocking `@pread64` contains its `sched.off_cpu` and `sched.runqueue` intervals.
 Every span carries `thread.id`, `callgraph.depth`, and
 `callgraph.kernel.user_depth`. Global block and TCP-retransmit records remain
-text-only.
+text-only. With `--histogram`, the same events are also aggregated into the
+per-frame `kernel:` histograms described above.
 
 Presets select fine-grained scopes:
 

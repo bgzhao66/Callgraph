@@ -457,6 +457,17 @@ grep -q '@IO fsync_end' "$TMP/kernel.trace"
 grep -q '^Kernel:$' "$TMP/kernel.trace"
 grep -q 'blocked(' "$TMP/kernel.trace"
 
+echo "== kernel events: per-frame histograms =="
+"$BIN" run --histogram --kernel --sched --futex --io \
+    -o "$TMP/kernel-hist.trace" --regex \
+    --include '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-hist.err"
+grep -q '^Histograms:$' "$TMP/kernel-hist.trace"
+grep -q '^   kernel:$' "$TMP/kernel-hist.trace"
+grep -Eq '^     (@futex|@fsync|sched\.(off_cpu|runqueue))$' \
+    "$TMP/kernel-hist.trace"
+grep -Eq '^       calls=[1-9][0-9]*  total=' "$TMP/kernel-hist.trace"
+
 echo "== kernel events: memory and network =="
 "$BIN" run --kernel --memory --network --report \
     -o "$TMP/kernel-mm.trace" --regex \

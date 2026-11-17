@@ -131,9 +131,10 @@ std::string without_histogram_bars(const std::string& report)
         const size_t end = report.find('\n', pos);
         const size_t line_end = end == std::string::npos ? report.size() : end;
         const std::string line = report.substr(pos, line_end - pos);
+        const size_t first = line.find_first_not_of(' ');
         const bool is_bar =
-            line.size() > 3 && line.compare(0, 3, "   ") == 0 &&
-            line.find_first_not_of('-', 3) == std::string::npos;
+            first != std::string::npos &&
+            line.find_first_not_of('-', first) == std::string::npos;
         if (!is_bar) {
             out += line;
             out += '\n';
@@ -2436,6 +2437,237 @@ void test_kernel_network()
     CHECK(report.find("blocked(net=400ns") != std::string::npos);
 }
 
+void test_kernel_histogram_report()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+        timeline.set_collect_histograms(true);
+
+        TraceEvent main_enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        TraceEvent a_enter = make_event(1, 10, kEventEnter, 100);
+        timeline.on_function_event(a_enter, stack);
+        stack.on_event(a_enter);
+
+        KernelEvent futex_begin = make_kernel_event(
+            CG_KEV_FUTEX_ENTER, CG_KCAT_FUTEX, 10, 200);
+        futex_begin.a = 202;
+        futex_begin.b = 0x1234;
+        futex_begin.c = 0;  // FUTEX_WAIT
+        timeline.on_kernel_event(futex_begin, stack);
+
+        KernelEvent futex_end = make_kernel_event(
+            CG_KEV_FUTEX_EXIT, CG_KCAT_FUTEX, 10, 1200);
+        futex_end.a = 202;
+        futex_end.b = 0;
+        timeline.on_kernel_event(futex_end, stack);
+
+        KernelEvent read_begin =
+            make_kernel_event(CG_KEV_READ_ENTER, CG_KCAT_IO, 10, 1300);
+        read_begin.a = 0;
+        read_begin.b = 3;
+        read_begin.d = 64;
+        timeline.on_kernel_event(read_begin, stack);
+
+        KernelEvent read_end =
+            make_kernel_event(CG_KEV_READ_EXIT, CG_KCAT_IO, 10, 1500);
+        read_end.a = 0;
+        read_end.b = 64;
+        timeline.on_kernel_event(read_end, stack);
+
+        KernelEvent fault = make_kernel_event(
+            CG_KEV_PAGE_FAULT_USER, CG_KCAT_MM, 10, 1600);
+        fault.a = 0x1000;
+        fault.b = 0x2000;
+        fault.c = 4;
+        timeline.on_kernel_event(fault, stack);
+
+        TraceEvent a_exit = make_event(1, 10, kEventExit, 1800);
+        timeline.on_function_event(a_exit, stack);
+        stack.on_event(a_exit);
+
+        TraceEvent main_exit = make_event(0, 10, kEventExit, 2000);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+
+        timeline.finish(2000, stack);
+        stack.finish_statistics();
+
+        report = format_histogram_report(stack.stats(), names,
+                                         &timeline.kernel_histograms());
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    const std::string clean = without_histogram_bars(report);
+    CHECK(clean.find("1. A(int)\n   calls=1  total=1.70us") !=
+          std::string::npos);
+    CHECK(clean.find("   kernel:\n") != std::string::npos);
+    CHECK(clean.find("     @futex\n       calls=1  total=1.00us") !=
+          std::string::npos);
+    CHECK(clean.find("     @read\n       calls=1  total=200ns") !=
+          std::string::npos);
+    CHECK(clean.find("     page_fault.user\n       calls=1  total=0ns") !=
+          std::string::npos);
+}
+
+void test_kernel_histogram_roots()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({20});
+        timeline.set_collect_histograms(true);
+
+        // Root A(int) -> main with a 100ns read.
+        TraceEvent a_enter = make_event(1, 20, kEventEnter, 0);
+        timeline.on_function_event(a_enter, stack);
+        stack.on_event(a_enter);
+        TraceEvent main_a = make_event(0, 20, kEventEnter, 10);
+        timeline.on_function_event(main_a, stack);
+        stack.on_event(main_a);
+        KernelEvent read_a =
+            make_kernel_event(CG_KEV_READ_ENTER, CG_KCAT_IO, 20, 20);
+        read_a.a = 0;
+        read_a.b = 3;
+        timeline.on_kernel_event(read_a, stack);
+        KernelEvent read_a_end =
+            make_kernel_event(CG_KEV_READ_EXIT, CG_KCAT_IO, 20, 120);
+        read_a_end.a = 0;
+        read_a_end.b = 1;
+        timeline.on_kernel_event(read_a_end, stack);
+        TraceEvent main_a_exit = make_event(0, 20, kEventExit, 130);
+        timeline.on_function_event(main_a_exit, stack);
+        stack.on_event(main_a_exit);
+        TraceEvent a_exit = make_event(1, 20, kEventExit, 200);
+        timeline.on_function_event(a_exit, stack);
+        stack.on_event(a_exit);
+
+        // Root B(int) -> main with a 300ns read.
+        TraceEvent b_enter = make_event(2, 20, kEventEnter, 300);
+        timeline.on_function_event(b_enter, stack);
+        stack.on_event(b_enter);
+        TraceEvent main_b = make_event(0, 20, kEventEnter, 310);
+        timeline.on_function_event(main_b, stack);
+        stack.on_event(main_b);
+        KernelEvent read_b =
+            make_kernel_event(CG_KEV_READ_ENTER, CG_KCAT_IO, 20, 320);
+        read_b.a = 0;
+        read_b.b = 3;
+        timeline.on_kernel_event(read_b, stack);
+        KernelEvent read_b_end =
+            make_kernel_event(CG_KEV_READ_EXIT, CG_KCAT_IO, 20, 620);
+        read_b_end.a = 0;
+        read_b_end.b = 1;
+        timeline.on_kernel_event(read_b_end, stack);
+        TraceEvent main_b_exit = make_event(0, 20, kEventExit, 630);
+        timeline.on_function_event(main_b_exit, stack);
+        stack.on_event(main_b_exit);
+        TraceEvent b_exit = make_event(2, 20, kEventExit, 700);
+        timeline.on_function_event(b_exit, stack);
+        stack.on_event(b_exit);
+
+        timeline.finish(700, stack);
+        stack.finish_statistics();
+
+        report = format_histogram_report(stack.stats(), names,
+                                         &timeline.kernel_histograms());
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    const size_t root_a = report.find("0. A(int)");
+    const size_t root_b = report.find("0. B(int)");
+    const size_t read_a = report.find("total=100ns");
+    const size_t read_b = report.find("total=300ns");
+    CHECK(root_a != std::string::npos);
+    CHECK(root_b != std::string::npos);
+    CHECK(read_a != std::string::npos);
+    CHECK(read_b != std::string::npos);
+    if (root_a != std::string::npos && root_b != std::string::npos &&
+        read_a != std::string::npos && read_b != std::string::npos) {
+        CHECK(root_a < read_a);
+        CHECK(read_a < root_b);
+        CHECK(root_b < read_b);
+    }
+
+    size_t reads = 0;
+    for (size_t pos = report.find("@read"); pos != std::string::npos;
+         pos = report.find("@read", pos + 1))
+        ++reads;
+    CHECK(reads == 2);
+}
+
+void test_kernel_histogram_incomplete()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({30});
+        timeline.set_collect_histograms(true);
+
+        TraceEvent main_enter = make_event(0, 30, kEventEnter, 0);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        // Exit without a matching enter.
+        KernelEvent read_end =
+            make_kernel_event(CG_KEV_READ_EXIT, CG_KCAT_IO, 30, 100);
+        read_end.a = 0;
+        read_end.b = 1;
+        timeline.on_kernel_event(read_end, stack);
+
+        // Enter and leave open until shutdown.
+        KernelEvent futex_begin = make_kernel_event(
+            CG_KEV_FUTEX_ENTER, CG_KCAT_FUTEX, 30, 200);
+        futex_begin.a = 202;
+        futex_begin.b = 0x1234;
+        futex_begin.c = 0;
+        timeline.on_kernel_event(futex_begin, stack);
+
+        // Reclaim left open until shutdown.
+        KernelEvent reclaim_begin = make_kernel_event(
+            CG_KEV_DIRECT_RECLAIM_BEGIN, CG_KCAT_MM, 30, 300);
+        reclaim_begin.a = 0;
+        reclaim_begin.b = 0x1;
+        timeline.on_kernel_event(reclaim_begin, stack);
+
+        timeline.finish(600, stack);
+        stack.finish_statistics();
+
+        report = format_histogram_report(stack.stats(), names,
+                                         &timeline.kernel_histograms());
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    CHECK(report.find("@read  [incomplete]") != std::string::npos);
+    CHECK(report.find("@futex  [incomplete]") != std::string::npos);
+    CHECK(report.find("direct_reclaim  [incomplete]") != std::string::npos);
+    CHECK(report.find("calls=1  total=0ns") != std::string::npos);
+    CHECK(report.find("calls=1  total=400ns") != std::string::npos);
+    CHECK(report.find("calls=1  total=300ns") != std::string::npos);
+}
+
 void test_kernel_text_ids_without_span_sink()
 {
     const auto names = make_names();
@@ -3001,6 +3233,9 @@ int main()
     test_kernel_block_correlation();
     test_kernel_memory();
     test_kernel_network();
+    test_kernel_histogram_report();
+    test_kernel_histogram_roots();
+    test_kernel_histogram_incomplete();
     test_kernel_text_ids_without_span_sink();
     test_kernel_span_export();
     test_kernel_span_depth_clamp();

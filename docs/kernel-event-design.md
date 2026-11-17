@@ -468,9 +468,10 @@ the thread state on return.
 Per-invocation counters are live only while the invocation is on the stack.
 On return, the timeline folds them into the thread's `(depth, function_id)`
 aggregate and releases the live entry. A long-running attach therefore grows
-with distinct `(thread, depth, function)` keys, not with call count. Per-root
-retention (Section 9.2) is deferred because it would keep one aggregate per
-root invocation and needs an explicit cap.
+with distinct `(thread, depth, function)` keys, not with call count. The
+`--histogram` kernel histograms (Section 9.2) keep one aggregate per root-first
+path and have no explicit cap yet; the `Kernel:` summary itself remains
+per-thread.
 
 `CallStack` notifies an optional frame-close observer for every closed frame
 (normal return, skipped/desynced frame, or shutdown). The timeline folds the
@@ -1244,15 +1245,48 @@ observed. Global block and TCP-retransmit records are counted in a trailing
     NET tcp_retransmit=3
 ```
 
-A later revision can pair the `Kernel:` section with each root, using the
-invocation IDs added in Section 5.1. That requires deciding how to render a
-root whose kernel intervals began before its first function entry; it is
-deferred.
+With `--histogram`, each user-frame histogram entry also gets a nested
+`kernel:` block. Samples are keyed by the full root-first `CallPath`, so two
+roots calling the same function at the same depth stay separate, and each block
+is rendered directly under the owning frame's histogram, after its bucket
+lines:
+
+```text
+1. A(int)
+   ----------------------------------
+   calls=1  total=1.70us  avg=1.70us  min=1.70us  max=1.70us
+   [ 1.02us, 2.05us)  1
+   kernel:
+     @futex
+       -----------------------
+       calls=1  total=1.00us  avg=1.00us  min=1.00us  max=1.00us
+       [ 0.51us, 1.02us)  1
+     @read
+       ----
+       calls=1  total=200ns  avg=200ns  min=200ns  max=200ns
+       [ 128ns, 256ns)  1
+     page_fault.user
+       calls=1  total=0ns  avg=0ns  min=0ns  max=0ns
+       [ 0ns, 1ns)  1
+```
+
+Kernel histograms stay separate from the user-frame histogram rather than being
+merged into it. Bars are scaled against the owning frame's inclusive total, not
+the root span, so a kernel event's share of its user frame is visible. Syscall
+intervals use the `@<syscall>` span names; scheduler intervals are
+`sched.off_cpu` and `sched.runqueue`, and direct reclaim is `direct_reclaim`.
+Point events (page faults, wakeups, migrations, fork, and exit) are counted
+with zero duration, which lands in the `[0ns, 1ns)` bucket.
+
+Intervals cut short by lost events are still recorded and marked
+`[incomplete]`: an unmatched syscall exit, an interval still open at shutdown
+or process exit, and a scheduler interval whose state was unknown when it
+began. Collection is enabled only when `--histogram` is set, so text-only runs
+pay nothing.
 
 Units are chosen per value from `choose_unit()`, as the tree report already
-does. No kernel bar is added to the histogram yet; a bar would imply
-a share of a root span, which is only meaningful once per-root pairing is
-defined.
+does. Global block requests and TCP retransmits have no user stack and remain
+in the text-only `Kernel:` summary.
 
 ### 9.3 OTel and Jaeger
 
@@ -1527,8 +1561,9 @@ approximate; denied access does not break other families.
 - Add `KernelSpanSink`, TID-specific interval and point child spans.
 - Add offline export parity and metadata.
 
-Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair and adds
-a correct kernel summary; OTLP JSON validates and Jaeger shows kernel child spans.
+Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair,
+adds per-frame kernel histograms and a correct kernel summary; OTLP JSON
+validates and Jaeger shows kernel child spans.
 
 ## 14. File map
 

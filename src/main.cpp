@@ -1849,6 +1849,7 @@ int main(int argc, char** argv)
             kernel_timeline = std::make_unique<KernelTimeline>(
                 output, options.max_depth, options.verbose);
             kernel_timeline->set_target_tids(tids);
+            kernel_timeline->set_collect_histograms(options.histogram);
             if (options.block)
                 log_warn("block tracepoints are global; unrelated device "
                          "traffic may be included");
@@ -2041,7 +2042,11 @@ int main(int argc, char** argv)
         }
         if (options.histogram) {
             stack.finish_statistics();
-            report = format_histogram_report(stack.stats(), registry.names());
+            const auto* kernel_histograms =
+                kernel_timeline ? &kernel_timeline->kernel_histograms()
+                                : nullptr;
+            report = format_histogram_report(stack.stats(), registry.names(),
+                                             kernel_histograms);
         }
         if (options.kernel_report ||
             (options.histogram && kernel_timeline)) {

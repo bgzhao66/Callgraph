@@ -9,6 +9,7 @@
 
 #include "callgraph/event.h"
 #include "callgraph/kernel_event.h"
+#include "callgraph/kernel_histogram.h"
 #include "callgraph/kernel_span.h"
 
 namespace callgraph {
@@ -61,6 +62,14 @@ public:
     void add_target_tid(uint32_t tid);
     bool is_target(uint32_t tid) const;
     void set_kernel_span_sink(KernelSpanSink* sink) { span_sink_ = sink; }
+    // Enables per-root kernel latency histograms.  Off by default so text-only
+    // runs do not build call paths or allocate histogram entries.
+    void set_collect_histograms(bool enabled) { collect_histograms_ = enabled; }
+    const std::unordered_map<uint32_t, KernelEventHistograms>&
+    kernel_histograms() const
+    {
+        return kernel_histograms_;
+    }
 
     // Must be called before CallStack applies the event: the interval that
     // ends at event.ts belongs to the old top frame.
@@ -162,6 +171,11 @@ private:
     void account_until(uint32_t tid, uint64_t ts, const CallStack& stack);
     void add_account(uint32_t tid, uint32_t depth, uint64_t function_id,
                      uint64_t delta_ns);
+    void record_kernel_histogram(uint32_t tid, const CallStack& stack,
+                                 const std::string& event, uint64_t ns,
+                                 bool incomplete = false);
+    void record_open_intervals(uint32_t tid, uint64_t ts,
+                               const CallStack& stack);
     uint64_t function_span_token(const CallStack& stack, uint32_t tid) const;
     uint64_t innermost_span_token(uint32_t tid, const CallStack& stack) const;
     uint64_t open_span(const CallStack& stack, uint32_t tid,
@@ -191,6 +205,7 @@ private:
     Output& output_;
     int max_depth_;
     bool verbose_;
+    bool collect_histograms_ = false;
     KernelSpanSink* span_sink_ = nullptr;
     uint64_t next_id_ = 1;
     uint64_t kernel_events_ = 0;
@@ -202,6 +217,7 @@ private:
     std::unordered_map<StatKey, KernelCounters, StatKeyHash> function_counters_;
     std::unordered_map<BlockKey, BlockPending, BlockKeyHash> block_pending_;
     std::unordered_map<uint16_t, uint64_t> global_counts_;
+    std::unordered_map<uint32_t, KernelEventHistograms> kernel_histograms_;
 };
 
 std::string format_kernel_report(const KernelTimeline& timeline,
