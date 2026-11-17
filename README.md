@@ -6,11 +6,6 @@ debug information, attaches one entry probe per function, reconstructs a
 separate call stack for every thread, and writes a single chronological event
 stream.
 
-```
-<ts> <tid> : <depth> -> function
-<ts> <tid> : <depth> <- function
-```
-
 ## Highlights
 
 `callgraph` answers “where did the time go?” for native Linux programs without
