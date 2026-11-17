@@ -38,7 +38,6 @@ struct Node {
     bool root = false;
     bool exported = false;
     bool address_taken = false;
-    bool indirect = false;
     bool has_code = false;
     uint64_t file_offset = 0;
 };
@@ -176,6 +175,31 @@ int read_code(bfd_vma memaddr, bfd_byte* myaddr, unsigned int length,
         return -1;
     memcpy(myaddr, info->buffer + (memaddr - info->buffer_vma), length);
     return 0;
+}
+
+bool is_unconditional_jump(const std::string& mnemonic)
+{
+    return mnemonic.rfind("jmp", 0) == 0;
+}
+
+bool is_conditional_jump(const std::string& mnemonic)
+{
+    return mnemonic.size() > 1 && mnemonic[0] == 'j' &&
+           !is_unconditional_jump(mnemonic);
+}
+
+bool is_loop(const std::string& mnemonic)
+{
+    return mnemonic.rfind("loop", 0) == 0;
+}
+
+// Includes indirect forms.  Used only to avoid mistaking an operand for a
+// function address; direct call edges are added separately.
+bool is_control_transfer(const std::string& mnemonic)
+{
+    return mnemonic.rfind("call", 0) == 0 ||
+           is_unconditional_jump(mnemonic) ||
+           is_conditional_jump(mnemonic) || is_loop(mnemonic);
 }
 #endif
 
@@ -414,12 +438,10 @@ bool collect_code_facts(const std::string& path,
             const std::string instruction = text;
             const std::string mnemonic = first_word(instruction);
             const bool is_call = mnemonic.rfind("call", 0) == 0;
-            const bool is_jump = mnemonic.rfind("jmp", 0) == 0;
+            const bool is_jump = is_unconditional_jump(mnemonic);
+            const bool is_control = is_control_transfer(mnemonic);
             const bool indirect = instruction.find('*') != std::string::npos;
             const auto tokens = hex_tokens(instruction);
-
-            if ((is_call || is_jump) && indirect)
-                node.indirect = true;
 
             if ((is_call || is_jump) && !indirect && !tokens.empty()) {
                 if (auto target = ranges.find(*nodes, tokens.front())) {
@@ -427,19 +449,19 @@ bool collect_code_facts(const std::string& path,
                         // Direct edge; an excluded caller adds no depth.
                         (*edges)[index].push_back(*target);
                     }
-                } else {
-                    // A call we cannot resolve (for example a PLT stub) may
-                    // invoke callbacks.  Treat it as an indirect site.
-                    node.indirect = true;
                 }
+                // A direct call to a target outside this module has no
+                // in-module edge.  Direct-call mode does not guess at
+                // external or PLT targets.
             }
 
             // Any instruction operand that resolves into a known function
-            // makes that function address-taken.  Scanning all tokens is
-            // deliberately conservative.  Skip the direct branch target: a
-            // plain call/jmp does not by itself make the callee address-taken.
-            const size_t token_start =
-                ((is_call || is_jump) && !indirect && !tokens.empty()) ? 1 : 0;
+            // makes that function address-taken.  Branch targets are control
+            // flow, not address-taking operands: skip the target of a direct
+            // branch, and skip all operands of an indirect branch.
+            size_t token_start = 0;
+            if (is_control)
+                token_start = (indirect || tokens.empty()) ? tokens.size() : 1;
             for (size_t t = token_start; t < tokens.size(); ++t) {
                 if (auto target = ranges.find(*nodes, tokens[t]))
                     (*nodes)[*target].address_taken = true;
@@ -666,10 +688,6 @@ StaticPruneResult compute_pruning(const StaticPruneRequest& request,
 
         for (const size_t v : edges[u])
             relax(v);
-        if (nodes[u].indirect) {
-            for (const size_t v : address_taken)
-                relax(v);
-        }
     }
 
     for (size_t i = 0; i < nodes.size(); ++i) {
@@ -685,7 +703,6 @@ StaticPruneResult compute_pruning(const StaticPruneRequest& request,
             ++result.roots_kept;
     }
     result.pruned = request.candidates.size() - result.keep.size();
-    result.conservative = true;
     return result;
 }
 

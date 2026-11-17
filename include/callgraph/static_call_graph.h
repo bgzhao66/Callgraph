@@ -8,7 +8,7 @@
 
 namespace callgraph {
 
-// Input for conservative probe pruning.  All indices refer to `functions`.
+// Input for direct-call probe pruning.  All indices refer to `functions`.
 struct StaticPruneRequest {
     std::string module_path;
     const std::vector<FunctionInfo>* functions = nullptr;
@@ -32,10 +32,11 @@ struct StaticPruneResult {
     std::vector<size_t> keep;
     size_t pruned = 0;
     size_t roots_kept = 0;
-    bool conservative = false;
 };
 
-// Full conservative call-graph pruning for --trace-depth N > 0.
+// Direct-call call-graph pruning for --trace-depth N > 0.  Indirect call
+// sites add no targets; omit --trace-depth to instrument every non-excluded
+// function instead.
 StaticPruneResult prune_statically(const StaticPruneRequest& request);
 
 // Root-only selection for --trace-depth 0.  This uses ELF entry/init/exported/

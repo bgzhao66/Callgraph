@@ -227,7 +227,8 @@ void usage(FILE* out)
         {"--trace-depth N",
          "trace user frames N levels below the root\n"
          "(0: root only; default: unlimited);\n"
-         "N > 0 prunes probes statically; kernel events unaffected"},
+         "N > 0 prunes probes along direct calls;\n"
+         "kernel events unaffected"},
         {"--indent N", "indent names by depth*N spaces (default: 0)"},
         {"--show-args",
          "show function arguments after names (needs DWARF);\n"
@@ -1620,7 +1621,7 @@ public:
                 keep = std::move(result.keep);
                 if (trace_depth > 0) {
                     log_info("static prune: kept %zu of %zu function(s) at "
-                             "depth <= %d in %s",
+                             "depth <= %d in %s (direct calls)",
                              keep.size(), candidates.size(), trace_depth,
                              path.c_str());
                 }

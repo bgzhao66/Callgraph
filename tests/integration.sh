@@ -119,7 +119,9 @@ echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^      --root-scope'
 ! "$BIN" run --help | grep -q -- '--scope'
 ! "$BIN" run --help | grep -q -- '--static-prune'
+! "$BIN" run --help | grep -q -- '--include-indirect'
 "$BIN" run --help | grep -q -- '--trace-depth'
+"$BIN" run --help | grep -q 'N > 0 prunes probes along direct calls'
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
 "$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
 "$BIN" run --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
@@ -972,6 +974,81 @@ dry=$("$BIN" run --trace-depth 1 --dry-run --regex --root-scope '^main$' \
 grep -q ' : 2 -> B(int)' "$TMP/rootprune2.trace"
 grep -q ' : 2 -> A(int)' "$TMP/rootprune2.trace"
 ! grep -q ' : 3 ' "$TMP/rootprune2.trace"
+
+echo "== direct-call pruning default =="
+cat > "$TMP/indirect.cpp" <<'EOF'
+using Fn = int (*)(int);
+
+__attribute__((noinline)) int indirect_callee(int x) { return x + 1; }
+__attribute__((noinline)) int direct_callee(int x) { return x + 2; }
+
+__attribute__((noinline)) int root(Fn fn, int x)
+{
+    return fn(x) + direct_callee(x);
+}
+
+int main()
+{
+    return root(indirect_callee, 1);
+}
+EOF
+g++ -O0 -g -o "$TMP/indirect" "$TMP/indirect.cpp"
+"$BIN" run --trace-depth 1 --dry-run --root-scope 'root*' \
+    -- "$TMP/indirect" > "$TMP/indirect.direct" 2>/dev/null
+grep -q 'direct_callee(int)' "$TMP/indirect.direct"
+! grep -q 'indirect_callee(int)' "$TMP/indirect.direct"
+# Omitting --trace-depth disables pruning, so the indirect callee is included.
+"$BIN" run --dry-run --root-scope 'root*' -- "$TMP/indirect" \
+    > "$TMP/indirect.unlimited" 2>/dev/null
+grep -q 'indirect_callee(int)' "$TMP/indirect.unlimited"
+
+echo "== conditional-jump targets are not probes =="
+if [ "$(uname -m)" = "x86_64" ] && command -v as >/dev/null 2>&1 && \
+   command -v ld >/dev/null 2>&1; then
+    cat > "$TMP/jcc.s" <<'EOF'
+.text
+.globl _start
+.type _start,@function
+_start:
+    lea dummy(%rip), %rsi
+    xor %edi, %edi
+    call hot
+    mov $60, %eax
+    xor %edi, %edi
+    syscall
+.size _start,.-_start
+
+.type hot,@function
+hot:
+    test %edi, %edi
+    jne cold
+    call *%rsi
+    ret
+.size hot,.-hot
+
+.type cold,@function
+cold:
+    ret
+.size cold,.-cold
+
+.type dummy,@function
+dummy:
+    ret
+.size dummy,.-dummy
+EOF
+    as -o "$TMP/jcc.o" "$TMP/jcc.s"
+    ld -static -o "$TMP/jcc" "$TMP/jcc.o"
+    "$BIN" run --trace-depth 1 --dry-run \
+        -- "$TMP/jcc" > "$TMP/jcc.direct" 2>"$TMP/jcc.err"
+    if grep -q 'static prune: kept' "$TMP/jcc.err"; then
+        ! grep -q 'cold' "$TMP/jcc.direct"
+        grep -q 'hot' "$TMP/jcc.direct"
+    else
+        echo "static analysis unavailable; skipping jcc fixture"
+    fi
+else
+    echo "as/ld not available; skipping jcc fixture"
+fi
 
 echo "== attach without root-scope =="
 cat > "$TMP/attach_slow.cpp" <<'EOF'

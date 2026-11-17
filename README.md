@@ -20,9 +20,10 @@ recompiling them or adding instrumentation.
   calls; `--return-mode=ret` keeps C++ unwinding safe.
 - **Bound the trace cheaply.** `--root-scope` selects the functions that may
   start a traced tree, and `--trace-depth N` traces `N` levels below each root.
-  For `N > 0`, conservative static call-graph pruning avoids instrumenting
-  functions that cannot appear in that window. `--trace-depth 0` traces roots
-  only.
+  For `N > 0`, probes are pruned along resolved direct calls only; functions
+  reached through function pointers are not instrumented. Omit `--trace-depth`
+  to instrument every non-excluded function, including possible indirect
+  callees. `--trace-depth 0` traces roots only.
 - **Measure latency, not just call counts.** `--histogram` appends per-root call
   trees with inclusive per-path totals and latency histograms per function,
   marking recursive and incomplete calls.
@@ -52,10 +53,11 @@ Typical questions it helps answer:
 - How deep and how wide is the call tree under real input?
 - What does the latency distribution look like for each call path?
 
-Static pruning is deliberately predictable: if the call graph cannot be built
-reliably, `callgraph` does not silently instrument everything. It warns and
-instruments only explicit `--root-scope` matches, or none when no roots are
-given.
+Direct-call pruning is deliberately predictable: an indirect call site adds no
+static edge, so its possible callees are not instrumented. Omit `--trace-depth`
+when those calls matter. If the call graph cannot be built reliably, `callgraph`
+does not silently instrument everything: it warns and instruments only explicit
+`--root-scope` matches, or none when no roots are given.
 
 ## Status
 
@@ -69,7 +71,7 @@ The current implementation includes:
 - `uprobe_multi` attachment with per-function cookies and individual-uprobe fallback
 - entry and return events over a BPF ring buffer
 - per-TID call-stack reconstruction, recursion, multi-threaded tracing
-- root-scope/exclude selection, structural depth limits with conservative
+- root-scope/exclude selection, structural depth limits with direct-call
   static pruning, maximum displayed depth, dry-run listing
 - optional function argument values from DWARF (`--show-args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
@@ -142,8 +144,9 @@ development headers. Without protobuf, `--exporter otlp-json` still writes OTLP/
 
 Tracing is unlimited in depth by default. `--root-scope` selects the functions
 that may start a traced tree; their descendants are traced up to
-`--trace-depth`. `--trace-depth 0` is root-only, and `N > 0` uses conservative
-static pruning; omitting it is unlimited.
+`--trace-depth`. `--trace-depth 0` is root-only, and `N > 0` prunes probes along
+direct calls only. Omitting `--trace-depth` is unlimited and instruments every
+non-excluded function, including possible indirect callees.
 
 ```bash
 # Launch and trace from the first instruction
@@ -233,7 +236,8 @@ Tracing options:
       --max-depth N         print events with depth <= N (default: unlimited)
       --trace-depth N       trace user frames N levels below the root
                             (0: root only; default: unlimited);
-                            N > 0 prunes probes statically; kernel events unaffected
+                            N > 0 prunes probes along direct calls;
+                            kernel events unaffected
       --indent N            indent names by depth*N spaces (default: 0)
       --show-args           show function arguments after names (needs DWARF);
                             preserve text suffixes in offline export
@@ -514,9 +518,10 @@ frame:
   when `--root-scope` is given; without it, the tracer uses the entry, init,
   exported, address-taken, and code-materialised root tier in `run` mode (the
   metadata subset remains available without a disassembler).
-- `N >= 1` keeps the root plus `N` levels. The tracer automatically runs
-  conservative static call-graph pruning so functions that cannot appear within
-  that window are not instrumented.
+- `N >= 1` keeps the root plus `N` levels. The tracer prunes probes along
+  resolved direct calls only, so functions reached through function pointers are
+  not instrumented. Omit `--trace-depth` to instrument every non-excluded
+  function, including possible indirect callees.
 - If the call graph cannot be built reliably for a module, the tracer warns and
   instruments **no** functions implicitly. With `--root-scope`, only the
   explicit matches are instrumented and unlisted descendants are not traced.
