@@ -247,6 +247,153 @@ void test_histogram_report()
                       "   calls=1") != std::string::npos);
 }
 
+void test_trace_depth()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+    std::string trace;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        stack.set_trace_depth(1);
+
+        stack.on_event(make_event(0, 10, kEventEnter, 0));   // main
+        stack.on_event(make_event(1, 10, kEventEnter, 10));  // A
+        stack.on_event(make_event(2, 10, kEventEnter, 20));  // B: hidden
+        stack.on_event(make_event(2, 10, kEventExit, 30));   // hidden
+        stack.on_event(make_event(2, 10, kEventEnter, 40));  // hidden
+        stack.on_event(make_event(2, 10, kEventExit, 50));   // hidden
+        stack.on_event(make_event(1, 10, kEventExit, 60));   // A
+        stack.on_event(make_event(1, 10, kEventEnter, 70));  // A again
+        stack.on_event(make_event(1, 10, kEventExit, 80));   // A
+        stack.on_event(make_event(0, 10, kEventExit, 90));   // main
+
+        CHECK(stack.live_threads() == 0);
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find(" : 0 -> main") != std::string::npos);
+    CHECK(trace.find(" : 1 -> A(int)") != std::string::npos);
+    CHECK(trace.find("B(int)") == std::string::npos);
+    CHECK(trace.find(" : 2 ") == std::string::npos);
+
+    CHECK(without_histogram_bars(report).find("0. main\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. A(int)\n   calls=2") !=
+          std::string::npos);
+    CHECK(report.find("2. B(int)") == std::string::npos);
+
+    // trace-depth 0 keeps only the root frame.
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, false);
+        stack.set_trace_depth(0);
+        stack.on_event(make_event(0, 11, kEventEnter, 0));
+        stack.on_event(make_event(1, 11, kEventEnter, 10));
+        stack.on_event(make_event(1, 11, kEventExit, 20));
+        stack.on_event(make_event(0, 11, kEventExit, 30));
+        CHECK(stack.live_threads() == 0);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+    CHECK(trace.find(" : 0 -> main") != std::string::npos);
+    CHECK(trace.find("A(int)") == std::string::npos);
+
+    // Without the option, the internal default keeps the depth unlimited.
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, false);
+        stack.on_event(make_event(0, 12, kEventEnter, 0));
+        stack.on_event(make_event(1, 12, kEventEnter, 10));
+        stack.on_event(make_event(2, 12, kEventEnter, 20));
+        stack.on_event(make_event(2, 12, kEventExit, 30));
+        stack.on_event(make_event(1, 12, kEventExit, 40));
+        stack.on_event(make_event(0, 12, kEventExit, 50));
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+    CHECK(trace.find(" : 2 -> B(int)") != std::string::npos);
+
+    // An rsp resync across a hidden subtree resets the hidden counter.
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, false);
+        stack.set_trace_depth(1);
+
+        TraceEvent main_enter = make_event(0, 13, kEventEnter, 0);
+        main_enter.sp = 0x1000;
+        stack.on_event(main_enter);
+
+        TraceEvent a_enter = make_event(1, 13, kEventEnter, 10);
+        a_enter.sp = 0x0ff0;
+        stack.on_event(a_enter);
+
+        TraceEvent b_enter = make_event(2, 13, kEventEnter, 20);
+        b_enter.sp = 0x0fe0;  // hidden
+        stack.on_event(b_enter);
+
+        // A sibling of A called from main after a longjmp.
+        TraceEvent sibling = make_event(2, 13, kEventEnter, 30);
+        sibling.sp = 0x0ff8;
+        stack.on_event(sibling);
+        stack.on_event(make_event(2, 13, kEventExit, 40));
+        stack.on_event(make_event(0, 13, kEventExit, 50));
+
+        CHECK(stack.live_threads() == 0);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+    CHECK(trace.find(" : 1 -> B(int)") != std::string::npos);
+    CHECK(trace.find(" : 2 ") == std::string::npos);
+
+    // Hidden frames produce no spans; the retained parent still closes.
+    {
+        std::vector<FunctionMetadata> functions;
+        for (const auto& name : names) {
+            FunctionMetadata metadata;
+            metadata.name = name;
+            metadata.linkage_name = name;
+            metadata.module_path = "/tmp/td";
+            functions.push_back(metadata);
+        }
+        SpanGeneratorConfig config;
+        config.scope = TraceScope::Root;
+        config.seed_hi = 31;
+        config.seed_lo = 32;
+        config.timestamps_are_unix = true;
+        config.functions = &functions;
+
+        std::vector<SpanRecord> closed;
+        SpanGenerator generator(config, [&](SpanRecord&& span) {
+            closed.push_back(std::move(span));
+        });
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        stack.set_trace_depth(1);
+        stack.on_event(make_event(0, 14, kEventEnter, 1000));
+        stack.on_event(make_event(1, 14, kEventEnter, 2000));
+        stack.on_event(make_event(2, 14, kEventEnter, 3000));  // hidden
+        stack.on_event(make_event(2, 14, kEventExit, 4000));
+        stack.on_event(make_event(1, 14, kEventExit, 5000));
+        stack.on_event(make_event(0, 14, kEventExit, 6000));
+
+        CHECK(closed.size() == 2);
+        if (closed.size() == 2) {
+            CHECK(closed[0].function.name == "A(int)");
+            CHECK(closed[1].function.name == "main");
+        }
+    }
+}
+
 void test_histogram_bar_proportional()
 {
     const auto names = make_names();
@@ -3195,6 +3342,7 @@ int main()
     test_errno_string();
     test_latency_histogram();
     test_histogram_report();
+    test_trace_depth();
     test_histogram_bar_proportional();
     test_histogram_call_path_totals();
     test_histogram_tree_units();

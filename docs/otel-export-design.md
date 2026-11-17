@@ -195,6 +195,9 @@ Source attributes are omitted when DWARF is unavailable. Thread names are
 best-effort; restricted PID-namespace setups may not expose
 `/proc/<pid>/task/<tid>/comm`.
 
+`--trace-depth` limits user-frame reconstruction before spans are generated, so
+user frames below the cut produce no spans. Kernel spans are unaffected.
+
 ### Kernel spans
 
 When `--kernel` is combined with an OTel exporter, TID-specific kernel events

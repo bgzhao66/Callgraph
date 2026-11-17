@@ -102,6 +102,7 @@ fi
 
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Tracing options:'
+"$BIN" run --help | grep -q -- '--trace-depth'
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
 "$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
 "$BIN" run --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
@@ -466,6 +467,15 @@ grep -Eq '^     (@futex|@fsync|sched\.(off_cpu|runqueue))$' \
     "$TMP/kernel-hist.trace"
 grep -Eq '^       calls=[1-9][0-9]*  total=' "$TMP/kernel-hist.trace"
 
+echo "== kernel events ignore trace depth =="
+"$BIN" run --trace-depth 0 --kernel --sched --futex --io \
+    -o "$TMP/kernel-tdepth.trace" --regex \
+    --include '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-tdepth.err"
+grep -q '@SCHED switch_out' "$TMP/kernel-tdepth.trace"
+grep -q '@FUTEX wait_begin' "$TMP/kernel-tdepth.trace"
+grep -q '@IO fsync_begin' "$TMP/kernel-tdepth.trace"
+
 echo "== kernel events: memory and network =="
 "$BIN" run --kernel --memory --network \
     -o "$TMP/kernel-mm.trace" --regex \
@@ -639,7 +649,8 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 port = server.server_port
 result = subprocess.run(
-    [binary, "run", "-T", "--exporter", "otlp-http",
+    [binary, "run", "-T",
+     "--exporter", "otlp-http",
      "--endpoint", f"http://127.0.0.1:{port}",
      "--regex", "--include", "^(main|C[(]int[)])$", "--", target],
     capture_output=True, text=True, timeout=60)
@@ -871,6 +882,50 @@ echo "== max depth =="
     >/dev/null 2>/dev/null
 ! grep -q ' : 2 ' "$TMP/depth.trace"
 grep -q ' : 1 -> C(int)' "$TMP/depth.trace"
+
+echo "== trace depth =="
+# The default is unlimited.
+"$BIN" run -o "$TMP/tdepth-default.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+grep -q ' : 2 ' "$TMP/tdepth-default.trace"
+
+# 0 is explicit root-only.
+"$BIN" run --trace-depth 0 -o "$TMP/tdepth-0.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+! grep -q ' : 1 ' "$TMP/tdepth-0.trace"
+
+# 1 keeps the root and one level.
+"$BIN" run --trace-depth 1 -o "$TMP/tdepth-1.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
+! grep -q ' : 2 ' "$TMP/tdepth-1.trace"
+
+# Without --include the same rule counts from global depth 0.
+"$BIN" run --trace-depth 1 -o "$TMP/tdepth-global.trace" --regex \
+    -- "$TMP/simple" >/dev/null 2>/dev/null
+! grep -Eq ' : ([2-9]|[1-9][0-9]+) ' "$TMP/tdepth-global.trace"
+
+# An excluded node is skipped and its descendants splice up: B is absent,
+# and A appears at depth 2 under C.
+"$BIN" run --trace-depth 2 -o "$TMP/tdepth-exclude.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' \
+    --exclude '^B[(]int[)]$' -- "$TMP/simple" >/dev/null 2>/dev/null
+! grep -q 'B(int)' "$TMP/tdepth-exclude.trace"
+grep -q ' : 2 -> A(int)' "$TMP/tdepth-exclude.trace"
+
+# Deeper user frames are absent from the histogram too.
+"$BIN" run --trace-depth 1 --histogram -o "$TMP/tdepth-hist.trace" --regex \
+    --include '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>/dev/null
+! grep -q '^2\. ' "$TMP/tdepth-hist.trace"
+
+if "$BIN" run --trace-depth -1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected negative --trace-depth to fail" >&2
+    exit 1
+fi
 
 echo "== latency histogram =="
 "$BIN" run --histogram -o "$TMP/hist.trace" --regex \

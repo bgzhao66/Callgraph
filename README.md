@@ -93,6 +93,9 @@ development headers. Without protobuf, `--exporter otlp-json` still writes OTLP/
 
 ## Usage
 
+Tracing is unlimited in depth by default. `--trace-depth N` keeps the root and
+`N` levels of callees; `--trace-depth 0` keeps only the root.
+
 ```bash
 # Launch and trace from the first instruction
 sudo ./build/callgraph run -- ./my_app arg1 arg2
@@ -179,6 +182,8 @@ Tracing options:
       --module GLOB         also trace mapped modules matching GLOB
   -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
       --max-depth N         print events with depth <= N (default: unlimited)
+      --trace-depth N       trace user frames N levels below the root
+                            (0: root only; default: unlimited); kernel events unaffected
       --indent N            indent names by depth*N spaces (default: 0)
       --show-args           show function arguments after names (needs DWARF);
                             preserve text suffixes in offline export
@@ -441,8 +446,29 @@ Filtering happens at instrumentation time. A function excluded by
 0 <- main
 ```
 
-`--max-depth N` hides events deeper than `N` but keeps tracking them, so the
-depths of the remaining events stay correct.
+`--trace-depth N` controls how much of each traced tree is reconstructed:
+
+- Omitting the option leaves the depth unlimited (the default).
+- `0` keeps only the root frame.
+- `N >= 1` keeps the root plus `N` additional levels below it.
+- **Root:** with `--include`, the outermost include-matched frame on each
+  thread is the relative root and the pattern defines the traced subtree.
+  Without `--include`, depth 0 of the thread's global tracked stack is the root.
+- Frames deeper than the cut are not reconstructed: they produce no text,
+  spans, or histogram entries. Their returns are still consumed so retained
+  depths pair correctly.
+- Excluded frames are not roots; they are skipped, and their instrumented
+  descendants splice to the nearest retained ancestor.
+- Kernel events are **not** capped by `--trace-depth`; they keep flowing at any
+  user depth and attribute to the deepest retained user frame.
+- Offline `export --otel`/`--flame` is unaffected and replays every recorded
+  frame.
+- `-1` is the internal “unlimited” value and is rejected as an explicit
+  argument; omit the option instead.
+
+`--max-depth N` is different: it hides events deeper than `N` but keeps
+tracking them, so the depths of the remaining events stay correct. It does not
+affect spans or histograms.
 
 `--indent N` is display-only: `depth * N` spaces are inserted before the
 demangled name, leaving the arrow column fixed. It does not affect filtering or

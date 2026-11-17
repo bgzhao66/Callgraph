@@ -144,10 +144,13 @@ void CallStack::on_event(const TraceEvent& event,
             const size_t unwound = close_skipped_frames(
                 event.tid, state.frames, static_cast<size_t>(depth_hint),
                 event.ts);
-            if (unwound != 0 && verbose_) {
-                log_verbose("tid %u: entry of %s at depth %d closed %zu "
-                            "frame(s)",
-                            event.tid, name.c_str(), depth_hint, unwound);
+            if (unwound != 0) {
+                state.hidden_depth = 0;
+                if (verbose_) {
+                    log_verbose("tid %u: entry of %s at depth %d closed %zu "
+                                "frame(s)",
+                                event.tid, name.c_str(), depth_hint, unwound);
+                }
             }
         }
 
@@ -165,15 +168,32 @@ void CallStack::on_event(const TraceEvent& event,
 
             const size_t unwound =
                 close_skipped_frames(event.tid, state.frames, keep, event.ts);
-            if (unwound != 0 && verbose_) {
-                log_verbose("tid %u: entry of %s at sp 0x%llx unwound %zu "
-                            "frame(s)",
-                            event.tid, name.c_str(),
-                            static_cast<unsigned long long>(event.sp), unwound);
+            if (unwound != 0) {
+                state.hidden_depth = 0;
+                if (verbose_) {
+                    log_verbose("tid %u: entry of %s at sp 0x%llx unwound %zu "
+                                "frame(s)",
+                                event.tid, name.c_str(),
+                                static_cast<unsigned long long>(event.sp),
+                                unwound);
+                }
             }
         }
 
         const uint32_t depth = static_cast<uint32_t>(state.frames.size());
+
+        // --trace-depth: stop reconstructing user frames below the cut.
+        // Their entries are still counted so the matching returns can be
+        // consumed without disturbing the retained stack.
+        if (trace_depth_ >= 0 &&
+            depth > static_cast<uint32_t>(trace_depth_)) {
+            ++state.hidden_depth;
+            return;
+        }
+        // A retained entry means the stream has returned to the traced part
+        // of the stack, so any hidden frames were already closed (or lost).
+        if (state.hidden_depth != 0)
+            state.hidden_depth = 0;
 
         bool traced = true;
         bool logged = true;
@@ -230,6 +250,18 @@ void CallStack::on_event(const TraceEvent& event,
     }
 
     auto& frames = it->second.frames;
+
+    if (it->second.hidden_depth != 0) {
+        // Offline traces carry the authoritative depth, so a return at a
+        // retained depth means the hidden subtree was unwound after all.
+        if (depth_hint >= 0 && trace_depth_ >= 0 &&
+            depth_hint <= trace_depth_) {
+            it->second.hidden_depth = 0;
+        } else {
+            --it->second.hidden_depth;
+            return;
+        }
+    }
 
     // Normally the returning function is on top.  If it is not, a frame was
     // skipped (longjmp, exception unwinding, tail call, lost event).  Search

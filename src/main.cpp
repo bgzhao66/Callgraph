@@ -68,6 +68,7 @@ struct Options {
     std::vector<std::string> modules;
     bool wall_clock = false;
     int max_depth = -1;
+    int trace_depth = -1;
     size_t indent_step = 0;
     bool show_args = false;
     bool histogram = false;
@@ -221,6 +222,9 @@ void usage(FILE* out)
         {"-T, --wall-clock",
          "wall-clock timestamps (default: seconds since boot)"},
         {"--max-depth N", "print events with depth <= N (default: unlimited)"},
+        {"--trace-depth N",
+         "trace user frames N levels below the root\n"
+         "(0: root only; default: unlimited); kernel events unaffected"},
         {"--indent N", "indent names by depth*N spaces (default: 0)"},
         {"--show-args",
          "show function arguments after names (needs DWARF);\n"
@@ -619,6 +623,11 @@ Options parse_args(int argc, char** argv)
             options.wall_clock = true;
         } else if (arg == "--max-depth") {
             options.max_depth = static_cast<int>(parse_long(value(), arg));
+        } else if (arg == "--trace-depth") {
+            const long depth = parse_long(value(), arg);
+            if (depth < 0)
+                usage_error("--trace-depth must be >= 0");
+            options.trace_depth = static_cast<int>(depth);
         } else if (arg == "--indent") {
             const long indent = parse_long(value(), arg);
             if (indent < 0)
@@ -1971,6 +1980,7 @@ int main(int argc, char** argv)
                         output, options.max_depth, options.verbose,
                         options.histogram, span_generator.get());
         stack.set_rsp_resync(!options.no_rsp_resync);
+        stack.set_trace_depth(options.trace_depth);
         stack.set_ingest_sample_rate(options.ingest_sample_rate);
         // Rate limiting is a stdout convenience; file output and the
         // histogram trailer keep their complete line stream.

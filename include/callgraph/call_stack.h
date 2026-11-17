@@ -27,6 +27,9 @@ struct CallFrame {
 
 struct ThreadState {
     std::vector<CallFrame> frames;
+    // Frames below --trace-depth that are not reconstructed.  Their entries
+    // and returns are still consumed so the retained stack stays paired.
+    uint32_t hidden_depth = 0;
 };
 
 // Reconstructs one logical call stack per TID from the event stream.
@@ -65,6 +68,13 @@ public:
     // goroutines) violate that, so they can disable it and fall back to
     // return matching.
     void set_rsp_resync(bool enabled) { rsp_resync_ = enabled; }
+
+    // Keeps only frames at depth <= depth, where depth 0 is the thread's
+    // outermost traced frame.  Deeper entries are consumed but not
+    // reconstructed, so they produce no text, spans, or histograms.  A
+    // negative value (the default) leaves the depth unlimited, which is what
+    // offline replay uses.
+    void set_trace_depth(int depth) { trace_depth_ = depth; }
 
     // Root-entry ingest sampling.  A rejected root suppresses text and spans
     // for its whole subtree, but the stack is still maintained so returns are
@@ -119,6 +129,7 @@ private:
     const std::vector<FunctionSignature>* signatures_;
     Output* output_;
     int max_depth_;
+    int trace_depth_ = -1;
     bool verbose_;
     bool collect_latency_;
     bool rsp_resync_ = true;

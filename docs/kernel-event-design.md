@@ -1195,6 +1195,10 @@ lines as quickly. The summary reports `output_dropped_kernel`.
 limit; `-` and `*` lines are always shown. Statistics still cover hidden
 depths.
 
+`--trace-depth` does not restrict kernel events. It stops reconstructing user
+frames below the cut, but kernel lines, spans, and histogram blocks keep
+flowing and attribute to the deepest retained user frame.
+
 `--indent` applies to the depth column just as it does for function names,
 using spaces before the `@CATEGORY` token.
 
