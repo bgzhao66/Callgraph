@@ -233,9 +233,10 @@ remain visible. Bucket `k >= 1` covers `[2^(k-1), 2^k)` ns and bucket 0 is
 exactly 0 ns, so a 64-bit duration needs at most 65 counters per entry. Units
 are chosen per histogram entry from its maximum latency.
 
-`--max-depth` remains display-only and does not gate statistics. `--scope` and
-`--exclude` still filter at instrumentation time, so the reported tree is
-compressed across excluded functions.
+`--max-depth` remains display-only and does not gate statistics. `--exclude`
+still filters at instrumentation time, so the reported tree is compressed
+across excluded functions. `--root-scope` selects roots only; descendants can
+appear even when they do not match.
 
 ### Launch synchronization
 

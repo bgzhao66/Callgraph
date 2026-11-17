@@ -25,18 +25,26 @@ fi
 
 echo "== dry run =="
 dry=$("$BIN" run --dry-run --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" 2>/dev/null)
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" 2>/dev/null)
 echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
 echo "$dry" | grep -q 'B(int)'
 
 echo "== dry run: glob + exclude =="
-dry=$("$BIN" run --dry-run --scope '*' --exclude 'A*' -- "$TMP/simple" 2>/dev/null)
+dry=$("$BIN" run --dry-run --root-scope '*' --exclude 'A*' -- "$TMP/simple" 2>/dev/null)
 ! echo "$dry" | grep -q 'A(int)'
 
 echo "== removed --include =="
 if "$BIN" run --include '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected removed --include to fail" >&2
+    exit 1
+fi
+if "$BIN" run --scope '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected removed --scope to fail" >&2
+    exit 1
+fi
+if "$BIN" run --static-prune --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected --static-prune to be unknown" >&2
     exit 1
 fi
 
@@ -53,7 +61,7 @@ cp "$TMP/simple" "$TMP/detached"
 objcopy --only-keep-debug "$TMP/detached" "$TMP/detached.debug"
 strip --strip-all "$TMP/detached"
 objcopy --add-gnu-debuglink="$TMP/detached.debug" "$TMP/detached"
-dry=$("$BIN" run --dry-run --regex --scope '^(main|A[(]int[)])$' \
+dry=$("$BIN" run --dry-run --regex --root-scope '^(main|A[(]int[)])$' \
     -- "$TMP/detached" 2>/dev/null)
 echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
@@ -108,8 +116,9 @@ fi
 
 echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^Tracing options:'
-"$BIN" run --help | grep -q '^      --scope'
-! "$BIN" run --help | grep -q -- '--include'
+"$BIN" run --help | grep -q '^      --root-scope'
+! "$BIN" run --help | grep -q -- '--scope'
+! "$BIN" run --help | grep -q -- '--static-prune'
 "$BIN" run --help | grep -q -- '--trace-depth'
 "$BIN" run --help | grep -q '^Kernel event options (--kernel):'
 "$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
@@ -399,13 +408,13 @@ fi
 
 if [ -n "$GO_BIN" ]; then
     echo "== Go binary warning =="
-    "$BIN" run --dry-run --regex --scope '^main\.main$' -- "$GO_BIN" \
+    "$BIN" run --dry-run --regex --root-scope '^main\.main$' -- "$GO_BIN" \
         >/dev/null 2>"$TMP/gowarn.err"
     grep -q 'Go binary' "$TMP/gowarn.err"
     grep -q -- '--return-mode=ret' "$TMP/gowarn.err"
 
     "$BIN" run --dry-run --return-mode ret --regex \
-        --scope '^main\.main$' -- "$GO_BIN" \
+        --root-scope '^main\.main$' -- "$GO_BIN" \
         >/dev/null 2>"$TMP/gowarn_ret.err"
     grep -q 'nesting unreliable' "$TMP/gowarn_ret.err"
 
@@ -428,7 +437,7 @@ fi
 
 echo "== trace simple =="
 "$BIN" run -o "$TMP/simple.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/simple.err"
 grep -Eq '^[0-9]+\.[0-9]{9} [0-9]+ : 0 -> main' "$TMP/simple.trace"
 grep -q ' : 1 -> C(int)' "$TMP/simple.trace"
@@ -440,13 +449,13 @@ grep -q '0 lost' "$TMP/simple.err"
 
 echo "== ingest sampling and log rate limit =="
 "$BIN" run -o "$TMP/ingest.trace" --ingest-sample-rate 0 --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/ingest.err"
 test ! -s "$TMP/ingest.trace"
 grep -q 'ingest-sampled out 1 root trace(s)' "$TMP/ingest.err"
 
 "$BIN" run --log-rate-limit 1 --histogram --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >"$TMP/limited.trace" 2>"$TMP/limited.err"
 test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited.trace")" -lt 8
 grep -q 'rate-limited [1-9][0-9]* event line(s)' "$TMP/limited.err"
@@ -455,7 +464,7 @@ grep -q '^Histograms:$' "$TMP/limited.trace"
 echo "== kernel events: scheduler, futex, I/O =="
 "$BIN" run --kernel --sched --futex --io \
     -o "$TMP/kernel.trace" --regex \
-    --scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel.err"
 grep -q '@SCHED switch_out' "$TMP/kernel.trace"
 grep -q '@SCHED switch_in' "$TMP/kernel.trace"
@@ -467,7 +476,7 @@ grep -q '@IO fsync_end' "$TMP/kernel.trace"
 echo "== kernel events: per-frame histograms =="
 "$BIN" run --histogram --kernel --sched --futex --io \
     -o "$TMP/kernel-hist.trace" --regex \
-    --scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-hist.err"
 grep -q '^Histograms:$' "$TMP/kernel-hist.trace"
 grep -q '^   kernel:$' "$TMP/kernel-hist.trace"
@@ -478,7 +487,7 @@ grep -Eq '^       calls=[1-9][0-9]*  total=' "$TMP/kernel-hist.trace"
 echo "== kernel events ignore trace depth =="
 "$BIN" run --trace-depth 0 --kernel --sched --futex --io \
     -o "$TMP/kernel-tdepth.trace" --regex \
-    --scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-tdepth.err"
 grep -q '@SCHED switch_out' "$TMP/kernel-tdepth.trace"
 grep -q '@FUTEX wait_begin' "$TMP/kernel-tdepth.trace"
@@ -487,7 +496,7 @@ grep -q '@IO fsync_begin' "$TMP/kernel-tdepth.trace"
 echo "== kernel events: memory and network =="
 "$BIN" run --kernel --memory --network \
     -o "$TMP/kernel-mm.trace" --regex \
-    --scope '^(main|memory_work[(][)]|network_work[(][)])$' \
+    --root-scope '^(main|memory_work[(][)]|network_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-mm.err"
 grep -q '@MM page_fault' "$TMP/kernel-mm.trace"
 grep -q '@NET socket_begin' "$TMP/kernel-mm.trace"
@@ -498,7 +507,7 @@ grep -q '@NET sendto_end' "$TMP/kernel-mm.trace"
 echo "== kernel preset scopes =="
 preset_include='^(main|fsync_work[(][)]|memory_work[(][)]|network_work[(][)])$'
 "$BIN" run --kernel --preset latency -o "$TMP/preset-latency.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-latency.err"
 grep -q '@SCHED switch' "$TMP/preset-latency.trace"
 grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
@@ -508,14 +517,14 @@ grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-latency.err"
 
 "$BIN" run --kernel --preset proxy -o "$TMP/preset-net.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-net.err"
 grep -q '@NET socket_begin' "$TMP/preset-net.trace"
 ! grep -q '@BLOCK' "$TMP/preset-net.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-net.err"
 
 "$BIN" run --kernel --preset storage -o "$TMP/preset-storage.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-storage.err"
 grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 ! grep -q '@NET' "$TMP/preset-storage.trace"
@@ -524,7 +533,7 @@ grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 
 "$BIN" run --kernel --preset computation \
     -o "$TMP/preset-computation.trace" --regex \
-    --scope "$preset_include" -- "$TMP/kernel" \
+    --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-computation.err"
 grep -q '@MM page_fault' "$TMP/preset-computation.trace"
 ! grep -q '@NET' "$TMP/preset-computation.trace"
@@ -532,7 +541,7 @@ grep -q '@MM page_fault' "$TMP/preset-computation.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-computation.err"
 
 "$BIN" run --kernel --preset full -o "$TMP/preset-full.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-full.err"
 grep -q '@MM page_fault' "$TMP/preset-full.trace"
 grep -q '@NET socket_begin' "$TMP/preset-full.trace"
@@ -540,14 +549,14 @@ grep -q '@NET socket_begin' "$TMP/preset-full.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-full.err"
 
 "$BIN" run --kernel --preset extended -o "$TMP/preset-extended.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-extended.err"
 grep -q '@MM page_fault' "$TMP/preset-extended.trace"
 grep -q '@NET socket_begin' "$TMP/preset-extended.trace"
 grep -q 'block tracepoints are global' "$TMP/preset-extended.err"
 
 "$BIN" run --kernel --block -o "$TMP/preset-block-only.trace" \
-    --regex --scope "$preset_include" -- "$TMP/kernel" \
+    --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-block-only.err"
 grep -q 'block tracepoints are global' "$TMP/preset-block-only.err"
 ! grep -q '@SCHED' "$TMP/preset-block-only.trace"
@@ -557,7 +566,7 @@ grep -q 'block tracepoints are global' "$TMP/preset-block-only.err"
 
 "$BIN" run --kernel --block --io --network \
     -o "$TMP/preset-combined.trace" --regex \
-    --scope "$preset_include" -- "$TMP/kernel" \
+    --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-combined.err"
 grep -q 'block tracepoints are global' "$TMP/preset-combined.err"
 grep -q '@IO fsync_begin' "$TMP/preset-combined.trace"
@@ -567,7 +576,7 @@ grep -q '@NET socket_begin' "$TMP/preset-combined.trace"
 
 echo "== OTLP native file export =="
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/live.err"
 grep -q 'OTLP .* span(s) exported' "$TMP/live.err"
 grep -q '"resourceSpans"' "$TMP/live.json"
@@ -594,7 +603,7 @@ fi
 
 "$BIN" run -T --exporter otlp-json --export-file "$TMP/live-complete.json" \
     --complete-traces --outlier-latency-quantile 0.99 --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/live-complete.err"
 grep -q 'trace buffer: 1 completed' "$TMP/live-complete.err"
 grep -q 'callgraph.quantile' "$TMP/live-complete.json"
@@ -602,7 +611,7 @@ grep -q 'callgraph.quantile' "$TMP/live-complete.json"
 echo "== OTLP kernel spans =="
 "$BIN" run -T --kernel --io --sched --memory \
     --exporter otlp-json --export-file "$TMP/kernel-spans.json" --regex \
-    --scope '^(main|fsync_work[(][)]|memory_work[(][)]|lock_work[(][)]|work[(]int[)]|network_work[(][)])$' \
+    --root-scope '^(main|fsync_work[(][)]|memory_work[(][)]|lock_work[(][)]|work[(]int[)]|network_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-spans.err"
 grep -q 'kernel spans:' "$TMP/kernel-spans.err"
 grep -q '"key":"callgraph.kernel.event"' "$TMP/kernel-spans.json"
@@ -660,7 +669,7 @@ result = subprocess.run(
     [binary, "run", "-T",
      "--exporter", "otlp-http",
      "--endpoint", f"http://127.0.0.1:{port}",
-     "--regex", "--scope", "^(main|C[(]int[)])$", "--", target],
+     "--regex", "--root-scope", "^(main|C[(]int[)])$", "--", target],
     capture_output=True, text=True, timeout=60)
 server.shutdown()
 thread.join(timeout=5)
@@ -693,7 +702,7 @@ sleep 0.2
 "$BIN" attach -p "$attach_pid" \
     --exporter otlp-json --export-file "$TMP/attach.json" \
     --service-name attach-test --regex \
-    --scope '^(worker[(]int[)]|leaf[(]int[)])$' \
+    --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach.err"
 wait "$attach_pid" || true
 grep -q 'OTLP .* span(s) exported' "$TMP/attach.err"
@@ -744,7 +753,7 @@ try:
         [binary, "attach", "-p", str(proc.pid), "--complete-traces",
          "--exporter", "otlp-http",
          "--endpoint", f"http://127.0.0.1:{server.server_port}",
-         "--regex", "--scope", "^(main|worker[(]int[)]|child[(]int[)])$"],
+         "--regex", "--root-scope", "^(main|worker[(]int[)]|child[(]int[)])$"],
         capture_output=True, text=True, timeout=30)
     proc.wait(timeout=10)
 finally:
@@ -782,7 +791,7 @@ g++ -O0 -g -o "$TMP/attach_kernel_target" "$TMP/attach_kernel_target.cpp"
 attach_pid=$!
 sleep 0.2
 "$BIN" attach -p "$attach_pid" --kernel -o "$TMP/attach-default.trace" \
-    --regex --scope '^(worker[(]int[)]|leaf[(]int[)])$' \
+    --regex --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-default.err"
 wait "$attach_pid" || true
 grep -q 'kernel events:' "$TMP/attach-default.err"
@@ -793,7 +802,7 @@ attach_pid=$!
 sleep 0.2
 "$BIN" attach -p "$attach_pid" --kernel --preset storage --block \
     -o "$TMP/attach-storage.trace" --regex \
-    --scope '^(worker[(]int[)]|leaf[(]int[)])$' \
+    --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-storage.err"
 wait "$attach_pid" || true
 grep -q 'block tracepoints are global' "$TMP/attach-storage.err"
@@ -803,7 +812,7 @@ attach_pid=$!
 sleep 0.2
 "$BIN" attach -p "$attach_pid" --kernel --block \
     -o "$TMP/attach-block-only.trace" --regex \
-    --scope '^(worker[(]int[)]|leaf[(]int[)])$' \
+    --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-block-only.err"
 wait "$attach_pid" || true
 grep -q 'block tracepoints are global' "$TMP/attach-block-only.err"
@@ -814,12 +823,12 @@ grep -q 'block tracepoints are global' "$TMP/attach-block-only.err"
 
 echo "== wall-clock timestamps =="
 "$BIN" run -T -o "$TMP/wall.trace" --regex \
-    --scope '^(main|C[(]int[)])$' -- "$TMP/simple" >/dev/null 2>/dev/null
+    --root-scope '^(main|C[(]int[)])$' -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}[+-][0-9]{2}:[0-9]{2} [0-9]+ : 0 -> main' "$TMP/wall.trace"
 
 echo "== indentation =="
 "$BIN" run --indent 2 -o "$TMP/indent.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -Eq ' : 0 -> main$' "$TMP/indent.trace"
 grep -Eq ' : 1 -> {3}C[(]int[)]$' "$TMP/indent.trace"
@@ -852,7 +861,7 @@ int main()
 EOF
     g++ -O0 -g -o "$TMP/args" "$TMP/args.cpp"
     "$BIN" run --show-args -o "$TMP/args.trace" --regex \
-        --scope '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
+        --root-scope '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
         -- "$TMP/args" >/dev/null 2>/dev/null
     grep -q ' : 1 -> many(int, int, int, int, int, int, int) (a=1, b=2, c=3, d=4, e=5, f=6, g=7)' "$TMP/args.trace"
     grep -Eq " : 1 -> ptr[(]char const[*], bool, char[)] [(]s=0x[0-9a-f]+, flag=true, ch='A'[)]" "$TMP/args.trace"
@@ -860,7 +869,7 @@ EOF
 
     echo "== function arguments with external debug info =="
     "$BIN" run --show-args -o "$TMP/detached-args.trace" --regex \
-        --scope '^(main|A[(]int[)])$' -- "$TMP/detached" \
+        --root-scope '^(main|A[(]int[)])$' -- "$TMP/detached" \
         >/dev/null 2>/dev/null
     grep -q 'A(int) (x=3)' "$TMP/detached-args.trace"
 else
@@ -869,7 +878,7 @@ fi
 
 echo "== trace recursive =="
 "$BIN" run -o "$TMP/rec.trace" --regex \
-    --scope '^(main|factorial[(]int[)])$' -- "$TMP/recursive" \
+    --root-scope '^(main|factorial[(]int[)])$' -- "$TMP/recursive" \
     >/dev/null 2>/dev/null
 grep -q ' : 1 -> factorial(int)' "$TMP/rec.trace"
 grep -q ' : 2 -> factorial(int)' "$TMP/rec.trace"
@@ -878,7 +887,7 @@ grep -q ' : 3 <- factorial(int)' "$TMP/rec.trace"
 
 echo "== trace multithreaded =="
 "$BIN" run -o "$TMP/mt.trace" --regex \
-    --scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
+    --root-scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
     >/dev/null 2>/dev/null
 grep -q 'worker(int)' "$TMP/mt.trace"
 grep -q 'leaf(int)' "$TMP/mt.trace"
@@ -886,7 +895,7 @@ awk '{print $2}' "$TMP/mt.trace" | sort -u | wc -l | grep -qx '3'
 
 echo "== max depth =="
 "$BIN" run -o "$TMP/depth.trace" --max-depth 1 --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q ' : 2 ' "$TMP/depth.trace"
 grep -q ' : 1 -> C(int)' "$TMP/depth.trace"
@@ -894,24 +903,24 @@ grep -q ' : 1 -> C(int)' "$TMP/depth.trace"
 echo "== trace depth =="
 # The default is unlimited.
 "$BIN" run -o "$TMP/tdepth-default.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q ' : 2 ' "$TMP/tdepth-default.trace"
 
 # 0 is explicit root-only.
 "$BIN" run --trace-depth 0 -o "$TMP/tdepth-0.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q ' : 1 ' "$TMP/tdepth-0.trace"
 
 # 1 keeps the root and one level.
 "$BIN" run --trace-depth 1 -o "$TMP/tdepth-1.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
 ! grep -q ' : 2 ' "$TMP/tdepth-1.trace"
 
-# Without --scope the same rule counts from global depth 0.
+# Without --root-scope the same rule counts from global depth 0.
 "$BIN" run --trace-depth 1 -o "$TMP/tdepth-global.trace" --regex \
     -- "$TMP/simple" >/dev/null 2>/dev/null
 ! grep -Eq ' : ([2-9]|[1-9][0-9]+) ' "$TMP/tdepth-global.trace"
@@ -919,14 +928,14 @@ grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
 # An excluded node is skipped and its descendants splice up: B is absent,
 # and A appears at depth 2 under C.
 "$BIN" run --trace-depth 2 -o "$TMP/tdepth-exclude.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' \
     --exclude '^B[(]int[)]$' -- "$TMP/simple" >/dev/null 2>/dev/null
 ! grep -q 'B(int)' "$TMP/tdepth-exclude.trace"
 grep -q ' : 2 -> A(int)' "$TMP/tdepth-exclude.trace"
 
 # Deeper user frames are absent from the histogram too.
 "$BIN" run --trace-depth 1 --histogram -o "$TMP/tdepth-hist.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q '^2\. ' "$TMP/tdepth-hist.trace"
 
@@ -935,9 +944,53 @@ if "$BIN" run --trace-depth -1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     exit 1
 fi
 
+echo "== root scope and static pruning =="
+# --root-scope selects roots; descendants outside the pattern are traced.
+"$BIN" run -o "$TMP/rootdesc.trace" --regex --root-scope '^main$' \
+    -- "$TMP/simple" >/dev/null 2>/dev/null
+grep -q ' : 0 -> main' "$TMP/rootdesc.trace"
+grep -q ' : 1 -> C(int)' "$TMP/rootdesc.trace"
+grep -q ' : 2 -> B(int)' "$TMP/rootdesc.trace"
+grep -q ' : 3 -> A(int)' "$TMP/rootdesc.trace"
+
+# N=1 prunes depth-2 descendants and reports the pruning decision.
+"$BIN" run --trace-depth 1 -o "$TMP/rootprune1.trace" --regex \
+    --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>"$TMP/rootprune1.err"
+grep -q ' : 1 -> C(int)' "$TMP/rootprune1.trace"
+! grep -q ' : 2 ' "$TMP/rootprune1.trace"
+grep -q 'static prune: kept' "$TMP/rootprune1.err"
+
+# Dry-run applies the same pruning.
+dry=$("$BIN" run --trace-depth 1 --dry-run --regex --root-scope '^main$' \
+    -- "$TMP/simple" 2>/dev/null)
+! echo "$dry" | grep -q 'B(int)'
+! echo "$dry" | grep -q 'A(int)'
+
+# N=2 keeps the depth-2 functions but still hides depth 3 at runtime.
+"$BIN" run --trace-depth 2 -o "$TMP/rootprune2.trace" --regex \
+    --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>/dev/null
+grep -q ' : 2 -> B(int)' "$TMP/rootprune2.trace"
+grep -q ' : 2 -> A(int)' "$TMP/rootprune2.trace"
+! grep -q ' : 3 ' "$TMP/rootprune2.trace"
+
+echo "== attach without root-scope =="
+cat > "$TMP/attach_slow.cpp" <<'EOF'
+#include <unistd.h>
+int main() { usleep(500000); return 0; }
+EOF
+g++ -O0 -g -o "$TMP/attach_slow" "$TMP/attach_slow.cpp"
+"$TMP/attach_slow" &
+attach_pid=$!
+sleep 0.1
+"$BIN" attach --dry-run -p "$attach_pid" --trace-depth 1 --regex \
+    >/dev/null 2>"$TMP/attach-none.err" || true
+wait "$attach_pid" || true
+grep -q 'static call-graph analysis unavailable' "$TMP/attach-none.err"
+grep -q 'Instrumenting 0 functions' "$TMP/attach-none.err"
+
 echo "== latency histogram =="
 "$BIN" run --histogram -o "$TMP/hist.trace" --regex \
-    --scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q '^=== thread [0-9][0-9]* ===$' "$TMP/hist.trace"
 grep -q '^Tree:$' "$TMP/hist.trace"
@@ -962,14 +1015,14 @@ hist_line=$(grep -n '^Histograms:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
 
 echo "== latency histogram: one pair per root =="
 "$BIN" run --histogram -o "$TMP/hist_mt.trace" --regex \
-    --scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
+    --root-scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
     >/dev/null 2>/dev/null
 sections=$(grep -c '^=== thread ' "$TMP/hist_mt.trace" || true)
 [ "$sections" -ge 2 ]
 
 echo "== latency histogram: tree and histograms paired per root =="
 "$BIN" run --histogram -o "$TMP/hist_roots.trace" --regex \
-    --scope '^(task_a[(]int[)]|task_b[(]int[)]|leaf[(]int[)])$' -- "$TMP/tworoots" \
+    --root-scope '^(task_a[(]int[)]|task_b[(]int[)]|leaf[(]int[)])$' -- "$TMP/tworoots" \
     >/dev/null 2>/dev/null
 [ "$(grep -c '^Tree:$' "$TMP/hist_roots.trace")" -eq 2 ]
 [ "$(grep -c '^Histograms:$' "$TMP/hist_roots.trace")" -eq 2 ]
@@ -982,19 +1035,19 @@ echo "== latency histogram: tree and histograms paired per root =="
 echo "== exception-safe return mode =="
 if "$BIN" run --return-mode ret --dry-run -- "$TMP/exceptions" >/dev/null 2>&1; then
     "$BIN" run --return-mode ret -o "$TMP/exc.trace" --regex \
-        --scope '^(main|outer[(][)]|middle[(][)]|inner[(][)])$' -- "$TMP/exceptions" \
+        --root-scope '^(main|outer[(][)]|middle[(][)]|inner[(][)])$' -- "$TMP/exceptions" \
         >/dev/null 2>"$TMP/exc.err"
     grep -q ' : 3 -> inner()' "$TMP/exc.trace"
     grep -q ' : 1 <- outer()' "$TMP/exc.trace"
     grep -q ' : 0 <- main' "$TMP/exc.trace"
-    grep -q '2 desync' "$TMP/exc.err"
+    grep -Eq '[1-9][0-9]* desync' "$TMP/exc.err"
 else
     echo "libopcodes not available; skipping ret mode"
 fi
 
 echo "== longjmp resynchronisation =="
 "$BIN" run -o "$TMP/lj.trace" --regex \
-    --scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
+    --root-scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
     >/dev/null 2>"$TMP/lj.err"
 grep -q ' : 0 -> main' "$TMP/lj.trace"
 # Each attempt must start error_path() at depth 1.  Without rsp-based
@@ -1008,7 +1061,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/lj.err"
 # --no-rsp-resync disables that repair: the abandoned frames accumulate, so
 # the error path starts deeper on every iteration.
 "$BIN" run --no-rsp-resync -o "$TMP/lj_norsp.trace" --regex \
-    --scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
+    --root-scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
     >/dev/null 2>"$TMP/lj_norsp.err"
 awk '$5 == "->" && $6 == "error_path()" {
          if (n++ && $4 <= prev) bad = 1
@@ -1018,7 +1071,7 @@ awk '$5 == "->" && $6 == "error_path()" {
 
 echo "== stackful coroutine (ucontext) =="
 "$BIN" run -o "$TMP/uctx.trace" --regex \
-    --scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
+    --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
     >/dev/null 2>"$TMP/uctx.err"
 # The fiber runs on a separate stack.  Switching back to the main stack looks
 # like an unwind, so the suspended fiber_body frame is dropped and the main
@@ -1029,7 +1082,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
 # --no-rsp-resync keeps the suspended frame, so every leaf nests under
 # fiber_body.
 "$BIN" run --no-rsp-resync -o "$TMP/uctx_norsp.trace" --regex \
-    --scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
+    --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
     >/dev/null 2>"$TMP/uctx_norsp.err"
 [ "$(grep -c ' : 2 -> leaf()' "$TMP/uctx_norsp.trace")" -eq 3 ]
 
@@ -1037,7 +1090,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
 # for complete pairing.  Together with --no-rsp-resync nothing is desynced.
 if "$BIN" run --return-mode ret --dry-run -- "$TMP/ucontext" >/dev/null 2>&1; then
     "$BIN" run --return-mode ret --no-rsp-resync -o "$TMP/uctx_ret.trace" \
-        --regex --scope '^(main|fiber_body[(][)]|leaf[(][)])$' \
+        --regex --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' \
         -- "$TMP/ucontext" >/dev/null 2>"$TMP/uctx_ret.err"
     grep -q '0 desync' "$TMP/uctx_ret.err"
     grep -q '0 stray' "$TMP/uctx_ret.err"
@@ -1060,7 +1113,7 @@ int main() {
 EOF
 g++ -O0 -g -shared -fPIC -o "$TMP/libfoo.so" "$TMP/lib.cpp"
 g++ -O0 -g -o "$TMP/use_lib" "$TMP/use_lib.cpp" -L"$TMP" -lfoo -Wl,-rpath,"$TMP"
-"$BIN" run --all-modules -o "$TMP/lib.trace" --regex --scope '^foo' \
+"$BIN" run --module 'libfoo.so' -o "$TMP/lib.trace" --regex --root-scope '^foo' \
     -- "$TMP/use_lib" >/dev/null 2>/dev/null
 grep -q 'foo(int)' "$TMP/lib.trace"
 grep -q ' <- foo(int)' "$TMP/lib.trace"

@@ -1,6 +1,7 @@
 #include "callgraph/call_stack.h"
 
 #include <cstdio>
+#include <algorithm>
 
 #include "callgraph/common.h"
 #include "callgraph/output.h"
@@ -102,17 +103,24 @@ size_t CallStack::close_skipped_frames(uint32_t tid,
     const size_t skipped = frames.size() - keep;
 
     desyncs_ += skipped;
+    uint64_t traced_skipped = 0;
     if (sink_) {
         for (size_t i = frames.size(); i > keep; --i) {
             const CallFrame& frame = frames[i - 1];
             if (!frame.traced)
                 continue;
+            ++traced_skipped;
             sink_->on_function_exit(tid, frame.span_token, frame.function_id,
                                     ts, SpanCloseReason::Desync);
         }
+    } else {
+        for (size_t i = keep; i < frames.size(); ++i) {
+            if (frames[i].traced)
+                ++traced_skipped;
+        }
     }
     if (collect_latency_)
-        stats_.mark_incomplete(tid, skipped);
+        stats_.mark_incomplete(tid, traced_skipped);
 
     frames.resize(keep);
     return skipped;
@@ -180,7 +188,38 @@ void CallStack::on_event(const TraceEvent& event,
             }
         }
 
-        const uint32_t depth = static_cast<uint32_t>(state.frames.size());
+        const uint32_t absolute_depth =
+            static_cast<uint32_t>(state.frames.size());
+
+        // A resync may have unwound the active root.
+        if (state.root_active && state.frames.size() <= state.root_index) {
+            state.root_active = false;
+            state.root_index = 0;
+            state.hidden_depth = 0;
+        }
+
+        const bool activates_root =
+            !state.root_active &&
+            (!has_root_scope_ ||
+             (trace_roots_ && trace_roots_->count(event.func_id) != 0));
+
+        if (!state.root_active && !activates_root) {
+            // Pre-root ancestor: kept only so returns pair correctly.  It never
+            // produces text, spans, or histogram entries.
+            state.frames.push_back(
+                {event.func_id, event.ts, 0, event.sp, false, false});
+            ++entries_;
+            return;
+        }
+
+        if (activates_root) {
+            state.root_active = true;
+            state.root_index = absolute_depth;
+            state.hidden_depth = 0;
+        }
+
+        const uint32_t depth =
+            absolute_depth - static_cast<uint32_t>(state.root_index);
 
         // --trace-depth: stop reconstructing user frames below the cut.
         // Their entries are still counted so the matching returns can be
@@ -197,7 +236,7 @@ void CallStack::on_event(const TraceEvent& event,
 
         bool traced = true;
         bool logged = true;
-        if (state.frames.empty()) {
+        if (activates_root) {
             traced = ingest_root(event.tid);
             logged = traced;
             if (!traced)
@@ -225,7 +264,9 @@ void CallStack::on_event(const TraceEvent& event,
             emit_line(event.ts, event.tid, depth, "->", display);
 
         const uint64_t parent_token =
-            state.frames.empty() ? 0 : state.frames.back().span_token;
+            activates_root || state.frames.empty()
+                ? 0
+                : state.frames.back().span_token;
         uint64_t span_token = 0;
         if (sink_ && traced) {
             span_token = sink_->on_function_enter(event.tid, event.func_id, depth,
@@ -249,16 +290,17 @@ void CallStack::on_event(const TraceEvent& event,
         return;
     }
 
-    auto& frames = it->second.frames;
+    auto& state = it->second;
+    auto& frames = state.frames;
 
-    if (it->second.hidden_depth != 0) {
+    if (state.hidden_depth != 0) {
         // Offline traces carry the authoritative depth, so a return at a
         // retained depth means the hidden subtree was unwound after all.
         if (depth_hint >= 0 && trace_depth_ >= 0 &&
             depth_hint <= trace_depth_) {
-            it->second.hidden_depth = 0;
+            state.hidden_depth = 0;
         } else {
-            --it->second.hidden_depth;
+            --state.hidden_depth;
             return;
         }
     }
@@ -275,10 +317,18 @@ void CallStack::on_event(const TraceEvent& event,
         return;
     }
 
-    const uint32_t depth = static_cast<uint32_t>(index - 1);
+    const size_t absolute_index = index - 1;
+    const bool within_root =
+        state.root_active && absolute_index >= state.root_index;
+    const bool is_root =
+        within_root && absolute_index == state.root_index;
+    const uint32_t depth =
+        within_root
+            ? static_cast<uint32_t>(absolute_index - state.root_index)
+            : 0;
 
     // Copy the returning frame: closing the frames above it resizes the stack.
-    const CallFrame frame = frames[index - 1];
+    const CallFrame frame = frames[absolute_index];
 
     // Frames above the match never returned.  Close their spans with the
     // timestamp of the event that revealed the gap, then close the match.
@@ -289,30 +339,46 @@ void CallStack::on_event(const TraceEvent& event,
                     name.c_str(), skipped);
     }
 
-    if (frame.logged &&
-        (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
-        log_allowed(event.ts))
-        emit_line(event.ts, event.tid, depth, "<-", name);
-
-    if (collect_latency_) {
-        const uint64_t duration =
-            event.ts >= frame.start_ts ? event.ts - frame.start_ts : 0;
-        // close_skipped_frames() already trimmed the stack to the matched
-        // frame, so frames[0..index) is the full root-to-callee path.
-        path_scratch_.clear();
-        path_scratch_.reserve(index);
-        for (size_t i = 0; i < index; ++i)
-            path_scratch_.push_back(frames[i].function_id);
-        stats_.record(event.tid, path_scratch_, duration);
+    // A skipped return may have unwound the active root.
+    if (state.root_active && frames.size() <= state.root_index) {
+        state.root_active = false;
+        state.root_index = 0;
+        state.hidden_depth = 0;
     }
 
-    if (sink_ && frame.traced) {
-        sink_->on_function_exit(event.tid, frame.span_token, frame.function_id,
-                        event.ts, SpanCloseReason::Return);
+    if (within_root) {
+        if (frame.logged &&
+            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
+            log_allowed(event.ts))
+            emit_line(event.ts, event.tid, depth, "<-", name);
+
+        if (collect_latency_) {
+            const uint64_t duration =
+                event.ts >= frame.start_ts ? event.ts - frame.start_ts : 0;
+            // The path starts at the active root, not at pre-root ancestors.
+            path_scratch_.clear();
+            path_scratch_.reserve(index - state.root_index);
+            for (size_t i = state.root_index; i < index; ++i)
+                path_scratch_.push_back(frames[i].function_id);
+            stats_.record(event.tid, path_scratch_, duration);
+        }
+
+        if (sink_ && frame.traced) {
+            sink_->on_function_exit(event.tid, frame.span_token,
+                                    frame.function_id, event.ts,
+                                    SpanCloseReason::Return);
+        }
     }
 
     frames.pop_back();
     ++returns_;
+
+    if (is_root ||
+        (state.root_active && frames.size() <= state.root_index)) {
+        state.root_active = false;
+        state.root_index = 0;
+        state.hidden_depth = 0;
+    }
 
     if (frames.empty())
         threads_.erase(it);
@@ -325,23 +391,31 @@ void CallStack::finish_statistics()
     stats_finished_ = true;
 
     for (const auto& [tid, state] : threads_) {
-        stats_.mark_incomplete(tid, state.frames.size());
-
-        if (state.frames.empty())
+        if (!state.root_active)
+            continue;
+        const size_t live = state.frames.size() - state.root_index;
+        if (live == 0)
             continue;
 
-        std::vector<uint64_t> live;
-        live.reserve(state.frames.size());
-        for (const auto& frame : state.frames)
-            live.push_back(frame.function_id);
-        stats_.mark_live(tid, live);
+        stats_.mark_incomplete(tid, live);
+
+        std::vector<uint64_t> stack;
+        stack.reserve(live);
+        for (size_t i = state.root_index; i < state.frames.size(); ++i)
+            stack.push_back(state.frames[i].function_id);
+        stats_.mark_live(tid, stack);
     }
 }
 
-const std::vector<CallFrame>* CallStack::frames_for(uint32_t tid) const
+std::span<const CallFrame> CallStack::traced_frames_for(uint32_t tid) const
 {
     const auto it = threads_.find(tid);
-    return it == threads_.end() ? nullptr : &it->second.frames;
+    if (it == threads_.end() || !it->second.root_active)
+        return {};
+    const auto& frames = it->second.frames;
+    const size_t start = std::min(it->second.root_index, frames.size());
+    return std::span<const CallFrame>(frames.data() + start,
+                                      frames.size() - start);
 }
 
 void CallStack::finish_spans(uint64_t stop_ts)

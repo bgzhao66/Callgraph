@@ -43,6 +43,7 @@
 #include "callgraph/process_controller.h"
 #include "callgraph/probe_manager.h"
 #include "callgraph/span_generator.h"
+#include "callgraph/static_call_graph.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
 #include "callgraph/trace_parser.h"
@@ -59,7 +60,7 @@ struct Options {
     std::string command;
     pid_t pid = -1;
     std::string output;
-    std::vector<std::string> scope;
+    std::vector<std::string> root_scope;
     std::vector<std::string> exclude;
     bool use_regex = false;
     std::string return_mode = "uretprobe";
@@ -209,9 +210,10 @@ void usage(FILE* out)
 
     print_help_section(out, "Tracing options", {
         {"-o, --output FILE", "write events to FILE (default: stdout)"},
-        {"--scope GLOB", "only trace functions matching GLOB (repeatable)"},
+        {"--root-scope GLOB",
+         "functions that may start a traced call tree (repeatable)"},
         {"--exclude GLOB", "skip functions matching GLOB (repeatable)"},
-        {"--regex", "treat --scope/--exclude as extended regex"},
+        {"--regex", "treat --root-scope/--exclude as extended regex"},
         {"--return-mode M", "uretprobe (default) or ret (exception-safe)"},
         {"--no-rsp-resync",
          "keep frames across stack switches (stackful\n"
@@ -224,7 +226,8 @@ void usage(FILE* out)
         {"--max-depth N", "print events with depth <= N (default: unlimited)"},
         {"--trace-depth N",
          "trace user frames N levels below the root\n"
-         "(0: root only; default: unlimited); kernel events unaffected"},
+         "(0: root only; default: unlimited);\n"
+         "N > 0 prunes probes statically; kernel events unaffected"},
         {"--indent N", "indent names by depth*N spaces (default: 0)"},
         {"--show-args",
          "show function arguments after names (needs DWARF);\n"
@@ -363,11 +366,11 @@ void usage(FILE* out)
             "Examples:\n"
             "  Trace a program:\n"
             "    sudo callgraph run -- ./demo\n"
-            "    sudo callgraph run --scope 'Database::*' -- ./demo\n"
+            "    sudo callgraph run --root-scope 'Database::*' -- ./demo\n"
             "    callgraph run --dry-run -- ./demo\n"
             "\n"
             "  Attach to a running process:\n"
-            "    sudo callgraph attach -p 12345 --scope 'Database::*'\n"
+            "    sudo callgraph attach -p 12345 --root-scope 'Database::*'\n"
             "\n"
             "  Correlated kernel events:\n"
             "    sudo callgraph run --kernel --preset latency -- ./demo\n"
@@ -603,8 +606,8 @@ Options parse_args(int argc, char** argv)
 
         if (arg == "-o" || arg == "--output") {
             options.output = value();
-        } else if (arg == "--scope") {
-            options.scope.push_back(value());
+        } else if (arg == "--root-scope") {
+            options.root_scope.push_back(value());
         } else if (arg == "--exclude") {
             options.exclude.push_back(value());
         } else if (arg == "--regex") {
@@ -1475,14 +1478,14 @@ int run_export(const ExportOptions& options)
 
 class FunctionFilter {
 public:
-    FunctionFilter(const std::vector<std::string>& scope,
+    FunctionFilter(const std::vector<std::string>& root_scope,
                    const std::vector<std::string>& exclude, bool use_regex)
-        : scope_(scope), exclude_(exclude), use_regex_(use_regex)
+        : root_scope_(root_scope), exclude_(exclude), use_regex_(use_regex)
     {
         if (use_regex_) {
             try {
-                for (const auto& pattern : scope_)
-                    scope_re_.emplace_back(pattern);
+                for (const auto& pattern : root_scope_)
+                    root_scope_re_.emplace_back(pattern);
                 for (const auto& pattern : exclude_)
                     exclude_re_.emplace_back(pattern);
             } catch (const std::regex_error& error) {
@@ -1491,13 +1494,20 @@ public:
         }
     }
 
-    bool keep(const FunctionInfo& function) const
+    bool has_root_scope() const { return !root_scope_.empty(); }
+
+    bool excluded(const FunctionInfo& function) const
     {
-        if (!scope_.empty() && !matches(function, scope_, scope_re_))
-            return false;
-        if (!exclude_.empty() && matches(function, exclude_, exclude_re_))
-            return false;
-        return true;
+        return !exclude_.empty() &&
+               matches(function, exclude_, exclude_re_);
+    }
+
+    // A root must match --root-scope and must not be excluded.
+    bool root_match(const FunctionInfo& function) const
+    {
+        return !root_scope_.empty() &&
+               matches(function, root_scope_, root_scope_re_) &&
+               !excluded(function);
     }
 
 private:
@@ -1520,10 +1530,10 @@ private:
         return false;
     }
 
-    std::vector<std::string> scope_;
+    std::vector<std::string> root_scope_;
     std::vector<std::string> exclude_;
     bool use_regex_;
-    std::vector<std::regex> scope_re_;
+    std::vector<std::regex> root_scope_re_;
     std::vector<std::regex> exclude_re_;
 };
 
@@ -1578,18 +1588,74 @@ public:
             return false;
         }
 
-        std::vector<FunctionInfo> selected;
-        selected.reserve(module.functions.size());
-        for (auto& function : module.functions) {
-            if (filter_.keep(function))
-                selected.push_back(std::move(function));
+        std::vector<size_t> candidates;
+        std::vector<size_t> roots;
+        candidates.reserve(module.functions.size());
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            if (filter_.excluded(module.functions[i]))
+                continue;
+            candidates.push_back(i);
+            if (filter_.root_match(module.functions[i]))
+                roots.push_back(i);
         }
 
+        std::vector<size_t> keep = candidates;
+        const int trace_depth = options_.trace_depth;
+        if (trace_depth >= 0) {
+            StaticPruneRequest request;
+            request.module_path = path;
+            request.functions = &module.functions;
+            request.candidates = candidates;
+            request.roots = roots;
+            request.has_root_scope = filter_.has_root_scope();
+            request.trace_depth = trace_depth;
+            request.attach_mode = options_.command == "attach";
+            request.is_go_binary = module.is_go_binary;
+            request.verbose = options_.verbose;
+
+            StaticPruneResult result =
+                trace_depth == 0 ? select_roots(request)
+                                 : prune_statically(request);
+            if (result.available) {
+                keep = std::move(result.keep);
+                if (trace_depth > 0) {
+                    log_info("static prune: kept %zu of %zu function(s) at "
+                             "depth <= %d in %s",
+                             keep.size(), candidates.size(), trace_depth,
+                             path.c_str());
+                }
+            } else {
+                instrumentation_incomplete_ = true;
+                if (!roots.empty()) {
+                    keep = roots;
+                    log_warn("static call-graph analysis unavailable for %s "
+                             "(%s); instrumenting only %zu explicitly scoped "
+                             "root(s); descendants outside --root-scope will "
+                             "not be traced",
+                             path.c_str(), result.reason.c_str(), roots.size());
+                } else {
+                    keep.clear();
+                    log_warn("static call-graph analysis unavailable for %s "
+                             "(%s); user-function instrumentation is "
+                             "incomplete. Instrumenting 0 functions. Use "
+                             "--root-scope to specify tracing points "
+                             "explicitly",
+                             path.c_str(), result.reason.c_str());
+                }
+            }
+        }
+
+        std::vector<FunctionInfo> selected;
+        selected.reserve(keep.size());
+        for (const size_t index : keep)
+            selected.push_back(std::move(module.functions[index]));
+
         if (selected.empty()) {
-            if (required)
+            if (required && trace_depth < 0)
                 fail("no functions matched in %s", path.c_str());
-            log_verbose("skipping %s: no matching functions", path.c_str());
-            return false;
+            log_warn("no function probes instrumented in %s", path.c_str());
+            modules_.push_back({path, {}});
+            return true;
         }
 
         if (options_.show_args)
@@ -1598,6 +1664,10 @@ public:
         const size_t base = names_.size();
         for (size_t i = 0; i < selected.size(); ++i) {
             selected[i].function_id = base + i;
+            if (filter_.root_match(selected[i])) {
+                root_ids_.insert(selected[i].function_id);
+                log_verbose("root: %s", selected[i].name.c_str());
+            }
             names_.push_back(selected[i].name);
             signatures_.push_back(std::move(selected[i].signature));
 
@@ -1614,7 +1684,7 @@ public:
             functions_.push_back(std::move(metadata));
         }
 
-        if (probes_)
+        if (probes_ && !selected.empty())
             probes_->attach(path, selected, ret_mode_);
 
         log_info("resolved %zu function(s) in %s%s%s", selected.size(),
@@ -1660,6 +1730,14 @@ public:
     {
         return attached_.count(path) != 0;
     }
+    const std::unordered_set<uint64_t>& root_ids() const
+    {
+        return root_ids_;
+    }
+    bool instrumentation_incomplete() const
+    {
+        return instrumentation_incomplete_;
+    }
 
 private:
     const Options& options_;
@@ -1671,7 +1749,9 @@ private:
     std::vector<FunctionSignature> signatures_;
     std::vector<FunctionMetadata> functions_;
     std::vector<PlannedModule> modules_;
+    std::unordered_set<uint64_t> root_ids_;
     std::unordered_set<std::string> attached_;
+    bool instrumentation_incomplete_ = false;
     bool warned_exceptions_ = false;
     bool warned_go_ = false;
 };
@@ -1777,7 +1857,8 @@ int main(int argc, char** argv)
             exe = ProcessController::exe_path(target);
         }
 
-        FunctionFilter filter(options.scope, options.exclude, options.use_regex);
+        FunctionFilter filter(options.root_scope, options.exclude,
+                              options.use_regex);
 
         std::vector<std::string> initial_paths;
         initial_paths.push_back(exe);
@@ -1981,6 +2062,7 @@ int main(int argc, char** argv)
                         options.histogram, span_generator.get());
         stack.set_rsp_resync(!options.no_rsp_resync);
         stack.set_trace_depth(options.trace_depth);
+        stack.set_trace_roots(&registry.root_ids(), filter.has_root_scope());
         stack.set_ingest_sample_rate(options.ingest_sample_rate);
         // Rate limiting is a stdout convenience; file output and the
         // histogram trailer keep their complete line stream.
@@ -2127,6 +2209,10 @@ int main(int argc, char** argv)
                     kernel_events, collector.kernel_events_seen(), kernel_lost,
                     output.dropped_kernel(),
                     kernel_probes->attached_events());
+        }
+        if (registry.instrumentation_incomplete()) {
+            log_warn("user-function instrumentation is incomplete; see the "
+                     "static-analysis warnings above");
         }
 
         if (lost != 0)

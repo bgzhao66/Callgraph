@@ -604,7 +604,7 @@ delay". Reports keep the reason column.
 - a switch-in has no switch-out;
 - a begin has no matching end at shutdown;
 - events were lost or arrived out of order;
-- the function stack was truncated by `--scope`/`--exclude` or
+- the function stack was truncated by `--exclude` or
   `--max-depth` (display only; attribution is compressed accordingly).
 
 Partial time is reported as `unaccounted`, not guessed. Lost kernel events

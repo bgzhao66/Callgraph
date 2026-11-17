@@ -6,6 +6,7 @@
 #include <regex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <unistd.h>
@@ -392,6 +393,66 @@ void test_trace_depth()
             CHECK(closed[1].function.name == "main");
         }
     }
+}
+
+void test_root_scope()
+{
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string trace;
+    std::string report;
+
+    std::unordered_set<uint64_t> roots = {1};  // A(int)
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        stack.set_trace_roots(&roots, true);
+
+        stack.on_event(make_event(0, 10, kEventEnter, 0));   // main: pre-root
+        CHECK(stack.traced_frames_for(10).empty());
+        stack.on_event(make_event(1, 10, kEventEnter, 10));  // A: root
+        CHECK(stack.traced_frames_for(10).size() == 1);
+        stack.on_event(make_event(2, 10, kEventEnter, 20));  // B: child
+        CHECK(stack.traced_frames_for(10).size() == 2);
+        stack.on_event(make_event(2, 10, kEventExit, 30));
+        stack.on_event(make_event(1, 10, kEventExit, 40));   // A returns
+        CHECK(stack.traced_frames_for(10).empty());
+        stack.on_event(make_event(0, 10, kEventExit, 50));
+        CHECK(stack.live_threads() == 0);
+
+        stack.finish_statistics();
+        report = format_histogram_report(stack.stats(), names);
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+
+    CHECK(trace.find("main") == std::string::npos);
+    CHECK(trace.find(" : 0 -> A(int)") != std::string::npos);
+    CHECK(trace.find(" : 1 -> B(int)") != std::string::npos);
+    CHECK(without_histogram_bars(report).find("0. A(int)\n   calls=1") !=
+          std::string::npos);
+    CHECK(without_histogram_bars(report).find("1. B(int)\n   calls=1") !=
+          std::string::npos);
+    CHECK(report.find("0. main") == std::string::npos);
+
+    // A nested root match is a descendant, not a new root.
+    std::unordered_set<uint64_t> roots2 = {0, 1};
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, false);
+        stack.set_trace_roots(&roots2, true);
+        stack.on_event(make_event(0, 11, kEventEnter, 0));
+        stack.on_event(make_event(1, 11, kEventEnter, 10));
+        stack.on_event(make_event(1, 11, kEventExit, 20));
+        stack.on_event(make_event(0, 11, kEventExit, 30));
+        output.stop();
+    }
+    trace = read_file(path);
+    unlink(path.c_str());
+    CHECK(trace.find(" : 0 -> main") != std::string::npos);
+    CHECK(trace.find(" : 1 -> A(int)") != std::string::npos);
+    CHECK(trace.find(" : 0 -> A(int)") == std::string::npos);
 }
 
 void test_histogram_bar_proportional()
@@ -3343,6 +3404,7 @@ int main()
     test_latency_histogram();
     test_histogram_report();
     test_trace_depth();
+    test_root_scope();
     test_histogram_bar_proportional();
     test_histogram_call_path_totals();
     test_histogram_tree_units();

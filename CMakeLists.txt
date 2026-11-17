@@ -186,6 +186,7 @@ add_executable(callgraph
   src/main.cpp
   src/common.cpp
   src/elf_resolver.cpp
+  src/static_call_graph.cpp
   src/dwarf_args.cpp
   src/arguments.cpp
   src/module_manager.cpp

@@ -314,7 +314,7 @@ Function tracing can produce very high span rates. The exporter provides:
 - dropped/failed counters, broken down by reason (`queue-spans-full`,
   `queue-bytes-full`, `trace-queue-full`, `no-sink`, `encode-failed`,
   `send-failed`, `write-failed`);
-- instrumentation filters (`--scope`, `--exclude`);
+- instrumentation filters (`--exclude`); `--root-scope` selects roots only;
 - ingest sampling (`--ingest-sample-rate 0..1`);
 - baseline root-trace sampling (`--sample-rate 0..1`);
 - latency-outlier tail sampling (`--outlier-latency-quantile`);
@@ -404,7 +404,7 @@ callgraph attach -p 12345 \
 
 # Root sampling and filtering
 callgraph run --exporter otlp --sample-rate 0.1 \
-    --scope 'Database::*' -- ./my_app
+    --root-scope 'Database::*' -- ./my_app
 
 # Tail sampling: keep slow traces even with a low baseline sample
 callgraph run --exporter otlp --complete-traces \

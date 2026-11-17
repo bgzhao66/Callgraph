@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "callgraph/argument_info.h"
@@ -30,6 +32,10 @@ struct ThreadState {
     // Frames below --trace-depth that are not reconstructed.  Their entries
     // and returns are still consumed so the retained stack stays paired.
     uint32_t hidden_depth = 0;
+    // The root is the outermost --root-scope match on this thread.  Frames
+    // below root_index are pre-root ancestors and are never traced.
+    bool root_active = false;
+    size_t root_index = 0;
 };
 
 // Reconstructs one logical call stack per TID from the event stream.
@@ -76,6 +82,17 @@ public:
     // offline replay uses.
     void set_trace_depth(int depth) { trace_depth_ = depth; }
 
+    // --root-scope: only a matching function starts a traced tree.  The root
+    // set may grow while modules load; the collector thread updates it and
+    // reads it, so no locking is needed.  When has_root_scope is false, the
+    // first observed frame is the root.
+    void set_trace_roots(const std::unordered_set<uint64_t>* roots,
+                         bool has_root_scope)
+    {
+        trace_roots_ = roots;
+        has_root_scope_ = has_root_scope;
+    }
+
     // Root-entry ingest sampling.  A rejected root suppresses text and spans
     // for its whole subtree, but the stack is still maintained so returns are
     // matched correctly.  1.0 keeps every root.
@@ -93,10 +110,10 @@ public:
     // than once; only the first call has an effect.
     void finish_statistics();
 
-    // Read-only view of the current frames for a thread, root-first.  The
-    // pointer is valid only until the next CallStack mutation.  Returns null
-    // when the thread has no traced frames.
-    const std::vector<CallFrame>* frames_for(uint32_t tid) const;
+    // Read-only view of the traced frames for a thread, root-first.  Pre-root
+    // ancestors are excluded.  The span is valid only until the next
+    // CallStack mutation.  Returns an empty span when no root is active.
+    std::span<const CallFrame> traced_frames_for(uint32_t tid) const;
 
     // Closes spans for frames that never returned.  Independent of
     // --histogram/collect_latency.
@@ -130,6 +147,8 @@ private:
     Output* output_;
     int max_depth_;
     int trace_depth_ = -1;
+    const std::unordered_set<uint64_t>* trace_roots_ = nullptr;
+    bool has_root_scope_ = false;
     bool verbose_;
     bool collect_latency_;
     bool rsp_resync_ = true;

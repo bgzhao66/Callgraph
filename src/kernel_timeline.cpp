@@ -299,10 +299,10 @@ std::string syscall_span_name(uint16_t enter_kind)
 
 int depth_of(const CallStack& stack, uint32_t tid)
 {
-    const auto* frames = stack.frames_for(tid);
-    if (!frames || frames->empty())
+    const auto frames = stack.traced_frames_for(tid);
+    if (frames.empty())
         return kKernelDepthNone;
-    return static_cast<int>(frames->size() - 1);
+    return static_cast<int>(frames.size() - 1);
 }
 
 uint32_t span_user_depth(const CallStack& stack, uint32_t tid)
@@ -395,13 +395,13 @@ void KernelTimeline::record_kernel_histogram(uint32_t tid,
     if (!collect_histograms_)
         return;
 
-    const auto* frames = stack.frames_for(tid);
-    if (!frames || frames->empty())
+    const auto frames = stack.traced_frames_for(tid);
+    if (frames.empty())
         return;
 
     CallPath path;
-    path.reserve(frames->size());
-    for (const CallFrame& frame : *frames)
+    path.reserve(frames.size());
+    for (const CallFrame& frame : frames)
         path.push_back(frame.function_id);
 
     KernelHistogram& entry = kernel_histograms_[tid][std::move(path)][event];
@@ -527,10 +527,10 @@ void KernelTimeline::emit_event(const KernelEvent& event, int depth,
 uint64_t KernelTimeline::function_span_token(const CallStack& stack,
                                              uint32_t tid) const
 {
-    const auto* frames = stack.frames_for(tid);
-    if (!frames || frames->empty())
+    const auto frames = stack.traced_frames_for(tid);
+    if (frames.empty())
         return 0;
-    return frames->back().span_token;
+    return frames.back().span_token;
 }
 
 uint64_t KernelTimeline::innermost_span_token(uint32_t tid,

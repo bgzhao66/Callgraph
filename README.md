@@ -93,8 +93,10 @@ development headers. Without protobuf, `--exporter otlp-json` still writes OTLP/
 
 ## Usage
 
-Tracing is unlimited in depth by default. `--trace-depth N` keeps the root and
-`N` levels of callees; `--trace-depth 0` keeps only the root.
+Tracing is unlimited in depth by default. `--root-scope` selects the functions
+that may start a traced tree; their descendants are traced up to
+`--trace-depth`. `--trace-depth 0` is root-only, and `N > 0` uses conservative
+static pruning; omitting it is unlimited.
 
 ```bash
 # Launch and trace from the first instruction
@@ -117,7 +119,7 @@ sudo ./build/callgraph attach -p 12345
 
 # Only your code, with full regex syntax
 sudo ./build/callgraph attach -p 12345 --regex \
-    --scope '^(main|Database::)' --exclude 'Database::Debug'
+    --root-scope '^(main|Database::)' --exclude 'Database::Debug'
 
 # Exception-using C++ program: avoid uretprobe unwinding breakage
 sudo ./build/callgraph run --return-mode ret -- ./my_app
@@ -171,9 +173,9 @@ Usage:
 
 Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
-      --scope GLOB          only trace functions matching GLOB (repeatable)
+      --root-scope GLOB     functions that may start a traced call tree (repeatable)
       --exclude GLOB        skip functions matching GLOB (repeatable)
-      --regex               treat --scope/--exclude as extended regex
+      --regex               treat --root-scope/--exclude as extended regex
       --return-mode M       uretprobe (default) or ret (exception-safe)
       --no-rsp-resync       keep frames across stack switches (stackful
                             runtimes such as ucontext, Boost.Context);
@@ -183,7 +185,8 @@ Tracing options:
   -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
       --max-depth N         print events with depth <= N (default: unlimited)
       --trace-depth N       trace user frames N levels below the root
-                            (0: root only; default: unlimited); kernel events unaffected
+                            (0: root only; default: unlimited);
+                            N > 0 prunes probes statically; kernel events unaffected
       --indent N            indent names by depth*N spaces (default: 0)
       --show-args           show function arguments after names (needs DWARF);
                             preserve text suffixes in offline export
@@ -301,11 +304,11 @@ General options:
 Examples:
   Trace a program:
     sudo callgraph run -- ./demo
-    sudo callgraph run --scope 'Database::*' -- ./demo
+    sudo callgraph run --root-scope 'Database::*' -- ./demo
     callgraph run --dry-run -- ./demo
 
   Attach to a running process:
-    sudo callgraph attach -p 12345 --scope 'Database::*'
+    sudo callgraph attach -p 12345 --root-scope 'Database::*'
 
   Correlated kernel events:
     sudo callgraph run --kernel --preset latency -- ./demo
@@ -347,17 +350,21 @@ trace via `--input`; `--otel` requires either `--output FILE` or
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;
-`--regex` switches to C++ `std::regex` (ECMAScript) syntax. A non-empty
-`--scope` wins over the default "everything"; `--exclude` then removes matches.
-`--scope` selects which functions are instrumented; it is unrelated to
-`--trace-scope`, which controls how exported OTel spans are grouped.
+`--regex` switches to C++ `std::regex` (ECMAScript) syntax. `--root-scope`
+selects functions that may **start** a traced call tree; descendants are traced
+even when they do not match the pattern, up to `--trace-depth`. `--exclude`
+removes a function entirely. `--root-scope` is unrelated to `--trace-scope`,
+which controls how exported OTel spans are grouped.
 
 The main executable is always considered. `--all-modules` adds every mapped
 ELF file that has a usable symbol table; `--module GLOB` adds matching mapped
 modules (the glob is tried against both the full path and the basename).
 Modules loaded after tracing starts (shared libraries, `dlopen`) are discovered
 by polling `/proc/<pid>/maps` roughly every 100 ms. Calls made before the new
-module is attached (for example, early constructors) are not seen.
+module is attached (for example, early constructors) are not seen. With
+`--all-modules` and no `--trace-depth`, every non-excluded function in every
+mapped module is instrumented, including the dynamic loader; prefer
+`--trace-depth`, `--module`, or `--exclude` for large processes.
 
 ## Output
 
@@ -435,32 +442,45 @@ CLOCK_MONOTONIC`. If the system clock is stepped by NTP or the machine
 suspends while tracing, wall-clock values drift; seconds since boot remain
 exact.
 
-### Depth semantics and filtering
+### Depth semantics and roots
 
-Filtering happens at instrumentation time. A function excluded by
-`--scope`/`--exclude` produces no events and does not contribute a frame, so
-`depth` counts only instrumented frames:
+`--root-scope GLOB` selects the functions that may start a traced call tree.
+The outermost matching function on each thread becomes depth 0. Descendants
+are traced even when they do not match `--root-scope`, up to `--trace-depth`.
+
+`--exclude GLOB` removes a function entirely. Its instrumented descendants
+splice to the nearest retained ancestor, so an excluded node contributes no
+frame:
 
 ```
 0 -> main
-1 -> A          # B in between is not instrumented
+1 -> A          # B is excluded; A splices under main
 1 <- A
 0 <- main
 ```
 
-`--trace-depth N` controls how much of each traced tree is reconstructed:
+`--trace-depth N` controls how much of each root's subtree is reconstructed:
 
-- Omitting the option leaves the depth unlimited (the default).
-- `0` keeps only the root frame.
-- `N >= 1` keeps the root plus `N` additional levels below it.
-- **Root:** with `--scope`, the outermost scope-matched frame on each
-  thread is the relative root and the pattern defines the traced subtree.
-  Without `--scope`, depth 0 of the thread's global tracked stack is the root.
+- Omitting the option leaves the depth unlimited. No static pruning runs and
+  every non-excluded function is instrumented.
+- `0` keeps only the root frame. Instrumentation is limited to root candidates
+  when `--root-scope` is given; without it, the tracer uses the entry, init,
+  exported, address-taken, and code-materialised root tier in `run` mode (the
+  metadata subset remains available without a disassembler).
+- `N >= 1` keeps the root plus `N` levels. The tracer automatically runs
+  conservative static call-graph pruning so functions that cannot appear within
+  that window are not instrumented.
+- If the call graph cannot be built reliably for a module, the tracer warns and
+  instruments **no** functions implicitly. With `--root-scope`, only the
+  explicit matches are instrumented and unlisted descendants are not traced.
+  Without it, user-function instrumentation is empty; use `--root-scope` to
+  specify tracing points explicitly.
+- In `attach` mode without `--root-scope`, roots are dynamic, so `N >= 0`
+  cannot seed the graph. The tracer warns and instruments nothing implicitly;
+  use `--root-scope`.
 - Frames deeper than the cut are not reconstructed: they produce no text,
   spans, or histogram entries. Their returns are still consumed so retained
   depths pair correctly.
-- Excluded frames are not roots; they are skipped, and their instrumented
-  descendants splice to the nearest retained ancestor.
 - Kernel events are **not** capped by `--trace-depth`; they keep flowing at any
   user depth and attribute to the deepest retained user frame.
 - Offline `export --otel`/`--flame` is unaffected and replays every recorded
@@ -582,8 +602,9 @@ Histograms:
   as `name  [incomplete]` and in the histogram section as
   `calls=0  [incomplete]`.
 - `--max-depth` and `--indent` do not affect the histogram; `--max-depth` only
-  hides event lines. `--scope`/`--exclude` still apply at instrumentation
-  time, so excluded functions do not appear.
+  hides event lines. `--exclude` still applies at instrumentation time, so
+  excluded functions do not appear; non-matching descendants of a
+  `--root-scope` match can appear.
 - A recursive call is expanded once in the tree and marked `[recursive]`; its
   histogram entry is also marked `[recursive]` instead of being expanded
   forever.
