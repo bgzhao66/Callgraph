@@ -1969,7 +1969,6 @@ void test_kernel_scheduler()
 {
     const auto names = make_names();
     const std::string path = temp_path();
-    std::string report;
     std::string trace;
 
     {
@@ -2023,8 +2022,6 @@ void test_kernel_scheduler()
         timeline.on_function_event(exit, stack);
         stack.on_event(exit);
         timeline.finish(7000, stack);
-
-        report = timeline.format_report(names);
         output.stop();
     }
     trace = read_file(path);
@@ -2036,9 +2033,6 @@ void test_kernel_scheduler()
     CHECK(trace.find("@SCHED switch_in") != std::string::npos);
     CHECK(trace.find("offcpu_ns=5000") != std::string::npos);
     CHECK(trace.find("runqueue_ns=1000") != std::string::npos);
-    CHECK(report.find("0. main cpu=2.000us runnable=1.000us "
-                      "blocked=4.000us") != std::string::npos);
-    CHECK(report.find("partial=yes") != std::string::npos);
 }
 
 void test_kernel_futex_and_io()
@@ -2046,7 +2040,6 @@ void test_kernel_futex_and_io()
     const auto names = make_names();
     const std::string path = temp_path();
     std::string trace;
-    std::string report;
 
     {
         Output output(path);
@@ -2127,8 +2120,6 @@ void test_kernel_futex_and_io()
         timeline.on_function_event(exit, stack);
         stack.on_event(exit);
         timeline.finish(2000, stack);
-
-        report = timeline.format_report(names);
         output.stop();
     }
     trace = read_file(path);
@@ -2141,7 +2132,6 @@ void test_kernel_futex_and_io()
     CHECK(trace.find("fd=3 count=64") != std::string::npos);
     CHECK(trace.find("@IO read_end") != std::string::npos);
     CHECK(trace.find("duration_ns=200") != std::string::npos);
-    CHECK(report.find("blocked(futex=1.000us") != std::string::npos);
 }
 
 void test_kernel_block_correlation()
@@ -2214,7 +2204,6 @@ void test_kernel_memory()
     const auto names = make_names();
     const std::string path = temp_path();
     std::string trace;
-    std::string report;
 
     {
         Output output(path);
@@ -2283,8 +2272,6 @@ void test_kernel_memory()
         timeline.on_function_event(exit, stack);
         stack.on_event(exit);
         timeline.finish(1400, stack);
-
-        report = timeline.format_report(names);
         output.stop();
     }
     trace = read_file(path);
@@ -2298,8 +2285,6 @@ void test_kernel_memory()
     CHECK(trace.find("@MM direct_reclaim_end") != std::string::npos);
     CHECK(trace.find("nr_reclaimed=42 duration_ns=1100") !=
           std::string::npos);
-    CHECK(report.find("blocked(memory=700ns") != std::string::npos);
-    CHECK(report.find("faults=1") != std::string::npos);
 }
 
 void test_kernel_network()
@@ -2307,7 +2292,6 @@ void test_kernel_network()
     const auto names = make_names();
     const std::string path = temp_path();
     std::string trace;
-    std::string report;
 
     {
         Output output(path);
@@ -2415,8 +2399,6 @@ void test_kernel_network()
         timeline.on_function_event(exit, stack);
         stack.on_event(exit);
         timeline.finish(1300, stack);
-
-        report = timeline.format_report(names);
         output.stop();
     }
     trace = read_file(path);
@@ -2434,7 +2416,6 @@ void test_kernel_network()
           std::string::npos);
     CHECK(trace.find("@NET recvfrom_end id=3 ret=64 duration_ns=700") !=
           std::string::npos);
-    CHECK(report.find("blocked(net=400ns") != std::string::npos);
 }
 
 void test_kernel_histogram_report()
@@ -3173,12 +3154,11 @@ void test_kernel_span_depth_clamp()
     }
 }
 
-void test_kernel_global_report()
+void test_kernel_global_text()
 {
     const auto names = make_names();
     const std::string path = temp_path();
     std::string trace;
-    std::string report;
 
     {
         Output output(path);
@@ -3197,7 +3177,6 @@ void test_kernel_global_report()
         retransmit.f = 0x0101a8c0;  // 192.168.1.1
         timeline.on_kernel_event(retransmit, stack);
 
-        report = timeline.format_report(names);
         output.stop();
     }
     trace = read_file(path);
@@ -3206,8 +3185,6 @@ void test_kernel_global_report()
     CHECK(trace.find("0 : * @NET tcp_retransmit state=1 sport=1234 dport=80 "
                      "family=2 saddr=127.0.0.1 daddr=192.168.1.1") !=
           std::string::npos);
-    CHECK(report.find("  global\n") != std::string::npos);
-    CHECK(report.find("NET tcp_retransmit=1") != std::string::npos);
 }
 
 }  // namespace
@@ -3239,7 +3216,7 @@ int main()
     test_kernel_text_ids_without_span_sink();
     test_kernel_span_export();
     test_kernel_span_depth_clamp();
-    test_kernel_global_report();
+    test_kernel_global_text();
     test_kernel_output_global();
     test_basic_stack();
     test_desync();

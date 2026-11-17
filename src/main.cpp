@@ -84,7 +84,6 @@ struct Options {
     // --network flags enable both of their sub-scopes.
     bool page_faults = false;
     bool tcp = false;
-    bool kernel_report = false;
     bool require_kernel_events = false;
     uint64_t kernel_merge_window_ns = 1000000;
     std::string kernel_preset;
@@ -263,7 +262,6 @@ void usage(FILE* out)
          "sched, futex, io, block, net syscalls, direct reclaim,\n"
          "page faults, TCP retransmits",
          2},
-        {"--report", "append the per-thread kernel summary", 1},
         {"--merge-window D",
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
         {"--require-events",
@@ -371,7 +369,7 @@ void usage(FILE* out)
             "    sudo callgraph run --kernel --preset latency -- ./demo\n"
             "    sudo callgraph run --kernel --preset proxy -- ./proxy\n"
             "    sudo callgraph run --kernel --preset storage -- ./db\n"
-            "    sudo callgraph run --kernel --sched --futex --report -- ./demo\n"
+            "    sudo callgraph run --kernel --sched --futex -- ./demo\n"
             "    sudo callgraph run --kernel --memory --network -- ./demo\n"
             "    sudo callgraph attach -p 12345 --kernel\n"
             "    sudo callgraph attach -p 12345 --kernel --block --io --network\n"
@@ -672,9 +670,6 @@ Options parse_args(int argc, char** argv)
         } else if (arg == "--preset") {
             note_kernel_option("--preset");
             options.kernel_preset = value();
-        } else if (arg == "--report") {
-            note_kernel_option("--report");
-            options.kernel_report = true;
         } else if (arg == "--merge-window") {
             note_kernel_option("--merge-window");
             options.kernel_merge_window_ns = parse_duration_ns(value(), arg);
@@ -845,8 +840,6 @@ Options parse_args(int argc, char** argv)
                             options.block || options.memory ||
                             options.network || options.page_faults ||
                             options.tcp;
-    if (options.kernel_report && !kernel_any)
-        usage_error("--report requires a kernel event family");
     if (options.require_kernel_events && !kernel_any)
         usage_error("--require-events requires a kernel event family");
     if (options.kernel_merge_window_ns == 0)
@@ -2047,11 +2040,6 @@ int main(int argc, char** argv)
                                 : nullptr;
             report = format_histogram_report(stack.stats(), registry.names(),
                                              kernel_histograms);
-        }
-        if (options.kernel_report ||
-            (options.histogram && kernel_timeline)) {
-            if (kernel_timeline)
-                report += kernel_timeline->format_report(registry.names());
         }
 
         if (span_generator)

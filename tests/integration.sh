@@ -54,7 +54,7 @@ echo "$dry" | grep -q 'A(int)'
 
 echo "== kernel CLI gating =="
 for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
-           "--events sched" "--events net" "--preset storage" "--report" \
+           "--events sched" "--events net" "--preset storage" \
            "--merge-window 1ms" "--require-events"; do
     # shellcheck disable=SC2086
     if "$BIN" run $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
@@ -63,7 +63,7 @@ for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
     fi
 done
 "$BIN" run --kernel --dry-run -- "$TMP/simple" >/dev/null 2>&1
-"$BIN" run --kernel --events sched --preset storage --report \
+"$BIN" run --kernel --events sched --preset storage \
     --merge-window 1ms --require-events --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1
 for preset in database cpu; do
@@ -444,7 +444,7 @@ grep -q 'rate-limited [1-9][0-9]* event line(s)' "$TMP/limited.err"
 grep -q '^Histograms:$' "$TMP/limited.trace"
 
 echo "== kernel events: scheduler, futex, I/O =="
-"$BIN" run --kernel --sched --futex --io --report \
+"$BIN" run --kernel --sched --futex --io \
     -o "$TMP/kernel.trace" --regex \
     --include '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel.err"
@@ -454,8 +454,6 @@ grep -q '@FUTEX wait_begin' "$TMP/kernel.trace"
 grep -q '@FUTEX wait_end' "$TMP/kernel.trace"
 grep -q '@IO fsync_begin' "$TMP/kernel.trace"
 grep -q '@IO fsync_end' "$TMP/kernel.trace"
-grep -q '^Kernel:$' "$TMP/kernel.trace"
-grep -q 'blocked(' "$TMP/kernel.trace"
 
 echo "== kernel events: per-frame histograms =="
 "$BIN" run --histogram --kernel --sched --futex --io \
@@ -469,7 +467,7 @@ grep -Eq '^     (@futex|@fsync|sched\.(off_cpu|runqueue))$' \
 grep -Eq '^       calls=[1-9][0-9]*  total=' "$TMP/kernel-hist.trace"
 
 echo "== kernel events: memory and network =="
-"$BIN" run --kernel --memory --network --report \
+"$BIN" run --kernel --memory --network \
     -o "$TMP/kernel-mm.trace" --regex \
     --include '^(main|memory_work[(][)]|network_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-mm.err"
@@ -478,7 +476,6 @@ grep -q '@NET socket_begin' "$TMP/kernel-mm.trace"
 grep -q '@NET connect_begin' "$TMP/kernel-mm.trace"
 grep -q '@NET sendto_begin' "$TMP/kernel-mm.trace"
 grep -q '@NET sendto_end' "$TMP/kernel-mm.trace"
-grep -q '^Kernel:$' "$TMP/kernel-mm.trace"
 
 echo "== kernel preset scopes =="
 preset_include='^(main|fsync_work[(][)]|memory_work[(][)]|network_work[(][)])$'

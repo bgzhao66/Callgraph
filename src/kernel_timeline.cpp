@@ -1,12 +1,9 @@
 #include "callgraph/kernel_timeline.h"
 
-#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <iterator>
-#include <limits>
 #include <span>
-#include <sstream>
 #include <utility>
 
 #include "callgraph/call_stack.h"
@@ -300,23 +297,6 @@ std::string syscall_span_name(uint16_t enter_kind)
     return "@" + syscall_name(enter_kind);
 }
 
-std::string format_ns(uint64_t ns)
-{
-    char buffer[64];
-    if (ns >= 1000000000ULL)
-        snprintf(buffer, sizeof(buffer), "%.3fs",
-                 static_cast<double>(ns) / 1e9);
-    else if (ns >= 1000000ULL)
-        snprintf(buffer, sizeof(buffer), "%.3fms",
-                 static_cast<double>(ns) / 1e6);
-    else if (ns >= 1000ULL)
-        snprintf(buffer, sizeof(buffer), "%.3fus",
-                 static_cast<double>(ns) / 1e3);
-    else
-        snprintf(buffer, sizeof(buffer), "%" PRIu64 "ns", ns);
-    return buffer;
-}
-
 int depth_of(const CallStack& stack, uint32_t tid)
 {
     const auto* frames = stack.frames_for(tid);
@@ -329,14 +309,6 @@ uint32_t span_user_depth(const CallStack& stack, uint32_t tid)
 {
     const int depth = depth_of(stack, tid);
     return depth < 0 ? 0 : static_cast<uint32_t>(depth);
-}
-
-uint64_t function_of(const CallStack& stack, uint32_t tid)
-{
-    const auto* frames = stack.frames_for(tid);
-    if (!frames || frames->empty())
-        return 0;
-    return frames->back().function_id;
 }
 
 std::string device_text(uint64_t value)
@@ -354,22 +326,6 @@ std::string ipv4_text(uint64_t value)
            std::to_string((address >> 8) & 0xff) + "." +
            std::to_string((address >> 16) & 0xff) + "." +
            std::to_string((address >> 24) & 0xff);
-}
-
-uint8_t global_category(uint16_t kind)
-{
-    switch (kind) {
-    case CG_KEV_BLOCK_INSERT:
-    case CG_KEV_BLOCK_ISSUE:
-    case CG_KEV_BLOCK_COMPLETE:
-    case CG_KEV_BLOCK_REQUEUE:
-    case CG_KEV_BLOCK_ERROR:
-        return CG_KCAT_BLOCK;
-    case CG_KEV_TCP_RETRANSMIT:
-        return CG_KCAT_NET;
-    default:
-        return 0;
-    }
 }
 
 }  // namespace
@@ -395,23 +351,6 @@ const char* block_reason_name(BlockReason reason)
         return "other";
     }
     return "other";
-}
-
-uint64_t KernelCounters::blocked_total() const
-{
-    uint64_t total = 0;
-    for (uint64_t value : blocked_ns)
-        total += value;
-    return total;
-}
-
-size_t KernelTimeline::StatKeyHash::operator()(const StatKey& key) const noexcept
-{
-    uint64_t hash = key.tid * 0x9e3779b97f4a7c15ULL;
-    hash ^= key.depth + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
-    hash ^= key.function_id + 0x9e3779b97f4a7c15ULL + (hash << 6) +
-            (hash >> 2);
-    return static_cast<size_t>(hash);
 }
 
 size_t KernelTimeline::BlockKeyHash::operator()(
@@ -500,53 +439,10 @@ void KernelTimeline::record_open_intervals(uint32_t tid, uint64_t ts,
                                 ts - thread.reclaim_begin_ns, true);
 }
 
-void KernelTimeline::add_account(uint32_t tid, uint32_t depth,
-                                 uint64_t function_id, uint64_t delta_ns)
-{
-    auto& thread = threads_[tid];
-    auto& total = thread_counters_[tid];
-    total.kernel_events += 1;
-
-    if (function_id != std::numeric_limits<uint64_t>::max()) {
-        auto& function = function_counters_[StatKey{tid, depth, function_id}];
-        function.kernel_events += 1;
-        switch (thread.state) {
-        case CpuState::OnCpu:
-            function.cpu_ns += delta_ns;
-            break;
-        case CpuState::Runnable:
-            function.runnable_ns += delta_ns;
-            break;
-        case CpuState::Blocked: {
-            const size_t reason = static_cast<size_t>(thread.reason);
-            function.blocked_ns[reason] += delta_ns;
-            break;
-        }
-        case CpuState::Unknown:
-            break;
-        }
-    }
-
-    switch (thread.state) {
-    case CpuState::OnCpu:
-        total.cpu_ns += delta_ns;
-        break;
-    case CpuState::Runnable:
-        total.runnable_ns += delta_ns;
-        break;
-    case CpuState::Blocked: {
-        const size_t reason = static_cast<size_t>(thread.reason);
-        total.blocked_ns[reason] += delta_ns;
-        break;
-    }
-    case CpuState::Unknown:
-        break;
-    }
-}
-
 void KernelTimeline::account_until(uint32_t tid, uint64_t ts,
                                    const CallStack& stack)
 {
+    (void)stack;
     auto it = threads_.find(tid);
     if (it == threads_.end()) {
         ThreadRuntime runtime;
@@ -570,12 +466,6 @@ void KernelTimeline::account_until(uint32_t tid, uint64_t ts,
         return;
     }
 
-    const uint64_t delta = ts - thread.last_ns;
-    const int depth = depth_of(stack, tid);
-    const uint32_t depth_key = depth < 0 ? 0 : static_cast<uint32_t>(depth);
-    const uint64_t function_id =
-        depth < 0 ? std::numeric_limits<uint64_t>::max() : function_of(stack, tid);
-    add_account(tid, depth_key, function_id, delta);
     thread.last_ns = ts;
 }
 
@@ -733,7 +623,6 @@ void KernelTimeline::on_function_event(const TraceEvent& event,
         runtime.have_last = true;
         runtime.partial = true;
         threads_.emplace(event.tid, std::move(runtime));
-        thread_counters_[event.tid].partial = true;
         return;
     }
     account_until(event.tid, event.ts, stack);
@@ -754,7 +643,6 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
 
     if (prev_target) {
         ThreadRuntime& thread = threads_[prev];
-        thread_counters_[prev].switches += 1;
 
         // An unfinished interval means events were lost; close it as
         // incomplete before starting the next one.
@@ -779,7 +667,6 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
 
         if (thread.state == CpuState::Unknown) {
             thread.partial = true;
-            thread_counters_[prev].partial = true;
         }
         thread.prev_state = static_cast<uint32_t>(event.a);
         thread.offcpu_since_ns = event.ts;
@@ -852,8 +739,6 @@ void KernelTimeline::on_sched_switch(const KernelEvent& event,
                                     partial);
 
         thread.partial = thread.partial || partial;
-        if (partial)
-            thread_counters_[next].partial = true;
         thread.state = CpuState::OnCpu;
         thread.offcpu_since_ns = 0;
         thread.runnable_since_ns = 0;
@@ -896,7 +781,6 @@ void KernelTimeline::on_sched_wakeup(const KernelEvent& event,
 
     if (thread.state == CpuState::Unknown) {
         thread.partial = true;
-        thread_counters_[target].partial = true;
     }
     bool started_runnable = false;
     if (thread.state != CpuState::Runnable) {
@@ -1319,13 +1203,6 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
     if (event.kind == CG_KEV_PAGE_FAULT_USER ||
         event.kind == CG_KEV_PAGE_FAULT_KERNEL) {
         const int depth = depth_of(stack, event.tid);
-        thread_counters_[event.tid].page_faults += 1;
-        if (depth >= 0) {
-            function_counters_[StatKey{
-                event.tid, static_cast<uint32_t>(depth),
-                function_of(stack, event.tid)}]
-                .page_faults += 1;
-        }
 
         std::string attrs;
         append_text_attr(attrs, "space",
@@ -1449,8 +1326,6 @@ void KernelTimeline::on_mm(const KernelEvent& event, const CallStack& stack)
 
 void KernelTimeline::on_tcp_retransmit(const KernelEvent& event)
 {
-    global_counts_[event.kind] += 1;
-
     std::string attrs;
     append_attr(attrs, "state", event.a);
     append_attr(attrs, "sport", event.b);
@@ -1467,7 +1342,6 @@ void KernelTimeline::on_tcp_retransmit(const KernelEvent& event)
 
 void KernelTimeline::on_block(const KernelEvent& event)
 {
-    global_counts_[event.kind] += 1;
     const BlockKey key{static_cast<uint32_t>(event.a), event.b,
                        static_cast<uint32_t>(event.c)};
     std::string attrs;
@@ -1563,7 +1437,6 @@ void KernelTimeline::on_kernel_event(const KernelEvent& event,
     case CG_KEV_SCHED_MIGRATE:
         if (is_target(event.tid)) {
             account_until(event.tid, event.ts, stack);
-            thread_counters_[event.tid].migrations += 1;
             std::string attrs;
             append_attr(attrs, "orig_cpu", event.b);
             append_attr(attrs, "dest_cpu", event.c);
@@ -1714,121 +1587,7 @@ void KernelTimeline::finish(uint64_t stop_ts, const CallStack& stack)
         }
         if (!thread.ops.empty() || thread.reclaim_depth != 0)
             thread.partial = true;
-        if (thread.partial)
-            thread_counters_[tid].partial = true;
     }
-}
-
-std::string KernelTimeline::format_report(
-    const std::vector<std::string>& names) const
-{
-    if (thread_counters_.empty() && global_counts_.empty())
-        return {};
-
-    std::vector<uint32_t> tids;
-    tids.reserve(thread_counters_.size());
-    for (const auto& [tid, counters] : thread_counters_) {
-        (void)counters;
-        tids.push_back(tid);
-    }
-    std::sort(tids.begin(), tids.end());
-
-    std::string out = "Kernel:\n";
-    for (uint32_t tid : tids) {
-        const auto total_it = thread_counters_.find(tid);
-        if (total_it == thread_counters_.end())
-            continue;
-        const KernelCounters& total = total_it->second;
-
-        out += "  tid " + std::to_string(tid) + "\n";
-        out += "    cpu=" + format_ns(total.cpu_ns);
-        out += " runnable=" + format_ns(total.runnable_ns);
-        out += " blocked=" + format_ns(total.blocked_total());
-        out += " switches=" + std::to_string(total.switches);
-        if (total.page_faults != 0)
-            out += " faults=" + std::to_string(total.page_faults);
-        if (total.partial)
-            out += " partial=yes";
-        out += '\n';
-
-        std::string reasons;
-        for (size_t i = 0; i < kBlockReasonCount; ++i) {
-            if (total.blocked_ns[i] == 0)
-                continue;
-            if (!reasons.empty())
-                reasons += ' ';
-            reasons += block_reason_name(static_cast<BlockReason>(i));
-            reasons += '=';
-            reasons += format_ns(total.blocked_ns[i]);
-        }
-        if (!reasons.empty())
-            out += "    blocked(" + reasons + ")\n";
-
-        std::vector<StatKey> keys;
-        for (const auto& [key, counters] : function_counters_) {
-            (void)counters;
-            if (key.tid == tid)
-                keys.push_back(key);
-        }
-        std::sort(keys.begin(), keys.end(), [](const StatKey& a,
-                                               const StatKey& b) {
-            if (a.depth != b.depth)
-                return a.depth < b.depth;
-            return a.function_id < b.function_id;
-        });
-        for (const StatKey& key : keys) {
-            const KernelCounters& counters = function_counters_.at(key);
-            const std::string name =
-                key.function_id < names.size() ? names[key.function_id]
-                                               : std::string("<unknown>");
-            out += "    " + std::to_string(key.depth) + ". " + name;
-            out += " cpu=" + format_ns(counters.cpu_ns);
-            out += " runnable=" + format_ns(counters.runnable_ns);
-            out += " blocked=" + format_ns(counters.blocked_total());
-            if (counters.page_faults != 0)
-                out += " faults=" + std::to_string(counters.page_faults);
-            out += '\n';
-        }
-    }
-
-    if (!global_counts_.empty()) {
-        std::vector<std::pair<uint16_t, uint64_t>> rows(
-            global_counts_.begin(), global_counts_.end());
-        std::sort(rows.begin(), rows.end(),
-                  [](const auto& a, const auto& b) {
-                      const uint8_t category_a = global_category(a.first);
-                      const uint8_t category_b = global_category(b.first);
-                      if (category_a != category_b)
-                          return category_a < category_b;
-                      return a.first < b.first;
-                  });
-
-        out += "  global\n";
-        uint8_t category = 0;
-        std::string line;
-        for (const auto& [kind, count] : rows) {
-            const uint8_t row_category = global_category(kind);
-            if (row_category != category) {
-                if (!line.empty())
-                    out += "    " + line + "\n";
-                line = kernel_category_name(row_category);
-                category = row_category;
-            }
-            line += ' ';
-            line += kernel_kind_name(kind);
-            line += '=';
-            line += std::to_string(count);
-        }
-        if (!line.empty())
-            out += "    " + line + "\n";
-    }
-    return out;
-}
-
-std::string format_kernel_report(const KernelTimeline& timeline,
-                                 const std::vector<std::string>& names)
-{
-    return timeline.format_report(names);
 }
 
 }  // namespace callgraph

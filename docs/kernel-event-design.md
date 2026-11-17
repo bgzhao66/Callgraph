@@ -3,10 +3,10 @@
 Status: **P0 and P1 implemented; P2 and PMU are proposals.** Implemented today:
 scheduler, futex, I/O syscalls, block records, memory (page faults and direct
 reclaim), and network (socket syscalls and global TCP retransmits), with a
-userspace `KernelTimeline` report. TID-specific kernel interval and point spans
-are exported to OTel when `--kernel` is combined with an OTel exporter. PMU,
-IRQ/workqueue, per-root kernel reports, global OTel kernel spans, and offline
-kernel-line replay are not implemented.
+userspace `KernelTimeline` that renders per-frame kernel histograms. TID-specific
+kernel interval and point spans are exported to OTel when `--kernel` is
+combined with an OTel exporter. PMU, IRQ/workqueue, global OTel kernel spans,
+and offline kernel-line replay are not implemented.
 Sections below describe the full target design; Section 16 records the
 implementation deviations.
 
@@ -461,17 +461,10 @@ interval a stable owner independent of OTel span tokens; `--histogram`
 without an exporter still works.
 
 When the timeline first accounts time for an invocation, it records
-`(invocation_id, root_id, tid, depth, function_id)` in its own table. The
-report can therefore resolve names and depths after `CallStack` has erased
-the thread state on return.
-
-Per-invocation counters are live only while the invocation is on the stack.
-On return, the timeline folds them into the thread's `(depth, function_id)`
-aggregate and releases the live entry. A long-running attach therefore grows
-with distinct `(thread, depth, function)` keys, not with call count. The
-`--histogram` kernel histograms (Section 9.2) keep one aggregate per root-first
-path and have no explicit cap yet; the `Kernel:` summary itself remains
-per-thread.
+`(invocation_id, root_id, tid, depth, function_id)` in its own table.
+`--histogram` kernel samples instead use the root-first `CallPath`
+(Section 9.2), so they survive returns and keep distinct roots separate; they
+have no explicit cap yet.
 
 `CallStack` notifies an optional frame-close observer for every closed frame
 (normal return, skipped/desynced frame, or shutdown). The timeline folds the
@@ -596,8 +589,8 @@ There are three attribution classes, and they are never mixed silently:
   worker or completed in a softirq, matched by `(dev, sector, nr_sector)`.
   It explains an I/O wait but is not attributed as CPU time to the thread.
 - **Global**: no reliable link to a target thread. Example: `kswapd`,
-  an unrelated interrupt, a TCP retransmit in softirq. It is reported in a
-  separate global section and never charged to a function.
+  an unrelated interrupt, a TCP retransmit in softirq. It stays a text-only
+  `*` depth record and is never charged to a function.
 
 Scheduler preemption is direct attribution for *where* the thread was
 executing, but the reason is `preempted`, not "this function caused the
@@ -621,7 +614,7 @@ the new stream.
 
 At shutdown the collector drains both streams, flushes the merge window, and
 then closes live frames through the same frame-close observer (with a
-`shutdown` reason) before rendering the histogram or kernel report. This
+`shutdown` reason) before rendering the kernel histograms. This
 ensures live invocations are folded exactly once even when no OTel exporter
 is configured.
 
@@ -789,7 +782,7 @@ global or high-volume; they are not charged to the target function.
 
 Implemented with `--network` (and the `net` family name in `--events`).
 Direct socket syscalls are attributed to the target TID. TCP retransmits are
-global records and are reported in the `Kernel:` summary's `global` section.
+global records and remain text-only `*` depth lines.
 The interface/address filters and causal socket correlation remain future
 work.
 
@@ -814,9 +807,10 @@ Kernel network tracepoints (`sock:inet_sock_set_state`,
 `net:net_dev_xmit`, `netif_receive_skb`) are **global** in the implementation.
 They do not carry a target TID, and a retransmit or packet processing run in a
 softirq cannot be charged to the application function that happens to be
-running. `tcp_retransmit_skb` is implemented under `--network` and reported in
-the global section. Interface/address filtering and causal socket correlation
-are later extensions; the trace format already has `CG_KF_CAUSAL` for them.
+running. `tcp_retransmit_skb` is implemented under `--network` and stays a
+text-only `*` depth record. Interface/address filtering and causal socket
+correlation are later extensions; the trace format already has `CG_KF_CAUSAL`
+for them.
 
 A successful `send` does not mean the peer received or processed the data.
 End-to-end RPC latency needs application request IDs, which are out of scope.
@@ -1088,7 +1082,6 @@ callgraph attach --kernel --system-wide --sched
 | `--tid TID` | restrict to explicit TIDs (repeatable/comma-separated) |
 | `--children` | follow child processes as well as threads |
 | `--system-wide` | bypass target filtering; no user-stack attribution |
-| `--report` | append the `Kernel:` summary section |
 | `--merge-window NS` | timestamp reorder window (default 1ms) |
 | `--ringbuf-size SIZE` | size of both the function and kernel ring buffers (default 16m) |
 | `--block-devices LIST` | restrict block tracepoints to `major:minor` devices |
@@ -1124,7 +1117,6 @@ Validation:
   families.
 - `--pmu-sampling` requires `--pmu`.
 - `--tid` and `--children` are mutually exclusive.
-- `--report` without a kernel family is a usage error.
 - `--events` with `--exporter` is valid; kernel events go to the text
   stream and, when the exporter is OTLP-based, to kernel child spans.
 - `--dry-run` lists selected functions and available kernel events without
@@ -1206,50 +1198,13 @@ depths.
 `--indent` applies to the depth column just as it does for function names,
 using spaces before the `@CATEGORY` token.
 
-### 9.2 Kernel report
+### 9.2 Kernel histograms
 
-`--report` (and `--histogram` when a kernel family is enabled) appends
-a `Kernel:` section. If both are given, the section is rendered once. The
-implemented section is per thread, after that thread's roots, to avoid
-depending on per-root invocation identity:
-
-```text
-Kernel:
-  tid 4242
-    wall        1.250ms
-    on-cpu       210us   16.8%
-    blocked     1.040ms   83.2%
-      futex     1.000ms
-      io           40us
-      sleep         0
-      memory        0
-    runnable      15us
-    switches      12
-    partial       no
-
-  exclusive by depth/function:
-    1. process_request   cpu=200us  runnable=15us  blocked=1.04ms
-       reason=futex (1.00ms), io (40us)
-```
-
-`on-cpu + blocked + runnable` is the observed wall interval. `blocked` is
-split by reason; the reasons are mutually exclusive. `exclusive` means the
-top-frame time; callers include it in their wall time but not in their
-exclusive counters. A `faults=N` column is added when page faults were
-observed. Global block and TCP-retransmit records are counted in a trailing
-`global` block:
-
-```text
-  global
-    BLOCK rq_insert=12 rq_issue=12 rq_complete=12
-    NET tcp_retransmit=3
-```
-
-With `--histogram`, each user-frame histogram entry also gets a nested
-`kernel:` block. Samples are keyed by the full root-first `CallPath`, so two
-roots calling the same function at the same depth stay separate, and each block
-is rendered directly under the owning frame's histogram, after its bucket
-lines:
+`--histogram` with a kernel family enabled nests a `kernel:` block under each
+user-frame histogram entry. Samples are keyed by the full root-first
+`CallPath`, so two roots calling the same function at the same depth stay
+separate, and each block is rendered directly under the owning frame's
+histogram, after its bucket lines:
 
 ```text
 1. A(int)
@@ -1286,7 +1241,7 @@ pay nothing.
 
 Units are chosen per value from `choose_unit()`, as the tree report already
 does. Global block requests and TCP retransmits have no user stack and remain
-in the text-only `Kernel:` summary.
+text-only `*` depth records.
 
 ### 9.3 OTel and Jaeger
 
@@ -1473,8 +1428,9 @@ Integration (`tests/integration.sh`, root only for tracing):
   records and in the report's `global` section.
 - `--pmu`: when permitted, `cycles`/`instructions` counts are nonzero and
   consistent with `perf stat`; sampling produces a sample count.
-- `--report`: `cpu + blocked + runnable` is within tolerance of wall
-  for a synthetic sleep workload.
+- `--histogram --kernel`: each user-frame entry gets a `kernel:` block whose
+  `calls=` counts and durations match the observed events, and cut-short
+  intervals are marked `[incomplete]`.
 - `--exporter otlp-json` with kernel events: function spans and TID-specific
   kernel child spans carry `callgraph.kernel.*` attributes; no invalid OTLP.
 - Offline replay of a hand-written trace with kernel lines matches live
@@ -1557,13 +1513,13 @@ approximate; denied access does not break other families.
 
 ### Phase 6: reports and OTel
 
-- Add `Kernel:` summary, exclusive per-function attribution, unit selection.
+- Add per-frame kernel histograms and unit selection.
 - Add `KernelSpanSink`, TID-specific interval and point child spans.
 - Add offline export parity and metadata.
 
-Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair,
-adds per-frame kernel histograms and a correct kernel summary; OTLP JSON
-validates and Jaeger shows kernel child spans.
+Acceptance: `--kernel --histogram --sched` preserves the tree/histogram pair
+and adds per-frame kernel histograms; OTLP JSON validates and Jaeger shows
+kernel child spans.
 
 ## 14. File map
 
@@ -1615,8 +1571,9 @@ These need a decision before or during Phase 0/1:
    kernels? If not, choose the fallback (generated structs or BTF).
 2. Is the 1 ms merge window sufficient on the target hardware, or should it
    be adaptive based on observed out-of-order records?
-3. Should the kernel summary be per thread (MVP) or per root? Per-root needs
-   a rule for intervals before/after the root.
+3. How should kernel histograms treat intervals that begin before a root or
+   outlive it? The implementation keys samples by the root-first `CallPath` at
+   event time and renders them under the owning frame.
 4. Are block events global by default, or should `--block` require an
    explicit `--block-devices` filter on busy systems?
 5. Does the brief fork over-capture window cause problems for `--children`
@@ -1628,9 +1585,8 @@ These need a decision before or during Phase 0/1:
 8. Should `--system-wide` be allowed with `run`, or only with `attach`?
 9. Do we need a raw-only mode that suppresses derived lines, or are the
    convenience durations harmless because replay recomputes them?
-10. Should kernel text lines be emitted by default when a family is enabled,
-    or only with `--report`? The design assumes raw lines are the
-    default artifact.
+10. Should kernel text lines be emitted by default when a family is enabled?
+    The design assumes raw lines are the default artifact.
 
 ## 16. P0/P1 implementation notes
 
@@ -1652,12 +1608,13 @@ The first implementation deliberately narrows the full design:
 - **Target TIDs.** Userspace takes `/proc/<pid>/task` tids and also learns
   kernel-visible TIDs from function uprobe events. The latter is necessary
   when the userspace and BPF PID namespaces differ. A switch that happens
-  before the first uprobe is unobserved, so the first interval is marked
-  `partial=yes`.
+  before the first uprobe is unobserved, so the first interval is recorded as
+  incomplete.
 - **Accounting.** `KernelTimeline` accounts at every function and kernel event
-  boundary. Counters are aggregated by `(tid, depth, function_id)` rather than
-  per invocation today; this bounds memory for long attach sessions.
-  The report is per thread, not per root.
+  boundary. `--histogram` aggregates kernel samples per `(tid, root-first
+  CallPath, event)`; without it no per-event counters are kept, which bounds
+  memory for long attach sessions. Global block and TCP-retransmit records are
+  never charged to a function.
 - **Families.** Scheduler (`switch`, `wakeup`, `waking`, `wakeup_new`,
   `migrate`, `fork`, `exit`), futex enter/exit, the read/write/pread/pwrite/
   fsync/fdatasync/openat/close/sync_file_range syscalls, block
@@ -1669,16 +1626,15 @@ The first implementation deliberately narrows the full design:
   direct; block and TCP-retransmit events are global. The timeline never
   charges a global record to the running thread. Direct reclaim outranks
   futex/network/I/O when classifying a blocking reason, and page faults are
-  counted per thread and function in the report. The report prints
-  `partial=yes` when the observed interval does not cover the whole story.
+  recorded as zero-duration points in the owning frame's kernel histogram.
 - **CLI.** Implemented: `--kernel` plus the secondary `--sched`, `--futex`,
   `--io`, `--block`, `--network`, `--memory`, `--events`, `--preset`,
-  `--report`, `--merge-window`, and `--require-events` options.
+  `--merge-window`, and `--require-events` options.
   `--preset` accepts `latency` (default), `proxy`, `storage`,
   `computation`, `full`, and `extended`; presets expand to the fine-grained
   scopes in Section 8 and stay additive with explicit family flags.
   `--ringbuf-size` sizes both the function and kernel ring buffers.
   `--children`, `--tid`, and `--system-wide` are not implemented yet.
-- **Deferred.** PMU, IRQ/workqueue, per-root kernel reports, global OTel kernel
+- **Deferred.** PMU, IRQ/workqueue, global OTel kernel
   spans, and offline kernel-line replay. The text parser currently ignores
   `@CATEGORY` lines, so function-only export remains correct.

@@ -123,7 +123,7 @@ sudo ./build/callgraph run --return-mode ret -- ./my_app
 sudo ./build/callgraph run -o trace.log -- ./my_app
 
 # Correlate scheduler, futex, and I/O events with the call tree
-sudo ./build/callgraph run --kernel --sched --futex --io --report \
+sudo ./build/callgraph run --kernel --sched --futex --io \
     -o trace.log -- ./my_app
 
 # All kernel event families
@@ -209,7 +209,6 @@ Kernel event options (--kernel):
                             page faults, TCP retransmits
               extended      sched, futex, io, block, net syscalls, direct reclaim,
                             page faults, TCP retransmits
-          --report          append the per-thread kernel summary
           --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
           --require-events  fail if a requested tracepoint is unavailable
 
@@ -307,7 +306,7 @@ Examples:
     sudo callgraph run --kernel --preset latency -- ./demo
     sudo callgraph run --kernel --preset proxy -- ./proxy
     sudo callgraph run --kernel --preset storage -- ./db
-    sudo callgraph run --kernel --sched --futex --report -- ./demo
+    sudo callgraph run --kernel --sched --futex -- ./demo
     sudo callgraph run --kernel --memory --network -- ./demo
     sudo callgraph attach -p 12345 --kernel
     sudo callgraph attach -p 12345 --kernel --block --io --network
@@ -599,13 +598,13 @@ the kernel events observed on that exact call path:
 - Intervals that were cut short are still included and marked `[incomplete]`:
   an unmatched syscall exit, an interval still open at shutdown, or a scheduler
   interval that began before the thread state was known.
-- Global block requests and TCP retransmits have no user stack and remain in the
-  text-only `Kernel:` summary.
+- Global block requests and TCP retransmits have no user stack and remain
+  text-only `*` depth records.
 
 ### Kernel events
 
 `--kernel` enables a second, correlated event stream for kernel activity.
-`--events`, `--preset`, `--report`, `--merge-window`, and `--require-events`
+`--events`, `--preset`, `--merge-window`, and `--require-events`
 refine it, as do the `--sched`, `--futex`, `--io`, `--block`, `--network`, and
 `--memory` family shortcuts; none of them work without `--kernel`. With no
 family or preset, `--kernel` selects the `latency` preset. Kernel events are
@@ -675,32 +674,14 @@ Implemented families:
   and `total_ns`; unmatched requests are marked.
 - **Memory:** user and kernel page faults (`@MM page_fault` with the raw error
   code) and direct reclaim (`direct_reclaim_begin`/`end`). Direct reclaim is
-  the highest-precedence blocking reason, reported as `blocked(memory=...)`.
+  the highest-precedence blocking reason for off-CPU attribution.
 - **Network:** socket, connect, accept4, sendto, recvfrom, sendmsg, recvmsg,
   epoll_wait, and poll syscall pairs with duration. TCP retransmits are global
-  records (`*` depth) and are reported in the `global` section; they are never
-  charged to a function.
+  records (`*` depth) and are never charged to a function.
 
-`--report`, and `--histogram` when a kernel family is enabled, appends a
-per-thread `Kernel:` summary:
-
-```text
-Kernel:
-  tid 27074
-    cpu=622.266us runnable=532.629us blocked=254.210ms switches=6 faults=12 partial=yes
-    blocked(futex=99.055ms io=4.845ms net=1.201ms memory=0ns sleep=150.133ms)
-    0. main cpu=44.211us runnable=38.554us blocked=0ns faults=12
-    1. work(int) cpu=43.044us runnable=71.817us blocked=100.068ms
-    1. lock_work() cpu=68.063us runnable=154.676us blocked=149.121ms
-  global
-    BLOCK rq_insert=3 rq_issue=3 rq_complete=3
-    NET tcp_retransmit=2
-```
-
-Time is exclusive to the top frame. `cpu + runnable + blocked` is the observed
-wall interval; `partial=yes` means the beginning or end was not observed
-(usually because the first switch was missed before the target TID was
-learned). Without scheduler events, runstate counters remain zero.
+Global block and TCP-retransmit records have no user stack, so they are not
+part of the per-frame histograms. They stay in the event stream as `*` depth
+lines.
 
 Limitations of the kernel support:
 
