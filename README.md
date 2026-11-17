@@ -11,6 +11,57 @@ stream.
 <ts> <tid> : <depth> <- function
 ```
 
+## Highlights
+
+`callgraph` answers “where did the time go?” for native Linux programs without
+recompiling them or adding instrumentation.
+
+- **Trace existing binaries.** Attach to a running process or launch a new one.
+  Function names come from `.symtab` or separate debug info; no source changes,
+  no recompilation, and no language-runtime hooks.
+- **Reconstruct real call stacks.** Entry and return uprobes produce a complete
+  per-thread tree, including recursion, deep chains, and multiple threads.
+  `rsp`-based resynchronisation recovers from `longjmp`, exceptions, and tail
+  calls; `--return-mode=ret` keeps C++ unwinding safe.
+- **Bound the trace cheaply.** `--root-scope` selects the functions that may
+  start a traced tree, and `--trace-depth N` traces `N` levels below each root.
+  For `N > 0`, conservative static call-graph pruning avoids instrumenting
+  functions that cannot appear in that window. `--trace-depth 0` traces roots
+  only.
+- **Measure latency, not just call counts.** `--histogram` appends per-root call
+  trees with inclusive per-path totals and latency histograms per function,
+  marking recursive and incomplete calls.
+- **Explain kernel waits in context.** `--kernel` correlates scheduler, futex,
+  I/O, direct reclaim, page-fault, and network activity with the user frame that
+  was running; global block requests and TCP retransmits are emitted as
+  text-only records. With `--histogram`, each user frame also gets a kernel
+  latency block.
+- **Export to Jaeger and OTLP.** Native OTLP/gRPC, OTLP/HTTP protobuf, and
+  OTLP/JSON output; spans carry source file/line, module/build-id, thread name,
+  optional `--show-args` arguments, and kernel attributes. `callgraph export`
+  converts existing text traces offline.
+- **Visualize with flamegraphs.** `callgraph export --flame` emits folded stacks
+  for `flamegraph.pl` or `inferno-flamegraph`.
+- **Control overhead and volume.** `--ingest-sample-rate`, `--sample-rate`,
+  `--outlier-latency-quantile`, `--log-rate-limit`, `--max-depth`, and
+  `--complete-traces` let you trade completeness for cost and focus.
+- **Built for real processes.** `uprobe_multi` batching, late shared-library
+  discovery, dry-run listing, external debug info, and clear diagnostics. No
+  kernel BTF or kernel headers required.
+
+Typical questions it helps answer:
+
+- Which call path is responsible for this slow request?
+- Is a function spending time on-CPU, runnable, or blocked in the kernel?
+- Which syscall, futex, or reclaim interval dominates this frame?
+- How deep and how wide is the call tree under real input?
+- What does the latency distribution look like for each call path?
+
+Static pruning is deliberately predictable: if the call graph cannot be built
+reliably, `callgraph` does not silently instrument everything. It warns and
+instruments only explicit `--root-scope` matches, or none when no roots are
+given.
+
 ## Status
 
 The current implementation includes:
@@ -23,7 +74,8 @@ The current implementation includes:
 - `uprobe_multi` attachment with per-function cookies and individual-uprobe fallback
 - entry and return events over a BPF ring buffer
 - per-TID call-stack reconstruction, recursion, multi-threaded tracing
-- scope/exclude filters, maximum displayed depth, dry-run listing
+- root-scope/exclude selection, structural depth limits with conservative
+  static pruning, maximum displayed depth, dry-run listing
 - optional function argument values from DWARF (`--show-args`, x86-64)
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 - OTLP export for Jaeger: gRPC (`--exporter otlp`), OTLP/HTTP with
