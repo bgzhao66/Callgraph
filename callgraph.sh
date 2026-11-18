@@ -83,14 +83,13 @@ Usage:
   callgraph.sh export --otel|--flame [options]
   callgraph.sh disasm [callgraph-disasm options] MODULE
 
-Wrapper options (any mode except disasm):
-      --graph-in FILE    reuse existing facts and skip generation
-      --graph-out FILE   keep the generated facts at FILE
-      --no-graph         never generate facts; pass arguments through
-
 Facts are generated automatically for:
   run/attach --trace-depth N (N >= 0) or --return-mode=ret
   export --static
+
+Pass --static-graph FILE to reuse facts produced by callgraph-disasm; the
+wrapper then generates nothing.  Generated facts are temporary and removed
+when the wrapper exits.
 
 --all-modules is forwarded to callgraph-disasm as well as to the tracer, so
 the facts cover the target's static DT_NEEDED closure.  Modules opened with
@@ -129,60 +128,6 @@ esac
 
 mode=$1
 shift
-
-# Pull the wrapper-only options out of the argument list.  Everything after
-# "--" belongs to the traced program and is never inspected.
-graph_in=
-graph_out=
-no_graph=0
-filtered=()
-end_of_options=0
-while (($#)); do
-    if ((end_of_options)); then
-        filtered+=("$1")
-        shift
-        continue
-    fi
-    case $1 in
-        --)
-            end_of_options=1
-            filtered+=("$1")
-            shift
-            ;;
-        --graph-in)
-            (($# >= 2)) || die "--graph-in requires a value"
-            graph_in=$2
-            shift 2
-            ;;
-        --graph-in=*)
-            graph_in=${1#*=}
-            shift
-            ;;
-        --graph-out)
-            (($# >= 2)) || die "--graph-out requires a value"
-            graph_out=$2
-            shift 2
-            ;;
-        --graph-out=*)
-            graph_out=${1#*=}
-            shift
-            ;;
-        --no-graph)
-            no_graph=1
-            shift
-            ;;
-        *)
-            filtered+=("$1")
-            shift
-            ;;
-    esac
-done
-
-if ((${#filtered[@]})); then
-    set -- "${filtered[@]}"
-else
-    set --
-fi
 
 if [[ $mode == disasm ]]; then
     [[ -x $callgraph_disasm ]] || die "callgraph-disasm not found at $callgraph_disasm"
@@ -251,20 +196,14 @@ generate_facts() {
     [[ -n $module ]] || die "cannot determine the module to analyze"
     [[ -x $callgraph_disasm ]] || die "callgraph-disasm not found at $callgraph_disasm"
 
-    local facts=$graph_out
-    if [[ -z $facts ]]; then
-        tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/callgraph-facts.XXXXXX")
-        facts=$tmp_dir/facts.json
-    fi
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/callgraph-facts.XXXXXX")
+    local facts=$tmp_dir/facts.json
 
     local args=()
     ((all_modules)) && args+=(--all-modules)
     args+=("$module" -o "$facts")
 
     "$callgraph_disasm" "${args[@]}"
-    if [[ -n $graph_out ]]; then
-        printf 'callgraph.sh: facts written to %s\n' "$facts" >&2
-    fi
     facts_path=$facts
 }
 
@@ -318,43 +257,37 @@ if [[ $mode == export ]]; then
             exec "$callgraph_export" "$@"
         fi
 
-        if ((no_graph == 0)); then
-            if [[ -n $graph_in ]]; then
-                facts_path=$graph_in
-            else
-                generate_facts "$module"
-            fi
+        generate_facts "$module"
 
-            # Rebuild the argument list without the positional MODULE: the
-            # tracer takes the facts path, not an ELF path.
-            rebuilt=()
-            expect_value=0
-            for arg in "$@"; do
-                if ((expect_value)); then
-                    expect_value=0
+        # Rebuild the argument list without the positional MODULE: the tracer
+        # takes the facts path, not an ELF path.
+        rebuilt=()
+        expect_value=0
+        for arg in "$@"; do
+            if ((expect_value)); then
+                expect_value=0
+                rebuilt+=("$arg")
+                continue
+            fi
+            case $arg in
+                -o | --output | --root-scope | --static-graph)
+                    expect_value=1
                     rebuilt+=("$arg")
-                    continue
-                fi
-                case $arg in
-                    -o | --output | --root-scope | --static-graph)
-                        expect_value=1
-                        rebuilt+=("$arg")
-                        ;;
-                    --all-modules)
-                        # Facts already cover the closure; the tracer has no
-                        # such flag in static export mode.
-                        ;;
-                    -*)
-                        rebuilt+=("$arg")
-                        ;;
-                    *)
-                        # Drop the positional MODULE.
-                        ;;
-                esac
-            done
-            run_and_exit "$callgraph_export" "${rebuilt[@]}" \
-                --static-graph "$facts_path"
-        fi
+                    ;;
+                --all-modules)
+                    # Facts already cover the closure; the tracer has no
+                    # such flag in static export mode.
+                    ;;
+                -*)
+                    rebuilt+=("$arg")
+                    ;;
+                *)
+                    # Drop the positional MODULE.
+                    ;;
+            esac
+        done
+        run_and_exit "$callgraph_export" "${rebuilt[@]}" \
+            --static-graph "$facts_path"
     fi
 
     exec "$callgraph_export" "$@"
@@ -373,41 +306,35 @@ if ((help_only)); then
     exec "$mode_bin" "$@"
 fi
 
-if ((user_static_graph)) || ((no_graph)); then
+if ((user_static_graph)) || ! needs_graph; then
     exec "$mode_bin" "$@"
 fi
 
-if [[ -n $graph_in ]]; then
-    facts_path=$graph_in
-elif needs_graph; then
-    if [[ $mode == run ]]; then
-        module=
-        saw_separator=0
-        args=("$@")
-        for ((i = 0; i < ${#args[@]}; i++)); do
-            if [[ ${args[i]} == -- ]]; then
-                saw_separator=1
-                module=${args[i + 1]:-}
-                break
-            fi
-        done
-        ((saw_separator)) || die "run requires '-- PROGRAM' to locate the target"
-        module=$(resolve_program "$module")
-    else
-        pid=
-        args=("$@")
-        for ((i = 0; i < ${#args[@]}; i++)); do
-            case ${args[i]} in
-                -p | --pid) pid=${args[i + 1]:-} ;;
-                --pid=*) pid=${args[i]#*=} ;;
-            esac
-        done
-        module=$(pid_exe "$pid")
-    fi
-    generate_facts "$module"
+if [[ $mode == run ]]; then
+    module=
+    saw_separator=0
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        if [[ ${args[i]} == -- ]]; then
+            saw_separator=1
+            module=${args[i + 1]:-}
+            break
+        fi
+    done
+    ((saw_separator)) || die "run requires '-- PROGRAM' to locate the target"
+    module=$(resolve_program "$module")
 else
-    exec "$mode_bin" "$@"
+    pid=
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        case ${args[i]} in
+            -p | --pid) pid=${args[i + 1]:-} ;;
+            --pid=*) pid=${args[i]#*=} ;;
+        esac
+    done
+    module=$(pid_exe "$pid")
 fi
+generate_facts "$module"
 
 if [[ $mode == run ]]; then
     # --static-graph must precede the "--" separator.

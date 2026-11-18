@@ -1132,23 +1132,18 @@ callgraph.sh run --trace-depth 2 -- ./app
 callgraph.sh run --return-mode ret -- ./app
 callgraph.sh attach -p 12345 --trace-depth 1
 callgraph.sh export --static ./app
-callgraph.sh export --static --graph-in facts.json
 callgraph.sh disasm ./app -o facts.json
+callgraph.sh run --static-graph facts.json --trace-depth 2 -- ./app
 ```
-
-| Wrapper option | Meaning |
-|---|---|
-| `--graph-in FILE` | reuse existing facts, skip generation |
-| `--graph-out FILE` | keep generated facts at FILE |
-| `--no-graph` | never generate; pass arguments through |
 
 Facts are generated for `run`/`attach` with `--trace-depth N>=0` or
 `--return-mode=ret`, and for `export --static`. `--all-modules` is forwarded to
 both the generator and the tracer; for `export --static` it goes to the
-generator only. A user-supplied `--static-graph` suppresses generation. Facts
-live in `$TMPDIR/callgraph-facts.XXXXXX` and are removed on exit (including
-signals) unless `--graph-out` is given. When it generated temporary facts the
-wrapper waits for the tracer so it can clean up, and exits with the tracer's
+generator only. A user-supplied `--static-graph` suppresses generation, so
+running `callgraph-disasm` yourself and passing the file is the way to reuse
+facts. Generated facts live in `$TMPDIR/callgraph-facts.XXXXXX` and are removed
+when the wrapper exits, including on signals. When it generated temporary facts
+the wrapper waits for the tracer so it can clean up, and exits with the tracer's
 status; otherwise it `exec`s the tracer directly. Generator failure aborts
 before the tracer starts and still removes the directory.
 

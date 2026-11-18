@@ -641,8 +641,8 @@ grep -q '"format":"callgraph-static-graph"' "$TMP/wrapper.json"
 
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" export --static --graph-in "$TMP/wrapper.json" \
-    "$TMP/simple" >"$TMP/wrapper.txt" 2>/dev/null
+    "$WRAPPER" export --static --static-graph "$TMP/wrapper.json" \
+    >"$TMP/wrapper.txt" 2>/dev/null
 grep -qx 'main' "$TMP/wrapper.txt"
 
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
@@ -650,11 +650,22 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     "$WRAPPER" export --static "$TMP/simple" >"$TMP/wrapper2.txt" 2>/dev/null
 cmp "$TMP/wrapper.txt" "$TMP/wrapper2.txt"
 
+# The removed wrapper options are rejected by the tracer/exporter.
+for removed in --no-graph "--graph-in=$TMP/wrapper.json" \
+               "--graph-out=$TMP/gone.json"; do
+    if CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+            CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+            "$WRAPPER" run "$removed" --trace-depth 1 --dry-run \
+            -- "$TMP/simple" >/dev/null 2>&1; then
+        echo "expected removed wrapper option $removed to fail" >&2
+        exit 1
+    fi
+done
 if CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
-    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+        CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
         "$WRAPPER" export --static --no-graph "$TMP/simple" \
         >/dev/null 2>&1; then
-    echo "expected --no-graph static export without facts to fail" >&2
+    echo "expected removed --no-graph to fail" >&2
     exit 1
 fi
 
@@ -663,16 +674,14 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     "$WRAPPER" run --dry-run -- "$TMP/simple" >/dev/null 2>&1
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --no-graph --dry-run -- "$TMP/simple" >/dev/null 2>&1
-CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
-    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" run --trace-depth 1 --dry-run -- "$TMP/simple" \
     >"$TMP/wrapper-dry.txt" 2>"$TMP/wrapper-dry.err"
 grep -q 'main' "$TMP/wrapper-dry.txt"
-# --graph-in must be inserted before the "--" separator, not after it.
+# A user-supplied --static-graph suppresses generation and is inserted before
+# the "--" separator.
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --graph-in "$TMP/wrapper.json" --trace-depth 1 \
+    "$WRAPPER" run --static-graph "$TMP/wrapper.json" --trace-depth 1 \
     --dry-run -- "$TMP/simple" >"$TMP/wrapper-dry2.txt" 2>/dev/null
 cmp "$TMP/wrapper-dry.txt" "$TMP/wrapper-dry2.txt"
 
@@ -725,18 +734,10 @@ if TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
 fi
 assert_factstmp_empty
 
-# --graph-out keeps the facts and leaves no temporary directory.
+# A user-supplied --static-graph creates nothing.
 TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --trace-depth 1 --dry-run \
-    --graph-out "$TMP/wrapper-kept.json" -- "$TMP/simple" >/dev/null 2>&1
-test -s "$TMP/wrapper-kept.json"
-assert_factstmp_empty
-
-# --graph-in reuses a user file and creates nothing.
-TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
-    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --graph-in "$TMP/wrapper.json" --trace-depth 1 \
+    "$WRAPPER" run --static-graph "$TMP/wrapper.json" --trace-depth 1 \
     --dry-run -- "$TMP/simple" >/dev/null 2>&1
 assert_factstmp_empty
 
