@@ -2115,8 +2115,8 @@ int main(int argc, char** argv)
                 const auto report = output.take_rate_limit_report();
                 if (report.total() != 0) {
                     fprintf(stderr,
-                            "callgraph: rate-limited %" PRIu64
-                            " event line(s) since last report "
+                            "callgraph: suppressed %" PRIu64
+                            " event line(s) by rate-limit since last report "
                             "(user %" PRIu64 ", kernel %" PRIu64 ")\n",
                             report.total(), report.user, report.kernel);
                 }
@@ -2199,8 +2199,8 @@ int main(int argc, char** argv)
         const uint64_t rate_limited_kernel = output.kernel_lines_suppressed();
         if (rate_limited_user + rate_limited_kernel != 0) {
             fprintf(stderr,
-                    "callgraph: rate-limited %" PRIu64
-                    " event line(s) total (user %" PRIu64
+                    "callgraph: suppressed %" PRIu64
+                    " event line(s) by rate-limit total (user %" PRIu64
                     ", kernel %" PRIu64 ")\n",
                     rate_limited_user + rate_limited_kernel, rate_limited_user,
                     rate_limited_kernel);
