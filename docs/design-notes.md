@@ -56,8 +56,9 @@ Two return modes are provided:
   reveals a shallower stack pointer (see below) or when an older return arrives.
 
 The resolver warns when `.gcc_except_table` is present and `uretprobe` is
-selected. `ret` mode requires libopcodes (`binutils-dev`) and is x86-only for
-now.
+selected. `ret` mode requires `--static-graph` facts containing `ret` offsets
+(produced by `callgraph-disasm`) and is x86-64 only. Missing facts are a hard
+error; the tracer never silently falls back to `uretprobe`.
 
 ### Non-local control flow and rsp resynchronisation
 
@@ -331,20 +332,24 @@ attributes come from DWARF; thread names come from
 
 Offline `callgraph export` has three mutually exclusive modes: `--otel` emits
 OTLP/JSON, `--flame` emits folded stacks for flamegraph.pl/inferno, and
-`--static` prints a direct-call tree for an ELF module. The flame path reuses
+`--static` renders a direct-call tree from facts written by
+`callgraph-disasm`. The flame path reuses
 `TraceParser` and `CallStack`, does not need a timestamp anchor, and records
 each function exit's current root-to-function stack. Incomplete frames are
 marked with a trailing `[incomplete]` pseudo-frame.
 
-The static path does not read a trace. It resolves the module's symbols, then
-disassembles function bodies to find direct `call` and unconditional `jmp`
-edges inside that module; indirect, PLT/external, IFUNC, and cross-module
-targets add no edge. Every path is expanded, and a repeated function on the
-current path is cut with `[recursive]`. `--root-scope` selects roots per
-module; otherwise `main`, the ELF entry, init/fini arrays, exported symbols,
-and address-taken functions seed the tree. `--all-modules` adds the transitive
-`DT_NEEDED` closure through `PT_INTERP` or the host loader. The mode is
-x86-64/libopcodes only.
+The static path does not read a trace. `callgraph-disasm` resolves the
+module's symbols and disassembles function bodies to find direct `call` and
+unconditional `jmp` edges inside that module; indirect, PLT/external, IFUNC,
+and cross-module targets add no edge. It writes the functions, flags, edges,
+default roots, and `ret` offsets as JSON. `callgraph export --static
+--static-graph FILE` renders that document: every path is expanded, and a
+repeated function on the current path is cut with `[recursive]`.
+`--root-scope` selects roots per module; otherwise `main`, the ELF entry,
+init/fini arrays, exported symbols, and address-taken functions seed the tree.
+`callgraph-disasm --all-modules` adds the transitive `DT_NEEDED` closure
+through `PT_INTERP` or the host loader. Only the generator links libopcodes;
+the tracer never does.
 
 ## Kernel event correlation (P0 MVP)
 
@@ -376,7 +381,7 @@ trees; kernel lines use a separate `@CATEGORY` format and never change depth.
   files without `.symtab` are not traversed DIE by DIE yet.
 - Modules are discovered by polling `/proc/<pid>/maps` (about every 100 ms).
   Calls in a library's constructors before the first poll are missed.
-- `ret` mode is x86-only and requires libopcodes.
+- `ret` mode is x86-64 only and requires a `--static-graph` facts file.
 - `--show-args` live capture is x86-64 SysV only. Register-passed floating-point
   arguments are unavailable because uprobe `pt_regs` has no XMM state, and
   pointers are not dereferenced. Offline `export --otel --show-args` only

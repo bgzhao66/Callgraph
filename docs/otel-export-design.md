@@ -415,30 +415,32 @@ callgraph run --exporter otlp-json --export-file trace.otlp.json \
     --complete-traces -- ./my_app
 callgraph export --otel --input trace.log --output spans.json --complete-traces
 callgraph export --flame --input trace.log --output stacks.folded
-callgraph export --static -o cg.txt ./app
+callgraph-disasm ./app -o facts.json
+callgraph export --static --static-graph facts.json -o cg.txt
 ```
 
 The default exporter is stdout. OTLP is explicitly enabled. `callgraph export`
 has three mutually exclusive offline modes: `--otel` emits OTLP/JSON,
-`--flame` emits folded stacks for flamegraph tools, and `--static` prints a
-direct-call tree for an ELF executable/shared object. `--otel` and `--flame`
-read a text trace through `--input`; `--static` takes the module path as a
-positional argument. `--batch-size` controls OTLP batching; `--probe-batch-size`
+`--flame` emits folded stacks for flamegraph tools, and `--static` renders a
+direct-call tree from facts written by `callgraph-disasm`. `--otel` and
+`--flame` read a text trace through `--input`; `--static` reads a JSON facts
+document through `--static-graph` and takes no positional argument.
+`--batch-size` controls OTLP batching; `--probe-batch-size`
 controls the `uprobe_multi` link batch independently. The unified `--help` page
 has an Offline export options section where `--otel`, `--flame`, and `--static`
 are master entries with their mode-specific options indented beneath them;
 `--input`, `--output`, and the `--static` filters are listed there, and
 `--help` is under General options.
 
-`--static` reuses the direct-call analyzer from `--trace-depth` pruning: it
-follows resolved `call` and unconditional `jmp` targets inside one module and
-ignores indirect, PLT/external, IFUNC, and cross-module targets. Edges are
-expanded into a full tree, with path cycles cut by `[recursive]`. Default roots
-are `main` (first), the ELF entry, init/fini arrays, exported symbols, and
-address-taken functions; `--root-scope`/`--regex` replace them per module.
-`--all-modules` analyzes the input plus its transitive `DT_NEEDED` closure via
-`PT_INTERP` or the host loader, printing `== PATH ==` before each module.
-Static export needs an x86-64 module and a libopcodes-enabled build, and
+The facts document is produced by the libopcodes-enabled `callgraph-disasm`
+and lists direct `call` and unconditional `jmp` targets inside one module;
+indirect, PLT/external, IFUNC, and cross-module calls are not guessed at. The
+renderer expands edges into a full tree, with path cycles cut by `[recursive]`.
+Default roots are `main` (first), the ELF entry, init/fini arrays, exported
+symbols, and address-taken functions; `--root-scope`/`--regex` post-filter them
+per module. A multi-module document prints `== PATH ==` before each section.
+`callgraph-disasm --all-modules` records the transitive `DT_NEEDED` closure via
+`PT_INTERP` or the host loader. Static export needs an x86-64 module and
 `--exclude` is not supported.
 
 ## 11. Jaeger visualization

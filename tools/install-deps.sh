@@ -2,9 +2,10 @@
 # Install the system packages needed to build callgraph.
 #
 # Required: C++20 compiler, CMake >= 3.20, clang with the BPF target,
-# pkg-config, libelf, libdw, zlib, git, make.
+# pkg-config, libelf, libdw, zlib, git, make, binutils-dev (libopcodes for
+# callgraph-disasm).
 # Optional: libcurl (network OTLP), protobuf/protoc (OTLP gRPC and HTTP
-# protobuf), binutils-dev (libopcodes for --return-mode=ret), python3 (tests).
+# protobuf), python3 (tests).
 #
 # Usage:
 #   ./tools/install-deps.sh                 # required + optional packages
@@ -90,12 +91,11 @@ case " ${DISTRO_ID} ${DISTRO_LIKE} " in
         PKG_MANAGER=apt-get
         REQUIRED=(
             build-essential cmake git pkg-config clang
-            libelf-dev libdw-dev zlib1g-dev
+            libelf-dev libdw-dev zlib1g-dev binutils-dev
         )
         OPTIONAL=(
             libcurl4-openssl-dev
             protobuf-compiler libprotobuf-dev
-            binutils-dev
             python3
         )
         ;;
@@ -109,11 +109,11 @@ case " ${DISTRO_ID} ${DISTRO_LIKE} " in
         REQUIRED=(
             gcc-c++ make cmake git pkgconfig clang
             elfutils-libelf-devel elfutils-devel zlib-devel
+            binutils-devel
         )
         OPTIONAL=(
             libcurl-devel
             protobuf-compiler protobuf-devel
-            binutils-devel
             python3
         )
         ;;
@@ -122,10 +122,10 @@ case " ${DISTRO_ID} ${DISTRO_LIKE} " in
         PKG_MANAGER=pacman
         REQUIRED=(
             base-devel cmake git pkgconf clang
-            libelf elfutils zlib
+            libelf elfutils zlib binutils
         )
         OPTIONAL=(
-            curl protobuf binutils python
+            curl protobuf python
         )
         ;;
     *suse*|*opensuse*)
@@ -134,11 +134,11 @@ case " ${DISTRO_ID} ${DISTRO_LIKE} " in
         REQUIRED=(
             gcc-c++ make cmake git pkg-config clang
             libelf-devel libdw-devel zlib-devel
+            binutils-devel
         )
         OPTIONAL=(
             libcurl-devel
             protobuf-devel protobuf-compiler
-            binutils-devel
             python3
         )
         ;;
@@ -152,11 +152,11 @@ Install the equivalents of these packages manually:
   libelf development files
   libdw development files (elfutils)
   zlib development files
+  binutils development files (libopcodes, for callgraph-disasm)
 
 Optional:
   libcurl development files
   protobuf compiler and C++ development files
-  binutils development files (libopcodes)
   python3 (tests)
 EOF
         exit 1
@@ -283,9 +283,9 @@ else
 fi
 
 if [[ -f /usr/include/dis-asm.h ]] || pkg-config --exists bfd 2>/dev/null; then
-    log "libopcodes headers found: --return-mode=ret available"
+    log "libopcodes headers found: callgraph-disasm can be built"
 else
-    warn "libopcodes headers not found: --return-mode=ret will be unavailable"
+    warn "libopcodes headers not found: callgraph-disasm cannot be built"
 fi
 
 printf '\nDependencies are ready. From %s:\n' "$ROOT_DIR"

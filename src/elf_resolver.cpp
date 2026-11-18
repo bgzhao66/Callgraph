@@ -6,9 +6,6 @@
 #include <libelf.h>
 #include <unistd.h>
 
-#ifdef CALLGRAPH_HAVE_LIBOPCODES
-#include <dis-asm.h>
-#endif
 #include <elfutils/libdwfl.h>
 
 #include <algorithm>
@@ -108,105 +105,6 @@ int binding_rank(const GElf_Sym& sym)
     }
 }
 
-#ifdef CALLGRAPH_HAVE_LIBOPCODES
-namespace {
-
-int discard_printf(void*, const char*, ...)
-{
-    return 0;
-}
-
-int read_code(bfd_vma memaddr, bfd_byte* myaddr, unsigned int length,
-              struct disassemble_info* info)
-{
-    if (memaddr < info->buffer_vma ||
-        memaddr + length > info->buffer_vma + info->buffer_length)
-        return -1;
-    memcpy(myaddr, info->buffer + (memaddr - info->buffer_vma), length);
-    return 0;
-}
-
-bool is_return_instruction(const unsigned char* bytes, int length)
-{
-    if (length <= 0)
-        return false;
-
-    // Skip legacy/REX prefixes before checking the opcode byte.
-    int index = 0;
-    while (index < length &&
-           (bytes[index] == 0x66 || bytes[index] == 0x67 ||
-            bytes[index] == 0xf2 || bytes[index] == 0xf3 ||
-            (bytes[index] >= 0x40 && bytes[index] <= 0x4f))) {
-        ++index;
-    }
-    if (index >= length)
-        return false;
-
-    // ret / retf
-    if (bytes[index] == 0xc3 || bytes[index] == 0xcb)
-        return true;
-    // ret imm16 / retf imm16
-    if (bytes[index] == 0xc2 || bytes[index] == 0xca)
-        return length - index >= 3;
-    return false;
-}
-
-// Uretprobes hijack the return address and break C++ unwinding.  Attaching a
-// normal uprobe to each `ret` instruction avoids that, at the cost of more
-// probes and no event for frames unwound without executing a return.
-void scan_return_instructions(int fd, FunctionInfo& info, bool is_64bit)
-{
-    if (info.high_pc <= info.low_pc)
-        return;
-
-    const uint64_t size = info.high_pc - info.low_pc;
-    if (size > (16u << 20))
-        return;
-
-    std::vector<unsigned char> code(static_cast<size_t>(size));
-    const ssize_t got = pread(fd, code.data(), code.size(), info.file_offset);
-    if (got <= 0)
-        return;
-    code.resize(static_cast<size_t>(got));
-
-    struct disassemble_info dis;
-    init_disassemble_info(&dis, nullptr, discard_printf);
-    dis.arch = bfd_arch_i386;
-    dis.mach = is_64bit ? bfd_mach_x86_64 : bfd_mach_i386_i386;
-    dis.endian = BFD_ENDIAN_LITTLE;
-    dis.buffer = code.data();
-    dis.buffer_length = code.size();
-    dis.buffer_vma = info.low_pc;
-    dis.read_memory_func = read_code;
-
-    disassembler_ftype disassemble =
-        disassembler(bfd_arch_i386, false, dis.mach, nullptr);
-    if (!disassemble)
-        return;
-
-    bfd_vma pc = info.low_pc;
-    const bfd_vma end = info.low_pc + code.size();
-    while (pc < end) {
-        const int length = disassemble(pc, &dis);
-        if (length <= 0)
-            break;
-
-        const size_t index = static_cast<size_t>(pc - info.low_pc);
-        if (index < code.size() &&
-            is_return_instruction(code.data() + index, length)) {
-            info.return_offsets.push_back(info.file_offset + index);
-        }
-        pc += static_cast<bfd_vma>(length);
-    }
-
-    std::sort(info.return_offsets.begin(), info.return_offsets.end());
-    info.return_offsets.erase(
-        std::unique(info.return_offsets.begin(), info.return_offsets.end()),
-        info.return_offsets.end());
-}
-
-}  // namespace
-#endif
 
 bool has_section(Elf* elf, const char* wanted)
 {
@@ -261,13 +159,8 @@ void add_function(std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset,
 ModuleInfo build_module(
     const std::string& path, const std::string& build_id,
     bool has_exception_tables, bool go_binary,
-    std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset, int fd,
-    bool scan_returns, bool is_64bit)
+    std::map<uint64_t, std::pair<FunctionInfo, int>>& by_offset)
 {
-    (void)fd;
-    (void)scan_returns;
-    (void)is_64bit;
-
     ModuleInfo module;
     module.path = path;
     module.build_id = build_id;
@@ -276,10 +169,6 @@ ModuleInfo build_module(
     module.functions.reserve(by_offset.size());
 
     for (auto& entry : by_offset) {
-#ifdef CALLGRAPH_HAVE_LIBOPCODES
-        if (scan_returns)
-            scan_return_instructions(fd, entry.second.first, is_64bit);
-#endif
         entry.second.first.module_build_id = build_id;
         module.functions.push_back(std::move(entry.second.first));
     }
@@ -450,26 +339,10 @@ ModuleInfo resolve_with_dwfl(const std::string& path,
         fail("%s has no instrumentable functions (debug information missing?)",
              path.c_str());
 
-    const bool is_64bit = ehdr.e_machine == EM_X86_64;
-    const bool is_x86 = is_64bit || ehdr.e_machine == EM_386;
-
-    int fd = -1;
-    bool scan_returns = false;
-#ifdef CALLGRAPH_HAVE_LIBOPCODES
-    if (is_x86 && options.scan_return_instructions) {
-        fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        scan_returns = fd >= 0;
-    }
-#else
-    (void)is_x86;
-#endif
-
     ModuleInfo result =
         build_module(path, build_id_of(elf),
                      has_section(elf, ".gcc_except_table"), is_go_binary(elf),
-                     by_offset, fd, scan_returns, is_64bit);
-    if (fd >= 0)
-        close(fd);
+                     by_offset);
     if (options.annotate_source)
         annotate_source_info(path, result.functions);
     return result;
@@ -589,19 +462,9 @@ ModuleInfo ElfResolver::resolve(const std::string& path,
                      binding_rank(sym), path);
     }
 
-#ifdef CALLGRAPH_HAVE_LIBOPCODES
-    const bool is_x86 = ehdr.e_machine == EM_X86_64 || ehdr.e_machine == EM_386;
-    const bool is_64bit = ehdr.e_machine == EM_X86_64;
-#else
-    const bool is_x86 = false;
-    const bool is_64bit = false;
-#endif
-
-    const bool scan_returns = is_x86 && options.scan_return_instructions;
     ModuleInfo result =
         build_module(path, build_id_of(file.elf), has_exception_tables,
-                     is_go_binary(file.elf), by_offset, file.fd, scan_returns,
-                     is_64bit);
+                     is_go_binary(file.elf), by_offset);
     if (options.annotate_source)
         annotate_source_info(path, result.functions);
     return result;

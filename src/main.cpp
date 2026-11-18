@@ -36,7 +36,6 @@
 #include "callgraph/histogram_report.h"
 #include "callgraph/kernel_probe_manager.h"
 #include "callgraph/kernel_timeline.h"
-#include "callgraph/module_dependencies.h"
 #include "callgraph/module_manager.h"
 #include "callgraph/otel_exporter.h"
 #include "callgraph/otlp_json.h"
@@ -47,6 +46,8 @@
 #include "callgraph/span_generator.h"
 #include "callgraph/static_call_graph.h"
 #include "callgraph/static_graph_export.h"
+#include "callgraph/static_graph_join.h"
+#include "callgraph/static_graph_json.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
 #include "callgraph/trace_parser.h"
@@ -70,6 +71,7 @@ struct Options {
     bool no_rsp_resync = false;
     bool all_modules = false;
     std::vector<std::string> modules;
+    std::vector<std::string> static_graph;
     bool wall_clock = false;
     int max_depth = -1;
     int trace_depth = -1;
@@ -209,7 +211,7 @@ void usage(FILE* out)
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
-            "  callgraph export --static [options] MODULE\n"
+            "  callgraph export --static --static-graph FILE [options]\n"
             "\n");
 
     print_help_section(out, "Tracing options", {
@@ -225,6 +227,10 @@ void usage(FILE* out)
          "disables longjmp/siglongjmp depth repair"},
         {"--all-modules", "trace every mapped ELF module"},
         {"--module GLOB", "also trace mapped modules matching GLOB"},
+        {"--static-graph FILE",
+         "call-graph facts from callgraph-disasm (repeatable);\n"
+         "enables --trace-depth pruning, --return-mode=ret,\n"
+         "and export --static"},
         {"-T, --wall-clock",
          "wall-clock timestamps (default: seconds since boot)"},
         {"--max-depth N", "print events with depth <= N (default: unlimited)"},
@@ -317,13 +323,13 @@ void usage(FILE* out)
             "Offline export options (callgraph export):\n"
             "  Convert an existing text trace without root.  --otel emits an\n"
             "  OTLP/JSON request body; --flame emits folded stacks; --static\n"
-            "  prints a direct-call graph of an ELF module.\n");
+            "  renders a direct-call graph from callgraph-disasm facts.\n");
     print_help_options(out, {
         {"--input FILE", "callgraph text trace to convert (--otel/--flame)"},
         {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
-        {"--static", "print the direct-call graph of an ELF MODULE"},
-        {"--all-modules",
-         "with --static, analyze MODULE and its DT_NEEDED closure", 1},
+        {"--static", "render a direct-call graph from facts"},
+        {"--static-graph FILE",
+         "facts produced by callgraph-disasm (repeatable)", 1},
         {"--root-scope GLOB",
          "with --static, functions that start a tree (repeatable)", 1},
         {"--regex",
@@ -368,9 +374,9 @@ void usage(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
-            "  --static takes the ELF path as MODULE and writes to stdout by\n"
-            "  default; it follows direct call and unconditional jump edges\n"
-            "  only and requires an x86-64 module plus libopcodes.\n"
+            "  --static renders facts written by callgraph-disasm; generate\n"
+            "  them with 'callgraph-disasm --all-modules MODULE -o facts.json'.\n"
+            "  The tracer never links a disassembler.\n"
             "\n");
 
     print_help_section(out, "General options", {
@@ -422,10 +428,11 @@ void usage(FILE* out)
             "    flamegraph.pl stacks.folded > flame.svg\n"
             "\n"
             "  Static call graph:\n"
-            "    callgraph export --static ./app\n"
-            "    callgraph export --static -o cg.txt ./app\n"
-            "    callgraph export --static --all-modules ./app\n"
-            "    callgraph export --static --regex --root-scope '^main$' ./app\n");
+            "    callgraph-disasm ./app -o facts.json\n"
+            "    callgraph export --static --static-graph facts.json\n"
+            "    callgraph-disasm --all-modules ./app -o facts.json\n"
+            "    callgraph export --static --static-graph facts.json \\\n"
+            "        --regex --root-scope '^main$'\n");
 }
 
 void usage_brief(FILE* out)
@@ -435,7 +442,7 @@ void usage_brief(FILE* out)
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
-            "  callgraph export --static [options] MODULE\n"
+            "  callgraph export --static --static-graph FILE [options]\n"
             "\n"
             "Run 'callgraph --help' for all options.\n");
 }
@@ -644,6 +651,8 @@ Options parse_args(int argc, char** argv)
             options.no_rsp_resync = true;
         } else if (arg == "--all-modules") {
             options.all_modules = true;
+        } else if (arg == "--static-graph") {
+            options.static_graph.push_back(value());
         } else if (arg == "--module") {
             options.modules.push_back(value());
         } else if (arg == "-T" || arg == "--wall-clock") {
@@ -947,11 +956,14 @@ Options parse_args(int argc, char** argv)
         (options.trace_metadata == options.output ||
          options.trace_metadata == options.export_file))
         usage_error("--trace-metadata must not share a path with output");
-#ifndef CALLGRAPH_HAVE_LIBOPCODES
-    if (options.return_mode == "ret")
-        usage_error("--return-mode=ret requires libopcodes (install binutils-dev "
-                    "and rebuild)");
-#endif
+    if (options.return_mode == "ret" && options.static_graph.empty())
+        usage_error("--return-mode=ret requires --static-graph FILE (produce "
+                    "it with callgraph-disasm)");
+    if (options.return_mode != "ret" && options.trace_depth < 0 &&
+        !options.static_graph.empty()) {
+        log_warn("--static-graph is only used by --trace-depth and "
+                 "--return-mode=ret; ignoring it");
+    }
 #if !defined(__x86_64__)
     if (options.show_args)
         usage_error("--show-args is only supported on x86-64");
@@ -1109,13 +1121,12 @@ enum class ExportMode { Otel, Flame, Static };
 struct ExportOptions {
     std::string input;
     std::string output;
-    std::string module;
+    std::vector<std::string> static_graph;
     ExportMode mode = ExportMode::Otel;
     bool mode_set = false;
     bool help = false;
     bool otel_option_used = false;
     bool static_option_used = false;
-    bool all_modules = false;
     bool use_regex = false;
     std::vector<std::string> root_scope;
     std::string endpoint;
@@ -1197,7 +1208,11 @@ ExportOptions parse_export_args(int argc, char** argv)
             options.mode = ExportMode::Static;
             options.mode_set = true;
         } else if (arg == "--all-modules") {
-            options.all_modules = true;
+            usage_error("--all-modules is not valid with export; "
+                        "callgraph-disasm --all-modules records the whole "
+                        "closure in the facts file");
+        } else if (arg == "--static-graph") {
+            options.static_graph.push_back(value());
             options.static_option_used = true;
         } else if (arg == "--root-scope") {
             options.root_scope.push_back(value());
@@ -1306,11 +1321,14 @@ ExportOptions parse_export_args(int argc, char** argv)
         if (options.otel_option_used)
             usage_error("OTel options are not valid with --static");
         if (!options.input.empty())
-            usage_error("--input is not valid with --static; pass the ELF "
-                        "path as a positional argument");
-        if (positionals.size() != 1)
-            usage_error("export --static requires exactly one MODULE argument");
-        options.module = positionals.front();
+            usage_error("--input is not valid with --static; pass the facts "
+                        "file with --static-graph");
+        if (!positionals.empty())
+            usage_error("export --static takes facts from --static-graph FILE; "
+                        "run callgraph-disasm on the MODULE instead");
+        if (options.static_graph.empty())
+            usage_error("export --static requires --static-graph FILE (produce "
+                        "it with callgraph-disasm)");
         return options;
     }
 
@@ -1318,7 +1336,7 @@ ExportOptions parse_export_args(int argc, char** argv)
         usage_error("unexpected export argument '%s'",
                     positionals.front().c_str());
     if (options.static_option_used)
-        usage_error("--all-modules, --root-scope, and --regex are only valid "
+        usage_error("--static-graph, --root-scope, and --regex are only valid "
                     "with --static");
 
     if (options.mode == ExportMode::Flame) {
@@ -1578,28 +1596,45 @@ public:
     bool root_match(const FunctionInfo& function) const
     {
         return !root_scope_.empty() &&
-               matches(function, root_scope_, root_scope_re_) &&
+               matches(function.name, function.linkage_name, root_scope_,
+                       root_scope_re_) &&
                !excluded(function);
     }
 
+    // Name-based form used for facts that are not a FunctionInfo table.
+    bool root_match_name(const std::string& name,
+                         const std::string& linkage_name) const
+    {
+        return !root_scope_.empty() &&
+               matches(name, linkage_name, root_scope_, root_scope_re_);
+    }
+
 private:
-    static bool matches(const FunctionInfo& function,
+    static bool matches(const std::string& name,
+                        const std::string& linkage_name,
                         const std::vector<std::string>& globs,
                         const std::vector<std::regex>& regexes)
     {
         for (const auto& pattern : globs) {
-            if (fnmatch(pattern.c_str(), function.name.c_str(), 0) == 0)
+            if (fnmatch(pattern.c_str(), name.c_str(), 0) == 0)
                 return true;
-            if (fnmatch(pattern.c_str(), function.linkage_name.c_str(), 0) == 0)
+            if (fnmatch(pattern.c_str(), linkage_name.c_str(), 0) == 0)
                 return true;
         }
         for (const auto& regex : regexes) {
-            if (std::regex_search(function.name, regex))
+            if (std::regex_search(name, regex))
                 return true;
-            if (std::regex_search(function.linkage_name, regex))
+            if (std::regex_search(linkage_name, regex))
                 return true;
         }
         return false;
+    }
+
+    static bool matches(const FunctionInfo& function,
+                        const std::vector<std::string>& globs,
+                        const std::vector<std::regex>& regexes)
+    {
+        return matches(function.name, function.linkage_name, globs, regexes);
     }
 
     std::vector<std::string> root_scope_;
@@ -1609,21 +1644,33 @@ private:
     std::vector<std::regex> exclude_re_;
 };
 
+void load_static_graphs(const std::vector<std::string>& paths,
+                        StaticGraphDocument* document)
+{
+    for (const std::string& path : paths) {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            fail("cannot open %s", path.c_str());
+        std::string text((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+        StaticGraphDocument part;
+        std::string reason;
+        if (!read_static_graph_json(text, &part, &reason))
+            fail("cannot read %s: %s", path.c_str(), reason.c_str());
+        for (auto& module : part.modules)
+            document->modules.push_back(std::move(module));
+    }
+}
+
 int run_static_export(const ExportOptions& options)
 {
+    StaticGraphDocument document;
+    load_static_graphs(options.static_graph, &document);
+    if (document.modules.empty())
+        fail("--static-graph contains no modules");
+
     FunctionFilter filter(options.root_scope, {}, options.use_regex);
 
-    std::vector<std::string> modules;
-    if (options.all_modules) {
-        std::string reason;
-        if (!module_dependencies(options.module, &modules, &reason))
-            fail("cannot resolve dependencies of %s: %s",
-                 options.module.c_str(), reason.c_str());
-    } else {
-        modules.push_back(options.module);
-    }
-
-    const ResolveOptions resolve_options{false, false};
     std::ofstream file;
     std::ostream* out = &std::cout;
     if (!options.output.empty() && options.output != "-") {
@@ -1632,67 +1679,62 @@ int run_static_export(const ExportOptions& options)
             fail("cannot open %s for writing", options.output.c_str());
         out = &file;
     }
+
+    const bool multi_module = document.modules.size() > 1;
     size_t roots_written = 0;
     size_t modules_written = 0;
 
-    for (size_t index = 0; index < modules.size(); ++index) {
-        const std::string& path = modules[index];
+    for (size_t index = 0; index < document.modules.size(); ++index) {
+        StaticGraphModule& module = document.modules[index];
         const bool primary = index == 0;
 
-        ModuleInfo module;
-        try {
-            module = ElfResolver::resolve(path, resolve_options);
-        } catch (const std::exception& error) {
+        if (!module.prunable) {
+            const std::string reason = module.prune_reason.empty()
+                                           ? "call graph is unavailable"
+                                           : module.prune_reason;
             if (primary)
-                fail("cannot analyze %s: %s", path.c_str(), error.what());
-            log_verbose("skipping dependency %s: %s", path.c_str(),
-                        error.what());
+                fail("cannot render a static call graph for %s: %s",
+                     module.path.c_str(), reason.c_str());
+            log_warn("skipping module %s: %s", module.path.c_str(),
+                     reason.c_str());
             continue;
         }
 
-        StaticCallGraphRequest request;
-        request.module_path = path;
-        request.functions = &module.functions;
-        request.has_root_scope = filter.has_root_scope();
-        if (request.has_root_scope) {
+        std::vector<size_t> roots;
+        if (filter.has_root_scope()) {
             for (size_t i = 0; i < module.functions.size(); ++i) {
-                if (filter.root_match(module.functions[i]))
-                    request.roots.push_back(i);
+                if (filter.root_match_name(module.functions[i].name,
+                                           module.functions[i].linkage_name))
+                    roots.push_back(i);
             }
-            if (request.roots.empty()) {
+            if (roots.empty()) {
                 if (primary)
                     fail("no function in %s matches --root-scope",
-                         path.c_str());
-                log_verbose("skipping dependency %s: no --root-scope match",
-                            path.c_str());
+                         module.path.c_str());
+                log_verbose("skipping module %s: no --root-scope match",
+                            module.path.c_str());
+                continue;
+            }
+        } else {
+            roots = static_graph_module_roots(module);
+            if (roots.empty()) {
+                if (primary)
+                    fail("no call-graph roots found in %s",
+                         module.path.c_str());
+                log_verbose("skipping module %s: no call-graph roots",
+                            module.path.c_str());
                 continue;
             }
         }
+        module.roots = std::move(roots);
 
-        StaticCallGraph graph = build_static_call_graph(request);
-        if (!graph.available) {
-            if (primary)
-                fail("cannot build a static call graph for %s: %s",
-                     path.c_str(), graph.reason.c_str());
-            log_warn("skipping dependency %s: %s", path.c_str(),
-                     graph.reason.c_str());
-            continue;
-        }
-        if (graph.roots.empty()) {
-            if (primary)
-                fail("no call-graph roots found in %s", path.c_str());
-            log_verbose("skipping dependency %s: no call-graph roots",
-                        path.c_str());
-            continue;
-        }
-
-        if (options.all_modules) {
+        if (multi_module) {
             if (modules_written > 0)
                 *out << '\n';
-            *out << "== " << path << " ==\n";
+            *out << "== " << module.path << " ==\n";
         }
-        write_static_graph({&graph, &module.functions}, *out);
-        roots_written += graph.roots.size();
+        write_static_graph(module, *out);
+        roots_written += module.roots.size();
         ++modules_written;
     }
 
@@ -1739,13 +1781,14 @@ struct PlannedModule {
 class ModuleRegistry {
 public:
     ModuleRegistry(const Options& options, FunctionFilter& filter,
-                   ProbeManager* probes, bool ret_mode)
+                   ProbeManager* probes, bool ret_mode,
+                   const StaticGraphDocument* graph)
         : options_(options), filter_(filter), probes_(probes),
-          ret_mode_(ret_mode)
+          ret_mode_(ret_mode), graph_(graph)
     {
     }
 
-    bool add(const std::string& path, bool required)
+    bool add(const std::string& path, bool required, bool primary = false)
     {
         if (!attached_.insert(path).second)
             return true;
@@ -1758,6 +1801,38 @@ public:
                 fail("cannot resolve %s: %s", path.c_str(), error.what());
             log_verbose("skipping %s: %s", path.c_str(), error.what());
             return false;
+        }
+
+        StaticGraphFacts facts;
+        bool have_facts = false;
+        if (graph_) {
+            const StaticGraphModule* source =
+                find_static_graph_module(*graph_, module.build_id, path);
+            if (source) {
+                have_facts =
+                    join_static_graph_module(*source, module.functions, &facts);
+                if (!have_facts) {
+                    log_verbose("--static-graph facts for %s match no "
+                                "function; ignoring them",
+                                path.c_str());
+                }
+            }
+        }
+
+        if (ret_mode_) {
+            if (!have_facts || !facts.has_returns) {
+                if (primary || required) {
+                    fail("--return-mode=ret has no call-graph facts for %s; "
+                         "regenerate with callgraph-disasm (add --all-modules "
+                         "to cover dependencies)",
+                         path.c_str());
+                }
+                log_warn("--return-mode=ret: no call-graph facts for %s; "
+                         "module is not traced",
+                         path.c_str());
+                return false;
+            }
+            apply_static_graph_returns(facts, &module.functions);
         }
 
         std::vector<size_t> candidates;
@@ -1784,6 +1859,7 @@ public:
             request.attach_mode = options_.command == "attach";
             request.is_go_binary = module.is_go_binary;
             request.verbose = options_.verbose;
+            request.facts = have_facts ? &facts : nullptr;
 
             StaticPruneResult result =
                 trace_depth == 0 ? select_roots(request)
@@ -1916,6 +1992,7 @@ private:
     FunctionFilter& filter_;
     ProbeManager* probes_;
     bool ret_mode_;
+    const StaticGraphDocument* graph_;
 
     std::vector<std::string> names_;
     std::vector<FunctionSignature> signatures_;
@@ -1955,10 +2032,64 @@ void print_version()
     printf("libbpf %d.%d\n", LIBBPF_MAJOR_VERSION, LIBBPF_MINOR_VERSION);
     printf("otlp protobuf: %s\n", otlp_protobuf_available() ? "yes" : "no");
     printf("otlp http: %s\n", otlp_http_available() ? "yes" : "no");
+    printf("static graph: external (callgraph-disasm)\n");
 
     struct utsname uts;
     if (uname(&uts) == 0)
         printf("kernel %s\n", uts.release);
+}
+
+std::string canonical_executable(const std::string& program)
+{
+    std::string candidate = program;
+    // execvp searches PATH for a bare name; mirror that before canonicalising
+    // so the pre-flight lookup sees the same file.
+    if (candidate.find('/') == std::string::npos) {
+        const char* env = getenv("PATH");
+        const std::string search = env ? env : "";
+        size_t start = 0;
+        while (start <= search.size()) {
+            const size_t colon = search.find(':', start);
+            const std::string dir =
+                search.substr(start, colon == std::string::npos
+                                         ? std::string::npos
+                                         : colon - start);
+            if (!dir.empty()) {
+                const std::string full = dir + "/" + candidate;
+                if (access(full.c_str(), X_OK) == 0) {
+                    candidate = full;
+                    break;
+                }
+            }
+            if (colon == std::string::npos)
+                break;
+            start = colon + 1;
+        }
+    }
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(candidate, error);
+    if (error)
+        return candidate;
+    return canonical.string();
+}
+
+// --return-mode=ret changes probe semantics, so a missing module or an empty
+// return-offset table is fatal rather than a silent uretprobe downgrade.
+void check_ret_facts(const StaticGraphDocument& graph,
+                     const std::string& path)
+{
+    const StaticGraphModule* module =
+        find_static_graph_module(graph, {}, path);
+    if (!module) {
+        fail("--static-graph has no facts for %s; regenerate with "
+             "callgraph-disasm (add --all-modules to cover dependencies)",
+             path.c_str());
+    }
+    for (const auto& function : module->functions) {
+        if (!function.return_offsets.empty())
+            return;
+    }
+    fail("%s has no ret offsets in --static-graph", path.c_str());
 }
 
 std::vector<uint32_t> target_tids(pid_t pid)
@@ -2000,6 +2131,16 @@ int main(int argc, char** argv)
         if (options.verbose)
             g_log_level = LogLevel::Verbose;
 
+        StaticGraphDocument static_graph;
+        if (!options.static_graph.empty())
+            load_static_graphs(options.static_graph, &static_graph);
+
+        const bool ret_mode = options.return_mode == "ret";
+        if (ret_mode && options.command == "run" && !options.program.empty()) {
+            check_ret_facts(static_graph,
+                            canonical_executable(options.program[0]));
+        }
+
         struct sigaction action = {};
         action.sa_handler = [](int) { g_stop = 1; };
         sigemptyset(&action.sa_mask);
@@ -2029,6 +2170,9 @@ int main(int argc, char** argv)
             exe = ProcessController::exe_path(target);
         }
 
+        if (ret_mode && options.command == "attach")
+            check_ret_facts(static_graph, exe);
+
         FunctionFilter filter(options.root_scope, options.exclude,
                               options.use_regex);
 
@@ -2050,8 +2194,9 @@ int main(int argc, char** argv)
         const bool multi_module = options.all_modules || !options.modules.empty();
 
         if (options.dry_run) {
-            ModuleRegistry registry(options, filter, nullptr, false);
-            registry.add(exe, !multi_module);
+            ModuleRegistry registry(options, filter, nullptr, false,
+                                    &static_graph);
+            registry.add(exe, !multi_module, true);
             for (size_t i = 1; i < initial_paths.size(); ++i)
                 registry.add(initial_paths[i], false);
 
@@ -2124,9 +2269,9 @@ int main(int argc, char** argv)
                          kernel_probes->missing_events()));
         }
 
-        const bool ret_mode = options.return_mode == "ret";
-        ModuleRegistry registry(options, filter, &probes, ret_mode);
-        registry.add(exe, !multi_module);
+        ModuleRegistry registry(options, filter, &probes, ret_mode,
+                                &static_graph);
+        registry.add(exe, !multi_module, true);
         for (size_t i = 1; i < initial_paths.size(); ++i)
             registry.add(initial_paths[i], false);
 

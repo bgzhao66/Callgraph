@@ -9,7 +9,7 @@
 namespace callgraph {
 namespace {
 
-std::string display_name(const FunctionInfo& function)
+std::string display_name(const StaticGraphFunction& function)
 {
     return function.name.empty() ? function.linkage_name : function.name;
 }
@@ -31,20 +31,16 @@ void write_connector(std::ostream& out, const std::vector<Frame>& stack,
 
 }  // namespace
 
-void write_static_graph(const StaticGraphView& view, std::ostream& out)
+void write_static_graph(const StaticGraphModule& module, std::ostream& out)
 {
-    if (!view.graph || !view.functions)
-        return;
+    const std::vector<StaticGraphFunction>& functions = module.functions;
 
-    const StaticCallGraph& graph = *view.graph;
-    const std::vector<FunctionInfo>& functions = *view.functions;
-
-    for (const size_t root : graph.roots) {
+    for (const size_t root : module.roots) {
         if (root >= functions.size())
             continue;
 
         out << display_name(functions[root]) << '\n';
-        if (root >= graph.edges.size())
+        if (root >= module.edges.size())
             continue;
 
         std::vector<unsigned char> on_path(functions.size(), 0);
@@ -54,7 +50,7 @@ void write_static_graph(const StaticGraphView& view, std::ostream& out)
 
         while (!stack.empty()) {
             Frame& frame = stack.back();
-            const std::vector<size_t>& callees = graph.edges[frame.function];
+            const std::vector<size_t>& callees = module.edges[frame.function];
             if (frame.next_child >= callees.size()) {
                 on_path[frame.function] = 0;
                 stack.pop_back();
@@ -62,7 +58,7 @@ void write_static_graph(const StaticGraphView& view, std::ostream& out)
             }
 
             const size_t child = callees[frame.next_child++];
-            if (child >= functions.size() || child >= graph.edges.size())
+            if (child >= functions.size() || child >= module.edges.size())
                 continue;
 
             const bool last = frame.next_child >= callees.size();
@@ -80,10 +76,10 @@ void write_static_graph(const StaticGraphView& view, std::ostream& out)
     }
 }
 
-std::string render_static_graph(const StaticGraphView& view)
+std::string render_static_graph(const StaticGraphModule& module)
 {
     std::ostringstream out;
-    write_static_graph(view, out);
+    write_static_graph(module, out);
     return out.str();
 }
 

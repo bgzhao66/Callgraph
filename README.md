@@ -38,8 +38,10 @@ recompiling them or adding instrumentation.
   converts existing text traces offline.
 - **Visualize with flamegraphs.** `callgraph export --flame` emits folded stacks
   for `flamegraph.pl` or `inferno-flamegraph`.
-- **Inspect calls without running.** `callgraph export --static` prints the
-  direct-call tree of an ELF module, optionally across its `DT_NEEDED` closure.
+- **Inspect calls without running.** `callgraph-disasm` writes static facts for
+  an ELF module (or its `DT_NEEDED` closure) and `callgraph export --static`
+  renders them as a direct-call tree, without linking a disassembler into the
+  tracer.
 - **Control overhead and volume.** `--ingest-sample-rate`, `--sample-rate`,
   `--outlier-latency-quantile`, `--log-rate-limit`, `--max-depth`, and
   `--complete-traces` let you trade completeness for cost and focus.
@@ -82,8 +84,9 @@ The current implementation includes:
   (`--exporter otlp-json`), and `callgraph export --otel` for existing text
   traces
 - folded-stack flamegraph export via `callgraph export --flame`
-- static direct-call graph export via `callgraph export --static`, including
-  `--all-modules`, `--root-scope`, and `--regex`
+- static call-graph facts from `callgraph-disasm`, consumed by
+  `callgraph --static-graph` for `--trace-depth`, `--return-mode=ret`, and
+  `callgraph export --static`
 - correlated kernel event tracing (`--kernel`) with OTel child spans for
   TID-specific syscall, reclaim, scheduler, and page-fault activity
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
@@ -105,7 +108,7 @@ child-process (`fork`) following.
 | protobuf + protoc (optional) | OTLP gRPC and OTLP/HTTP protobuf; JSON file export works without it |
 | DWARF debug info (`-g` or a separate debug file) | `--show-args` parameter names and types; source file/line attributes |
 | x86-64 | `--show-args` live value capture (SysV ABI); offline suffix replay is architecture-independent |
-| `binutils-dev` (libopcodes) | optional; enables `--return-mode=ret` |
+| `binutils-dev` (libopcodes) | `callgraph-disasm` only; the tracer never links it |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
 | ptrace permission | attach mode |
 
@@ -125,7 +128,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ```
 
-The binary is `build/callgraph`.
+The build produces `build/callgraph` (tracer, no libopcodes),
+`build/callgraph-disasm` (GPL-3.0-only static facts generator, needs
+libopcodes), and `callgraph.sh` (the orchestration wrapper). Install all three
+together; the wrapper looks for the other two next to its own real path, with
+symlinks resolved. `CALLGRAPH` and `CALLGRAPH_DISASM` override those paths.
 
 On Debian/Ubuntu, Fedora/RHEL/CentOS, Arch, or openSUSE, the dependency
 installer handles the system packages and initializes the libbpf submodule:
@@ -176,7 +183,8 @@ sudo ./build/callgraph attach -p 12345 --regex \
     --root-scope '^(main|Database::)' --exclude 'Database::Debug'
 
 # Exception-using C++ program: avoid uretprobe unwinding breakage
-sudo ./build/callgraph run --return-mode ret -- ./my_app
+./build/callgraph-disasm ./my_app -o facts.json
+sudo ./build/callgraph run --static-graph facts.json --return-mode ret -- ./my_app
 
 # Redirect the event stream to a file (keeps the app's stdout separate)
 sudo ./build/callgraph run -o trace.log -- ./my_app
@@ -224,7 +232,7 @@ Usage:
   callgraph run [options] -- program [args...]
   callgraph attach [options] -p PID
   callgraph export --otel|--flame --input TRACE [options]
-  callgraph export --static [options] MODULE
+  callgraph export --static --static-graph FILE [options]
 
 Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
@@ -237,6 +245,9 @@ Tracing options:
                             disables longjmp/siglongjmp depth repair
       --all-modules         trace every mapped ELF module
       --module GLOB         also trace mapped modules matching GLOB
+      --static-graph FILE   call-graph facts from callgraph-disasm (repeatable);
+                            enables --trace-depth pruning, --return-mode=ret,
+                            and export --static
   -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
       --max-depth N         print events with depth <= N (default: unlimited)
       --trace-depth N       trace user frames N levels below the root
@@ -311,11 +322,12 @@ Live export options (--exporter):
 Offline export options (callgraph export):
   Convert an existing text trace without root.  --otel emits an
   OTLP/JSON request body; --flame emits folded stacks; --static
-  prints a direct-call graph of an ELF module.
+  renders a direct-call graph from callgraph-disasm facts.
       --input FILE          callgraph text trace to convert (--otel/--flame)
       --otel                convert a text trace to OpenTelemetry OTLP/JSON spans
-      --static              print the direct-call graph of an ELF MODULE
-          --all-modules     with --static, analyze MODULE and its DT_NEEDED closure
+      --static              render a direct-call graph from facts
+          --static-graph FILE
+                            facts produced by callgraph-disasm (repeatable)
           --root-scope GLOB with --static, functions that start a tree (repeatable)
           --regex           with --static, treat --root-scope as extended regex
           --endpoint URL    POST the OTLP/JSON body to URL
@@ -357,9 +369,9 @@ Offline export options (callgraph export):
   --output and --endpoint are alternatives; --otel requires one.
   --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
   protobuf use --exporter otlp or --exporter otlp-http.
-  --static takes the ELF path as MODULE and writes to stdout by
-  default; it follows direct call and unconditional jump edges
-  only and requires an x86-64 module plus libopcodes.
+  --static renders facts written by callgraph-disasm; generate
+  them with 'callgraph-disasm --all-modules MODULE -o facts.json'.
+  The tracer never links a disassembler.
 
 General options:
   -v, --verbose             verbose diagnostics
@@ -408,10 +420,11 @@ Examples:
     flamegraph.pl stacks.folded > flame.svg
 
   Static call graph:
-    callgraph export --static ./app
-    callgraph export --static -o cg.txt ./app
-    callgraph export --static --all-modules ./app
-    callgraph export --static --regex --root-scope '^main$' ./app
+    callgraph-disasm ./app -o facts.json
+    callgraph export --static --static-graph facts.json
+    callgraph-disasm --all-modules ./app -o facts.json
+    callgraph export --static --static-graph facts.json \
+        --regex --root-scope '^main$'
 ```
 
 `callgraph export` has three mutually exclusive offline modes: `--otel` emits
@@ -994,14 +1007,34 @@ inferno-flamegraph stacks.folded > flame.svg
 `--flame` writes to stdout when `--output` is omitted. It does not require a
 timestamp anchor, OTLP metadata, or network access.
 
-## Static call graph export
+## Static call graphs and the disassembler
 
-`callgraph export --static MODULE` prints the direct-call tree of an ELF
-executable or shared object without running it:
+The project ships three artifacts:
+
+| Artifact | Role | License |
+|---|---|---|
+| `callgraph` | tracer and exporter | AGPL-3.0-only, or commercial |
+| `callgraph-disasm` | static facts generator | GPL-3.0-only |
+| `callgraph.sh` | orchestration wrapper | MIT |
+
+`callgraph-disasm` is the only program that links libopcodes. It writes JSON
+facts (functions, flags, direct edges, roots, return offsets) and `callgraph`
+consumes them with `--static-graph FILE`. This keeps the tracer free of GPL
+code and gives the facts format an independent reason to exist.
 
 ```bash
-callgraph export --static ./app
-callgraph export --static -o cg.txt ./app
+# Facts for one module
+callgraph-disasm ./app -o facts.json
+
+# Direct-call tree from those facts
+callgraph export --static --static-graph facts.json
+
+# Facts for the static DT_NEEDED closure
+callgraph-disasm --all-modules ./app -o facts.json
+
+# Restrict roots without regenerating
+callgraph export --static --static-graph facts.json --regex \
+    --root-scope '^main$'
 ```
 
 ```text
@@ -1015,9 +1048,9 @@ main
 Only resolved direct `call` and unconditional `jmp` targets inside the module
 are followed. Indirect calls, PLT/external calls, IFUNC targets, and
 cross-module calls are not guessed at. Every call path is expanded in full, so
-the output can grow exponentially; cycles are cut with `[recursive]` instead
-of `[see above]`. On large dependency modules such as libc, pair
-`--all-modules` with `--root-scope` to keep the output bounded.
+the output can grow exponentially; cycles are cut with `[recursive]`. On large
+dependency modules such as libc, pair `--all-modules` with `--root-scope` to
+keep the output bounded.
 
 Without `--root-scope`, roots are `main` (first when present), the ELF entry
 point, init/fini array entries, exported symbols, and address-taken functions.
@@ -1026,14 +1059,67 @@ restricts roots to matching functions; descendants are still expanded even
 when they do not match. Patterns are tried against both the demangled and
 mangled names. Roots are ordered by address.
 
-`--all-modules` analyzes the input plus its transitive `DT_NEEDED` closure,
-resolved through the module's `PT_INTERP` or the host dynamic loader, and
-prints `== /path/to/module ==` before each section. The root filter applies per
-module: the primary module must have a match, while dependency modules without
-one are skipped.
+The facts file carries its own module list, so `export --static` prints
+`== /path/to/module ==` before each section when it contains more than one
+module. The root filter applies per module: the first module must have a
+match, while later modules without one are skipped.
 
-The module must be x86-64 and retain symbols; the build must have libopcodes.
-`--exclude` is not supported in this mode.
+The facts format is documented in `docs/static-graph-format.md`; the artifact
+license map is in `LICENSING.md`.
+
+`callgraph-disasm` requires an x86-64 module that retains symbols. Modules with
+IFUNC targets or `setcontext`/`swapcontext` produce facts marked
+`"prunable": false`: their return offsets remain usable for `ret` mode, but the
+call graph itself is not rendered and `--trace-depth` degrades for them with a
+warning. `--exclude` is not supported in static export mode.
+
+### `--static-graph` for tracing
+
+```bash
+# --trace-depth N>0 prunes probes along the facts' direct edges
+callgraph-disasm ./app -o facts.json
+sudo callgraph run --static-graph facts.json --trace-depth 2 -- ./app
+
+# Exception-safe return mode uses the facts' ret offsets
+sudo callgraph run --static-graph facts.json --return-mode ret -- ./app
+```
+
+`--static-graph` is repeatable; later files add modules to the same document.
+Modules are joined by build-id first, then by canonical path, then by function
+`low_pc`. Without facts, `--trace-depth N>0` warns and instruments explicit
+`--root-scope` matches only; `--return-mode=ret` and `export --static` are hard
+errors. `ret` never silently falls back to `uretprobe`.
+
+`run --all-modules` discovers modules at runtime, including `dlopen`ed ones.
+`callgraph-disasm --all-modules` can only see the static `DT_NEEDED` closure,
+so `dlopen`ed modules have no facts and degrade with a warning.
+
+### `callgraph.sh`
+
+The wrapper decides whether facts are needed, generates them, and passes
+`--static-graph` to the tracer:
+
+```bash
+callgraph.sh run --trace-depth 2 -- ./app
+callgraph.sh run --return-mode ret -- ./app
+callgraph.sh attach -p 12345 --trace-depth 1
+callgraph.sh export --static ./app
+callgraph.sh export --static --graph-in facts.json
+callgraph.sh disasm ./app -o facts.json
+```
+
+| Wrapper option | Meaning |
+|---|---|
+| `--graph-in FILE` | reuse existing facts, skip generation |
+| `--graph-out FILE` | keep generated facts at FILE |
+| `--no-graph` | never generate; pass arguments through |
+
+Facts are generated for `run`/`attach` with `--trace-depth N>=0` or
+`--return-mode=ret`, and for `export --static`. `--all-modules` is forwarded to
+both the generator and the tracer; for `export --static` it goes to the
+generator only. A user-supplied `--static-graph` suppresses generation. Facts
+live in a temporary directory that is removed on exit unless `--graph-out` is
+given. Generator failure aborts before the tracer starts.
 
 ## Return probes: `uretprobe` vs `ret`
 
@@ -1053,9 +1139,10 @@ The tool prints a warning when the target contains `.gcc_except_table`
 
 ### `--return-mode=ret`
 
-The resolver disassembles each function with libopcodes, finds its `ret`
-instructions, and attaches ordinary uprobes there. The return address on the
-stack is never modified, so exceptions and unwinding keep working.
+`callgraph-disasm` disassembles each function, records its `ret` instruction
+offsets in the facts file, and `callgraph` attaches ordinary uprobes there.
+The return address on the stack is never modified, so exceptions and unwinding
+keep working.
 
 Trade-offs:
 
@@ -1064,7 +1151,8 @@ Trade-offs:
 - frames unwound by an exception execute no `ret`, so they produce no return
   event; the next real return on that thread triggers the resynchronization
   logic and is counted as `desync`
-- x86-64 (and 32-bit x86) only; requires `binutils-dev` at build time
+- x86-64 only; requires a `--static-graph` facts file (produce it with
+  `callgraph-disasm`)
 
 Use `ret` for C++ programs that use exceptions, and `uretprobe` for C or
 exception-free programs where the lower probe count matters.
@@ -1129,7 +1217,9 @@ worse.
 ```
 CLI / process controller
         |
-   ELF resolver (libelf, libdwfl, libopcodes)
+   ELF resolver (libelf, libdwfl)
+        |
+   Static facts (--static-graph, from callgraph-disasm)
         |
    Module manager (/proc/<pid>/maps)
         |

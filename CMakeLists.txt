@@ -186,9 +186,10 @@ add_executable(callgraph
   src/main.cpp
   src/common.cpp
   src/elf_resolver.cpp
-  src/static_call_graph.cpp
+  src/static_prune.cpp
+  src/static_elf_facts.cpp
   src/static_graph_export.cpp
-  src/module_dependencies.cpp
+  src/static_graph_json_read.cpp
   src/dwarf_args.cpp
   src/arguments.cpp
   src/module_manager.cpp
@@ -237,18 +238,45 @@ target_link_libraries(callgraph PRIVATE
   Threads::Threads
 )
 
-# Optional: libopcodes is used to find `ret` instructions so that return
-# probes can avoid uretprobes (which break C++ exception unwinding).
+# ---------------------------------------------------------------------------
+# callgraph-disasm: GPL-3.0-only static facts generator.
+#
+# This is the only target that links libopcodes, so the tracer stays free of
+# GPL code.  It writes JSON that callgraph consumes with --static-graph.
+# ---------------------------------------------------------------------------
 find_path(DIS_ASM_INCLUDE NAMES dis-asm.h)
 find_library(OPCODES_LIBRARY NAMES opcodes)
-if(DIS_ASM_INCLUDE AND OPCODES_LIBRARY)
-  target_compile_definitions(callgraph PRIVATE CALLGRAPH_HAVE_LIBOPCODES=1)
-  target_include_directories(callgraph PRIVATE ${DIS_ASM_INCLUDE})
-  target_link_libraries(callgraph PRIVATE ${OPCODES_LIBRARY})
-  message(STATUS "libopcodes found: --return-mode=ret enabled")
-else()
-  message(STATUS "libopcodes not found: --return-mode=ret unavailable")
+if(NOT DIS_ASM_INCLUDE OR NOT OPCODES_LIBRARY)
+  message(FATAL_ERROR "callgraph-disasm requires libopcodes (install binutils-dev)")
 endif()
+
+add_executable(callgraph-disasm
+  tools/disasm/main.cpp
+  src/common.cpp
+  src/elf_resolver.cpp
+  src/module_dependencies.cpp
+  src/static_disasm.cpp
+  src/static_prune.cpp
+  src/static_elf_facts.cpp
+  src/static_graph_json_write.cpp
+)
+target_include_directories(callgraph-disasm PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/bpf
+  ${DIS_ASM_INCLUDE}
+)
+target_compile_definitions(callgraph-disasm PRIVATE
+  CALLGRAPH_VERSION="${PROJECT_VERSION}"
+)
+target_compile_options(callgraph-disasm PRIVATE -Wall -Wextra)
+target_link_libraries(callgraph-disasm PRIVATE
+  PkgConfig::LIBELF
+  PkgConfig::LIBDW
+  ${OPCODES_LIBRARY}
+  ZLIB::ZLIB
+  Threads::Threads
+)
+message(STATUS "callgraph-disasm: libopcodes found, static facts enabled")
 
 # Optional: OTLP network export.  --exporter otlp-json works without curl.
 if(CURL_FOUND)
@@ -283,7 +311,11 @@ if(BUILD_TESTING)
     src/trace_parser.cpp
     src/trace_metadata.cpp
     src/flame_graph.cpp
+    src/static_prune.cpp
+    src/static_elf_facts.cpp
     src/static_graph_export.cpp
+    src/static_graph_json_read.cpp
+    src/static_graph_json_write.cpp
     ${OTLP_PROTO_SRCS}
   )
   target_include_directories(callgraph_tests PRIVATE
@@ -299,7 +331,8 @@ if(BUILD_TESTING)
     target_link_libraries(callgraph_tests PRIVATE protobuf::libprotobuf)
   endif()
   target_compile_options(callgraph_tests PRIVATE -Wall -Wextra)
-  target_link_libraries(callgraph_tests PRIVATE Threads::Threads ZLIB::ZLIB)
+  target_link_libraries(callgraph_tests PRIVATE
+    Threads::Threads ZLIB::ZLIB PkgConfig::LIBELF)
   if(CURL_FOUND)
     target_compile_definitions(callgraph_tests PRIVATE CALLGRAPH_HAVE_CURL=1)
     target_link_libraries(callgraph_tests PRIVATE CURL::libcurl)
@@ -311,4 +344,5 @@ if(BUILD_TESTING)
   set_tests_properties(integration PROPERTIES TIMEOUT 180)
 endif()
 
-install(TARGETS callgraph RUNTIME DESTINATION bin)
+install(TARGETS callgraph callgraph-disasm RUNTIME DESTINATION bin)
+install(PROGRAMS callgraph.sh DESTINATION bin)

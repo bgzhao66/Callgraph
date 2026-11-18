@@ -18,9 +18,6 @@ struct ModuleInfo {
 };
 
 struct ResolveOptions {
-    // Disassemble every function to find `ret` instructions.  Only needed for
-    // --return-mode=ret.
-    bool scan_return_instructions = true;
     // Populate FunctionInfo::source_file/source_line from DWARF.
     bool annotate_source = true;
 };

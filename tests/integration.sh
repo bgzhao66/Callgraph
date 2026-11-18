@@ -6,6 +6,11 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+DISASM=${CALLGRAPH_DISASM:-$(dirname "$BIN")/callgraph-disasm}
+CALLGRAPH_BIN=$(readlink -f "$BIN")
+DISASM_BIN=$(readlink -f "$DISASM" 2>/dev/null || printf '%s' "$DISASM")
+WRAPPER="$ROOT/callgraph.sh"
+
 g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
 g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
@@ -115,6 +120,9 @@ fi
     -- "$TMP/simple" >/dev/null
 
 echo "== help hierarchy =="
+# grep -q closes the pipe as soon as it matches.  With pipefail enabled the
+# writer's SIGPIPE would be reported as a test failure.
+set +o pipefail
 "$BIN" run --help | grep -q '^Tracing options:'
 "$BIN" run --help | grep -q '^      --root-scope'
 ! "$BIN" run --help | grep -q -- '--scope'
@@ -147,9 +155,9 @@ echo "== help hierarchy =="
 "$BIN" export --otel --help | grep -q '^              --outlier-latency-quantile Q'
 "$BIN" export --flame --help | grep -q '^      --flame'
 "$BIN" export --static --help | grep -q '^      --static'
-"$BIN" export --static --help | grep -q '^          --all-modules'
+"$BIN" export --static --help | grep -q '^          --static-graph FILE'
 "$BIN" export --static --help | grep -q '^          --root-scope GLOB'
-"$BIN" export --static --help | grep -q 'callgraph export --static \[options\] MODULE'
+"$BIN" export --static --help | grep -q 'callgraph export --static --static-graph FILE'
 "$BIN" --help > "$TMP/help.txt"
 for args in "run --help" "attach --help" "export --help" \
             "export --otel --help" "export --flame --help" \
@@ -161,6 +169,7 @@ for args in "run --help" "attach --help" "export --help" \
         exit 1
     fi
 done
+set -o pipefail
 
 echo "== OTLP offline conversion =="
 cat > "$TMP/otel.trace" <<'EOF'
@@ -421,7 +430,9 @@ if [ -n "$GO_BIN" ]; then
     grep -q 'Go binary' "$TMP/gowarn.err"
     grep -q -- '--return-mode=ret' "$TMP/gowarn.err"
 
+    "$DISASM" "$GO_BIN" -o "$TMP/gowarn.json"
     "$BIN" run --dry-run --return-mode ret --regex \
+        --static-graph "$TMP/gowarn.json" \
         --root-scope '^main\.main$' -- "$GO_BIN" \
         >/dev/null 2>"$TMP/gowarn_ret.err"
     grep -q 'nesting unreliable' "$TMP/gowarn_ret.err"
@@ -438,107 +449,230 @@ if [ -n "$GO_BIN" ]; then
     fi
 fi
 
-echo "== static export =="
-static_ok=1
-if ! "$BIN" export --static "$TMP/simple" >"$TMP/static.txt" \
-        2>"$TMP/static.err"; then
-    if grep -qi 'libopcodes' "$TMP/static.err"; then
-        static_ok=0
-        echo "== static export skipped (libopcodes unavailable) =="
-    else
-        cat "$TMP/static.err" >&2
+echo "== link guard: the tracer has no disassembler =="
+if command -v ldd >/dev/null 2>&1; then
+    if ldd "$BIN" 2>/dev/null | grep -Eqi 'libopcodes|libbfd'; then
+        echo "callgraph must not link libopcodes/libbfd" >&2
+        exit 1
+    fi
+fi
+if command -v nm >/dev/null 2>&1; then
+    if nm -D "$BIN" 2>/dev/null \
+        | grep -Eq 'init_disassemble_info|disassembler'; then
+        echo "callgraph must not reference the disassembler API" >&2
         exit 1
     fi
 fi
 
-if [ "$static_ok" -eq 1 ]; then
-    grep -qx 'main' "$TMP/static.txt"
-    grep -q '└── C(int)' "$TMP/static.txt"
-    grep -q '├── B(int)' "$TMP/static.txt"
-    grep -q '│   └── A(int)' "$TMP/static.txt"
-    grep -q '^    └── A(int)$' "$TMP/static.txt"
+echo "== static facts generation =="
+if [ ! -x "$DISASM" ]; then
+    echo "callgraph-disasm not found at $DISASM" >&2
+    exit 1
+fi
+"$DISASM" "$TMP/simple" -o "$TMP/simple.json"
+grep -q '"format":"callgraph-static-graph"' "$TMP/simple.json"
+grep -q '"version":1' "$TMP/simple.json"
+grep -q '"name":"main"' "$TMP/simple.json"
+grep -q '"return_offsets":\[' "$TMP/simple.json"
 
-    "$BIN" export --static -o "$TMP/static_file.txt" "$TMP/simple" 2>/dev/null
-    cmp "$TMP/static.txt" "$TMP/static_file.txt"
-    "$BIN" export --static -o - "$TMP/simple" 2>/dev/null \
-        | cmp - "$TMP/static.txt"
+"$DISASM" --all-modules "$TMP/recursive" -o "$TMP/recursive.json"
+grep -q '"name":"factorial' "$TMP/recursive.json"
 
-    scoped=$("$BIN" export --static --root-scope 'C*' "$TMP/simple" \
-        2>/dev/null)
-    [ "$(printf '%s\n' "$scoped" | head -n 1)" = "C(int)" ]
-    ! printf '%s\n' "$scoped" | grep -qx 'main'
+echo "== static export from facts =="
+"$BIN" export --static --static-graph "$TMP/simple.json" \
+    >"$TMP/static.txt" 2>"$TMP/static.err"
+grep -qx 'main' "$TMP/static.txt"
+grep -q '└── C(int)' "$TMP/static.txt"
+grep -q '├── B(int)' "$TMP/static.txt"
+grep -q '│   └── A(int)' "$TMP/static.txt"
+grep -q '^    └── A(int)$' "$TMP/static.txt"
 
-    "$BIN" export --static --regex --root-scope '^C' "$TMP/simple" \
-        2>/dev/null | grep -qx 'C(int)'
+"$BIN" export --static --static-graph "$TMP/simple.json" \
+    -o "$TMP/static_file.txt" 2>/dev/null
+cmp "$TMP/static.txt" "$TMP/static_file.txt"
+"$BIN" export --static --static-graph "$TMP/simple.json" -o - 2>/dev/null \
+    | cmp - "$TMP/static.txt"
 
-    "$BIN" export --static --root-scope 'factorial*' "$TMP/recursive" \
-        2>/dev/null | grep -q '\[recursive\]'
+scoped=$("$BIN" export --static --static-graph "$TMP/simple.json" \
+    --root-scope 'C*' 2>/dev/null)
+[ "$(printf '%s\n' "$scoped" | head -n 1)" = "C(int)" ]
+! printf '%s\n' "$scoped" | grep -qx 'main'
 
-    if "$BIN" export --static --root-scope 'no_such_function_xyz' \
-            "$TMP/simple" >/dev/null 2>&1; then
-        echo "expected an unmatched --root-scope to fail" >&2
-        exit 1
-    fi
+"$BIN" export --static --static-graph "$TMP/simple.json" \
+    --regex --root-scope '^C' 2>/dev/null | grep -qx 'C(int)'
 
-    # --all-modules: a tiny shared object plus its DT_NEEDED dependency.
-    cat > "$TMP/static_dep.c" <<'EOF'
+"$BIN" export --static --static-graph "$TMP/recursive.json" \
+    --root-scope 'factorial*' 2>/dev/null | grep -q '\[recursive\]'
+
+if "$BIN" export --static --static-graph "$TMP/simple.json" \
+        --root-scope 'no_such_function_xyz' >/dev/null 2>&1; then
+    echo "expected an unmatched --root-scope to fail" >&2
+    exit 1
+fi
+
+# --all-modules: a tiny shared object plus its DT_NEEDED dependency.
+cat > "$TMP/static_dep.c" <<'EOF'
 int dep_leaf(int x) { return x + 1; }
 int dep_root(int x) { return dep_leaf(x); }
 EOF
-    cat > "$TMP/static_main.c" <<'EOF'
+cat > "$TMP/static_main.c" <<'EOF'
 extern int dep_root(int);
 int main_root(int x) { return dep_root(x); }
 int main(void) { return main_root(1); }
 EOF
-    gcc -shared -fPIC -nostdlib -o "$TMP/libstaticdep.so" "$TMP/static_dep.c"
-    gcc -shared -fPIC -nostdlib -o "$TMP/libstaticmain.so" \
-        "$TMP/static_main.c" -L"$TMP" -lstaticdep -Wl,-rpath,"$TMP"
+gcc -shared -fPIC -nostdlib -o "$TMP/libstaticdep.so" "$TMP/static_dep.c"
+gcc -shared -fPIC -nostdlib -o "$TMP/libstaticmain.so" \
+    "$TMP/static_main.c" -L"$TMP" -lstaticdep -Wl,-rpath,"$TMP"
 
-    all=$("$BIN" export --static --all-modules "$TMP/libstaticmain.so" \
-        2>/dev/null)
-    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
-    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticdep.so =="
-    printf '%s\n' "$all" | grep -qx 'dep_leaf'
+"$DISASM" --all-modules "$TMP/libstaticmain.so" -o "$TMP/all.json"
+all=$("$BIN" export --static --static-graph "$TMP/all.json" 2>/dev/null)
+printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
+printf '%s\n' "$all" | grep -qx "== $TMP/libstaticdep.so =="
+printf '%s\n' "$all" | grep -qx 'dep_leaf'
 
-    # The filter applies per module; dependencies without a match are skipped.
-    all=$("$BIN" export --static --all-modules --root-scope 'main_root' \
-        "$TMP/libstaticmain.so" 2>/dev/null)
-    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
-    ! printf '%s\n' "$all" | grep -q "== $TMP/libstaticdep.so =="
-fi
+# The filter applies per module; dependencies without a match are skipped.
+all=$("$BIN" export --static --static-graph "$TMP/all.json" \
+    --root-scope 'main_root' 2>/dev/null)
+printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
+! printf '%s\n' "$all" | grep -q "== $TMP/libstaticdep.so =="
 
-echo "== static export CLI gating =="
+echo "== static facts CLI gating =="
 echo "not an elf" > "$TMP/notelf"
-if "$BIN" export --static "$TMP/notelf" >/dev/null 2>&1; then
-    echo "expected a non-ELF --static input to fail" >&2
+if "$DISASM" "$TMP/notelf" >/dev/null 2>&1; then
+    echo "expected a non-ELF disasm input to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --input trace.log "$TMP/simple" >/dev/null 2>&1; then
+if "$DISASM" >/dev/null 2>&1; then
+    echo "expected callgraph-disasm without MODULE to fail" >&2
+    exit 1
+fi
+if "$DISASM" --format tsv "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected the removed --format option to fail" >&2
+    exit 1
+fi
+
+if "$BIN" export --static >/dev/null 2>&1; then
+    echo "expected export --static without facts to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static --static-graph "$TMP/simple.json" "$TMP/simple" \
+        >/dev/null 2>&1; then
+    echo "expected a positional MODULE with --static to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static --static-graph "$TMP/simple.json" \
+        --input trace.log >/dev/null 2>&1; then
     echo "expected --input with --static to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --otel "$TMP/simple" >/dev/null 2>&1; then
+if "$BIN" export --static --static-graph "$TMP/simple.json" --otel \
+        >/dev/null 2>&1; then
     echo "expected --static --otel to fail" >&2
     exit 1
 fi
-if "$BIN" export --static >/dev/null 2>&1; then
-    echo "expected --static without MODULE to fail" >&2
+if "$BIN" export --static --static-graph "$TMP/simple.json" \
+        --all-modules >/dev/null 2>&1; then
+    echo "expected --all-modules with export to fail" >&2
     exit 1
 fi
-if "$BIN" export --static "$TMP/simple" extra >/dev/null 2>&1; then
-    echo "expected two --static MODULE arguments to fail" >&2
+if "$BIN" export --otel --input trace.log --output out.json \
+        --static-graph "$TMP/simple.json" >/dev/null 2>&1; then
+    echo "expected --static-graph with --otel to fail" >&2
     exit 1
 fi
-if "$BIN" export --otel --input trace.log --output out.json --all-modules \
-    >/dev/null 2>&1; then
-    echo "expected --all-modules with --otel to fail" >&2
-    exit 1
-fi
-if "$BIN" export --static --root-scope 'main' --exclude 'C*' "$TMP/simple" \
-    >/dev/null 2>&1; then
+if "$BIN" export --static --static-graph "$TMP/simple.json" \
+        --exclude 'C*' >/dev/null 2>&1; then
     echo "expected --exclude with --static to fail" >&2
     exit 1
 fi
+if "$BIN" export --static --static-graph "$TMP/notelf" \
+        >/dev/null 2>&1; then
+    echo "expected malformed facts to fail" >&2
+    exit 1
+fi
+printf '%s\n' \
+    '{"format":"callgraph-static-graph","version":9,"modules":[]}' \
+    > "$TMP/future.json"
+if "$BIN" export --static --static-graph "$TMP/future.json" \
+        >/dev/null 2>&1; then
+    echo "expected an unsupported facts version to fail" >&2
+    exit 1
+fi
+
+echo "== ret mode requires facts =="
+if "$BIN" run --return-mode=ret --dry-run -- "$TMP/simple" \
+        >/dev/null 2>"$TMP/ret.err"; then
+    echo "expected --return-mode=ret without facts to fail" >&2
+    exit 1
+fi
+grep -q -- '--return-mode=ret requires --static-graph' "$TMP/ret.err"
+"$BIN" run --return-mode=ret --static-graph "$TMP/simple.json" \
+    --dry-run -- "$TMP/simple" >/dev/null 2>&1
+
+echo "== callgraph.sh =="
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" disasm "$TMP/simple" -o "$TMP/wrapper.json"
+grep -q '"format":"callgraph-static-graph"' "$TMP/wrapper.json"
+
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --static --graph-in "$TMP/wrapper.json" \
+    "$TMP/simple" >"$TMP/wrapper.txt" 2>/dev/null
+grep -qx 'main' "$TMP/wrapper.txt"
+
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --static "$TMP/simple" >"$TMP/wrapper2.txt" 2>/dev/null
+cmp "$TMP/wrapper.txt" "$TMP/wrapper2.txt"
+
+if CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+        "$WRAPPER" export --static --no-graph "$TMP/simple" \
+        >/dev/null 2>&1; then
+    echo "expected --no-graph static export without facts to fail" >&2
+    exit 1
+fi
+
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --dry-run -- "$TMP/simple" >/dev/null 2>&1
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --no-graph --dry-run -- "$TMP/simple" >/dev/null 2>&1
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --trace-depth 1 --dry-run -- "$TMP/simple" \
+    >"$TMP/wrapper-dry.txt" 2>"$TMP/wrapper-dry.err"
+grep -q 'main' "$TMP/wrapper-dry.txt"
+# --graph-in must be inserted before the "--" separator, not after it.
+CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --graph-in "$TMP/wrapper.json" --trace-depth 1 \
+    --dry-run -- "$TMP/simple" >"$TMP/wrapper-dry2.txt" 2>/dev/null
+cmp "$TMP/wrapper-dry.txt" "$TMP/wrapper-dry2.txt"
+
+echo "== callgraph.sh: resolves its real path =="
+# A symlinked wrapper must find the binaries next to the real script, not
+# next to the link.
+mkdir -p "$TMP/install" "$TMP/link" "$TMP/broken"
+cp "$WRAPPER" "$TMP/install/callgraph.sh"
+ln -s "$CALLGRAPH_BIN" "$TMP/install/callgraph"
+ln -s "$DISASM_BIN" "$TMP/install/callgraph-disasm"
+ln -s ../install/callgraph.sh "$TMP/link/callgraph.sh"
+
+"$TMP/link/callgraph.sh" disasm "$TMP/simple" -o "$TMP/self.json"
+grep -q '"format":"callgraph-static-graph"' "$TMP/self.json"
+
+# The same through PATH, from an unrelated working directory.
+(
+    cd "$TMP" || exit 1
+    PATH="$TMP/link:$PATH" callgraph.sh --version >"$TMP/self-version.txt"
+)
+grep -q '^callgraph ' "$TMP/self-version.txt"
+grep -q '^callgraph-disasm ' "$TMP/self-version.txt"
+
+# A missing sibling is reported against the real directory.
+cp "$WRAPPER" "$TMP/broken/callgraph.sh"
+ln -s "$CALLGRAPH_BIN" "$TMP/broken/callgraph"
+if "$TMP/broken/callgraph.sh" disasm "$TMP/simple" \
+        >/dev/null 2>"$TMP/broken.err"; then
+    echo "expected a missing callgraph-disasm to fail" >&2
+    exit 1
+fi
+grep -q 'callgraph-disasm not found' "$TMP/broken.err"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "== tracing tests skipped (not root) =="
@@ -1065,33 +1199,38 @@ echo "== trace depth =="
 grep -q ' : 2 ' "$TMP/tdepth-default.trace"
 
 # 0 is explicit root-only.
-"$BIN" run --trace-depth 0 -o "$TMP/tdepth-0.trace" --regex \
+"$BIN" run --trace-depth 0 --static-graph "$TMP/simple.json" \
+    -o "$TMP/tdepth-0.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q ' : 1 ' "$TMP/tdepth-0.trace"
 
 # 1 keeps the root and one level.
-"$BIN" run --trace-depth 1 -o "$TMP/tdepth-1.trace" --regex \
+"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+    -o "$TMP/tdepth-1.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
 ! grep -q ' : 2 ' "$TMP/tdepth-1.trace"
 
 # Without --root-scope the same rule counts from global depth 0.
-"$BIN" run --trace-depth 1 -o "$TMP/tdepth-global.trace" --regex \
+"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+    -o "$TMP/tdepth-global.trace" --regex \
     -- "$TMP/simple" >/dev/null 2>/dev/null
 ! grep -Eq ' : ([2-9]|[1-9][0-9]+) ' "$TMP/tdepth-global.trace"
 
 # An excluded node is skipped and its descendants splice up: B is absent,
 # and A appears at depth 2 under C.
-"$BIN" run --trace-depth 2 -o "$TMP/tdepth-exclude.trace" --regex \
+"$BIN" run --trace-depth 2 --static-graph "$TMP/simple.json" \
+    -o "$TMP/tdepth-exclude.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' \
     --exclude '^B[(]int[)]$' -- "$TMP/simple" >/dev/null 2>/dev/null
 ! grep -q 'B(int)' "$TMP/tdepth-exclude.trace"
 grep -q ' : 2 -> A(int)' "$TMP/tdepth-exclude.trace"
 
 # Deeper user frames are absent from the histogram too.
-"$BIN" run --trace-depth 1 --histogram -o "$TMP/tdepth-hist.trace" --regex \
+"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+    --histogram -o "$TMP/tdepth-hist.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q '^2\. ' "$TMP/tdepth-hist.trace"
@@ -1111,20 +1250,22 @@ grep -q ' : 2 -> B(int)' "$TMP/rootdesc.trace"
 grep -q ' : 3 -> A(int)' "$TMP/rootdesc.trace"
 
 # N=1 prunes depth-2 descendants and reports the pruning decision.
-"$BIN" run --trace-depth 1 -o "$TMP/rootprune1.trace" --regex \
+"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+    -o "$TMP/rootprune1.trace" --regex \
     --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>"$TMP/rootprune1.err"
 grep -q ' : 1 -> C(int)' "$TMP/rootprune1.trace"
 ! grep -q ' : 2 ' "$TMP/rootprune1.trace"
 grep -q 'static prune: kept' "$TMP/rootprune1.err"
 
 # Dry-run applies the same pruning.
-dry=$("$BIN" run --trace-depth 1 --dry-run --regex --root-scope '^main$' \
-    -- "$TMP/simple" 2>/dev/null)
+dry=$("$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+    --dry-run --regex --root-scope '^main$' -- "$TMP/simple" 2>/dev/null)
 ! echo "$dry" | grep -q 'B(int)'
 ! echo "$dry" | grep -q 'A(int)'
 
 # N=2 keeps the depth-2 functions but still hides depth 3 at runtime.
-"$BIN" run --trace-depth 2 -o "$TMP/rootprune2.trace" --regex \
+"$BIN" run --trace-depth 2 --static-graph "$TMP/simple.json" \
+    -o "$TMP/rootprune2.trace" --regex \
     --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -q ' : 2 -> B(int)' "$TMP/rootprune2.trace"
 grep -q ' : 2 -> A(int)' "$TMP/rootprune2.trace"
@@ -1148,7 +1289,9 @@ int main()
 }
 EOF
 g++ -O0 -g -o "$TMP/indirect" "$TMP/indirect.cpp"
-"$BIN" run --trace-depth 1 --dry-run --root-scope 'root*' \
+"$DISASM" "$TMP/indirect" -o "$TMP/indirect.json"
+"$BIN" run --trace-depth 1 --static-graph "$TMP/indirect.json" --dry-run \
+    --root-scope 'root*' \
     -- "$TMP/indirect" > "$TMP/indirect.direct" 2>/dev/null
 grep -q 'direct_callee(int)' "$TMP/indirect.direct"
 ! grep -q 'indirect_callee(int)' "$TMP/indirect.direct"
@@ -1193,7 +1336,8 @@ dummy:
 EOF
     as -o "$TMP/jcc.o" "$TMP/jcc.s"
     ld -static -o "$TMP/jcc" "$TMP/jcc.o"
-    "$BIN" run --trace-depth 1 --dry-run \
+    "$DISASM" "$TMP/jcc" -o "$TMP/jcc.json"
+    "$BIN" run --trace-depth 1 --static-graph "$TMP/jcc.json" --dry-run \
         -- "$TMP/jcc" > "$TMP/jcc.direct" 2>"$TMP/jcc.err"
     if grep -q 'static prune: kept' "$TMP/jcc.err"; then
         ! grep -q 'cold' "$TMP/jcc.direct"
@@ -1265,8 +1409,9 @@ echo "== latency histogram: tree and histograms paired per root =="
 [ "$(grep -c '^   calls=1 ' "$TMP/hist_roots.trace")" -eq 4 ]
 
 echo "== exception-safe return mode =="
-if "$BIN" run --return-mode ret --dry-run -- "$TMP/exceptions" >/dev/null 2>&1; then
-    "$BIN" run --return-mode ret -o "$TMP/exc.trace" --regex \
+if "$DISASM" "$TMP/exceptions" -o "$TMP/exceptions.json" 2>/dev/null; then
+    "$BIN" run --return-mode ret --static-graph "$TMP/exceptions.json" \
+        -o "$TMP/exc.trace" --regex \
         --root-scope '^(main|outer[(][)]|middle[(][)]|inner[(][)])$' -- "$TMP/exceptions" \
         >/dev/null 2>"$TMP/exc.err"
     grep -q ' : 3 -> inner()' "$TMP/exc.trace"
@@ -1320,8 +1465,9 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
 
 # uretprobes lose the fiber's return across the switch, so ret mode is needed
 # for complete pairing.  Together with --no-rsp-resync nothing is desynced.
-if "$BIN" run --return-mode ret --dry-run -- "$TMP/ucontext" >/dev/null 2>&1; then
-    "$BIN" run --return-mode ret --no-rsp-resync -o "$TMP/uctx_ret.trace" \
+if "$DISASM" "$TMP/ucontext" -o "$TMP/ucontext.json" 2>/dev/null; then
+    "$BIN" run --return-mode ret --static-graph "$TMP/ucontext.json" \
+        --no-rsp-resync -o "$TMP/uctx_ret.trace" \
         --regex --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' \
         -- "$TMP/ucontext" >/dev/null 2>"$TMP/uctx_ret.err"
     grep -q '0 desync' "$TMP/uctx_ret.err"

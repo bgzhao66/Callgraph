@@ -25,6 +25,8 @@
 #include "callgraph/output.h"
 #include "callgraph/span_generator.h"
 #include "callgraph/static_graph_export.h"
+#include "callgraph/static_graph_join.h"
+#include "callgraph/static_graph_json.h"
 #include "callgraph/trace_duration_histogram.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
@@ -458,66 +460,299 @@ void test_root_scope()
 
 void test_static_graph_export()
 {
-    std::vector<FunctionInfo> functions(4);
-    functions[0].name = "main";
-    functions[1].name = "B(int)";
-    functions[2].name = "A(int)";
-    functions[3].name = "factorial(int)";
+    StaticGraphModule module;
+    module.functions.resize(4);
+    module.functions[0].name = "main";
+    module.functions[1].name = "B(int)";
+    module.functions[2].name = "A(int)";
+    module.functions[3].name = "factorial(int)";
 
-    StaticCallGraph graph;
-    graph.available = true;
-    graph.edges.resize(functions.size());
-    graph.roots = {0};
-    graph.edges[0] = {1, 2};
-    graph.edges[1] = {2};
+    module.edges.resize(module.functions.size());
+    module.roots = {0};
+    module.edges[0] = {1, 2};
+    module.edges[1] = {2};
 
-    CHECK(render_static_graph({&graph, &functions}) ==
+    CHECK(render_static_graph(module) ==
           "main\n"
           "├── B(int)\n"
           "│   └── A(int)\n"
           "└── A(int)\n");
 
     // Direct recursion is cut, not expanded.
-    graph.roots = {3};
-    graph.edges[3] = {3};
-    CHECK(render_static_graph({&graph, &functions}) ==
+    module.roots = {3};
+    module.edges[3] = {3};
+    CHECK(render_static_graph(module) ==
           "factorial(int)\n"
           "└── factorial(int) [recursive]\n");
 
     // A cycle through another function is cut at the repeat.
-    graph.roots = {2};
-    graph.edges[2] = {1};
-    graph.edges[1] = {2};
-    CHECK(render_static_graph({&graph, &functions}) ==
+    module.roots = {2};
+    module.edges[2] = {1};
+    module.edges[1] = {2};
+    CHECK(render_static_graph(module) ==
           "A(int)\n"
           "└── B(int)\n"
           "    └── A(int) [recursive]\n");
 
     // Roots are rendered one after another, without separators.
-    graph.roots = {2, 0};
-    graph.edges[2].clear();
-    graph.edges[1] = {2};
-    graph.edges[0] = {2};
-    CHECK(render_static_graph({&graph, &functions}) ==
+    module.roots = {2, 0};
+    module.edges[2].clear();
+    module.edges[1] = {2};
+    module.edges[0] = {2};
+    CHECK(render_static_graph(module) ==
           "A(int)\n"
           "main\n"
           "└── A(int)\n");
 
     // Out-of-range edges are ignored.
-    graph.roots = {0};
-    graph.edges[0] = {99};
-    CHECK(render_static_graph({&graph, &functions}) == "main\n");
+    module.roots = {0};
+    module.edges[0] = {99};
+    CHECK(render_static_graph(module) == "main\n");
 
     // A module with no roots renders nothing.
-    graph.roots.clear();
-    CHECK(render_static_graph({&graph, &functions}).empty());
+    module.roots.clear();
+    CHECK(render_static_graph(module).empty());
 
     // Fall back to the mangled name when the demangled name is empty.
-    functions[2].name.clear();
-    functions[2].linkage_name = "_Z1Ai";
-    graph.roots = {2};
-    graph.edges[2].clear();
-    CHECK(render_static_graph({&graph, &functions}) == "_Z1Ai\n");
+    module.functions[2].name.clear();
+    module.functions[2].linkage_name = "_Z1Ai";
+    module.roots = {2};
+    module.edges[2].clear();
+    CHECK(render_static_graph(module) == "_Z1Ai\n");
+}
+
+void test_static_graph_json()
+{
+    StaticGraphDocument document;
+    StaticGraphModule module;
+    module.path = "/tmp/app";
+    module.build_id = "abc123";
+    module.arch = "x86_64";
+    module.is_64bit = true;
+
+    StaticGraphFunction main;
+    main.name = "main";
+    main.linkage_name = "main";
+    main.low_pc = 0x1000;
+    main.high_pc = 0x1040;
+    main.file_offset = 0x100;
+    main.has_code = true;
+    main.entry = true;
+    main.return_offsets = {0x1010, 0x1030};
+
+    StaticGraphFunction helper;
+    helper.name = "helper";
+    helper.linkage_name = "_Z6helperv";
+    helper.low_pc = 0x1040;
+    helper.high_pc = 0x1060;
+    helper.exported = true;
+
+    module.functions = {main, helper};
+    module.edges = {{1}, {}};
+    module.roots = {0};
+    document.modules.push_back(module);
+
+    const std::string json = write_static_graph_json(document);
+    CHECK(json.find("\"format\":\"callgraph-static-graph\"") !=
+          std::string::npos);
+    CHECK(json.find("\"version\":1") != std::string::npos);
+
+    StaticGraphDocument parsed;
+    std::string reason;
+    CHECK(read_static_graph_json(json, &parsed, &reason));
+    CHECK(parsed.modules.size() == 1);
+    CHECK(parsed.modules[0].functions.size() == 2);
+    CHECK(parsed.modules[0].path == "/tmp/app");
+    CHECK(parsed.modules[0].build_id == "abc123");
+    CHECK(parsed.modules[0].functions[0].name == "main");
+    CHECK(parsed.modules[0].functions[0].entry);
+    CHECK(!parsed.modules[0].functions[0].exported);
+    CHECK(parsed.modules[0].functions[1].exported);
+    CHECK(parsed.modules[0].functions[0].return_offsets ==
+          (std::vector<uint64_t>{0x1010, 0x1030}));
+    CHECK(parsed.modules[0].edges[0] == (std::vector<size_t>{1}));
+    CHECK(parsed.modules[0].roots == (std::vector<size_t>{0}));
+
+    // Unsupported versions are rejected.
+    std::string bad_version = json;
+    const std::string marker = "\"version\":1";
+    bad_version.replace(bad_version.find(marker), marker.size(),
+                        "\"version\":2");
+    CHECK(!read_static_graph_json(bad_version, &parsed, &reason));
+    CHECK(reason.find("unsupported version") != std::string::npos);
+
+    // A different format string is rejected.
+    std::string bad_format = json;
+    const std::string format_marker = "\"format\":\"callgraph-static-graph\"";
+    bad_format.replace(bad_format.find(format_marker), format_marker.size(),
+                       "\"format\":\"something-else\"");
+    CHECK(!read_static_graph_json(bad_format, &parsed, &reason));
+
+    // Edge lists must match the function count.
+    const std::string bad_edges =
+        R"({"format":"callgraph-static-graph","version":1,"modules":[)"
+        R"({"path":"/x","build_id":"","arch":"x86_64","is_64bit":true,)"
+        R"("functions":[],"edges":[[]],"roots":[]}]})";
+    CHECK(!read_static_graph_json(bad_edges, &parsed, &reason));
+
+    // Edge indices must be in range.
+    const std::string bad_index =
+        R"({"format":"callgraph-static-graph","version":1,"modules":[)"
+        R"({"path":"/x","build_id":"","arch":"x86_64","is_64bit":true,)"
+        R"("functions":[{"name":"a","linkage_name":"a","low_pc":1,)"
+        R"("high_pc":2,"file_offset":0,"has_code":true,"exported":false,)"
+        R"("address_taken":false,"entry":false,"init":false,)"
+        R"("return_offsets":[]}],"edges":[[5]],"roots":[]}]})";
+    CHECK(!read_static_graph_json(bad_index, &parsed, &reason));
+
+    // Out-of-range roots are advisory and are dropped.
+    const std::string bad_root =
+        R"({"format":"callgraph-static-graph","version":1,"modules":[)"
+        R"({"path":"/x","build_id":"","arch":"x86_64","is_64bit":true,)"
+        R"("functions":[],"edges":[],"roots":[7]}]})";
+    CHECK(read_static_graph_json(bad_root, &parsed, &reason));
+    CHECK(parsed.modules[0].roots.empty());
+
+    // Strings round-trip through the escaper.
+    StaticGraphDocument escaped;
+    StaticGraphModule odd_module;
+    odd_module.path = "/tmp/odd";
+    StaticGraphFunction odd;
+    odd.name = "quote\"slash\\line\n";
+    odd.linkage_name = "odd";
+    odd.low_pc = 1;
+    odd_module.functions.push_back(odd);
+    odd_module.edges.resize(1);
+    escaped.modules.push_back(odd_module);
+    StaticGraphDocument odd_parsed;
+    CHECK(read_static_graph_json(write_static_graph_json(escaped), &odd_parsed,
+                                 &reason));
+    CHECK(odd_parsed.modules[0].functions[0].name ==
+          "quote\"slash\\line\n");
+
+    // Malformed JSON is rejected, not silently accepted.
+    CHECK(!read_static_graph_json("{", &parsed, &reason));
+    CHECK(!read_static_graph_json("", &parsed, &reason));
+}
+
+void test_static_graph_join()
+{
+    StaticGraphModule module;
+    module.path = "/tmp/app";
+    module.functions.resize(3);
+    module.functions[0].name = "main";
+    module.functions[0].low_pc = 0x1000;
+    module.functions[0].entry = true;
+    module.functions[0].return_offsets = {0x1001};
+    module.functions[1].name = "a";
+    module.functions[1].low_pc = 0x2000;
+    module.functions[1].exported = true;
+    module.functions[2].name = "b";
+    module.functions[2].low_pc = 0x3000;
+    module.functions[2].address_taken = true;
+    module.edges = {{1}, {2}, {}};
+
+    // The consumer's table is in a different order.
+    std::vector<FunctionInfo> functions(3);
+    functions[0].name = "b";
+    functions[0].low_pc = 0x3000;
+    functions[1].name = "main";
+    functions[1].low_pc = 0x1000;
+    functions[2].name = "a";
+    functions[2].low_pc = 0x2000;
+
+    StaticGraphFacts facts;
+    CHECK(join_static_graph_module(module, functions, &facts));
+    CHECK(facts.edges[1] == (std::vector<size_t>{2}));
+    CHECK(facts.edges[2] == (std::vector<size_t>{0}));
+    CHECK(facts.edges[0].empty());
+    CHECK(facts.entry == (std::vector<size_t>{1}));
+    CHECK(facts.exports == (std::vector<size_t>{2}));
+    CHECK(facts.address_taken == (std::vector<size_t>{0}));
+    CHECK(facts.has_returns);
+    CHECK(apply_static_graph_returns(facts, &functions) == 1);
+    CHECK(functions[1].return_offsets == (std::vector<uint64_t>{0x1001}));
+
+    // A module whose addresses do not match the local table is rejected.
+    std::vector<FunctionInfo> other(1);
+    other[0].low_pc = 0x9999;
+    StaticGraphFacts none;
+    CHECK(!join_static_graph_module(module, other, &none));
+    CHECK(!none.valid());
+}
+
+void test_static_graph_roots()
+{
+    StaticGraphModule module;
+    module.functions.resize(4);
+    module.functions[0].name = "main";
+    module.functions[0].low_pc = 0x4000;
+    module.functions[1].name = "entry";
+    module.functions[1].low_pc = 0x1000;
+    module.functions[1].entry = true;
+    module.functions[2].name = "exported";
+    module.functions[2].low_pc = 0x3000;
+    module.functions[2].exported = true;
+    module.functions[3].name = "taken";
+    module.functions[3].low_pc = 0x2000;
+    module.functions[3].address_taken = true;
+
+    CHECK(static_graph_module_roots(module) ==
+          (std::vector<size_t>{0, 1, 3, 2}));
+}
+
+void test_static_prune_facts()
+{
+    std::vector<FunctionInfo> functions(5);
+    for (size_t i = 0; i < functions.size(); ++i) {
+        functions[i].name = "f" + std::to_string(i);
+        functions[i].low_pc = 0x1000 + i * 0x100;
+        functions[i].high_pc = functions[i].low_pc + 0x80;
+        functions[i].file_offset = i * 0x100;
+    }
+    functions[0].name = "main";
+
+    StaticGraphFacts facts;
+    facts.edges = {{1}, {2}, {3}, {}, {}};
+    facts.entry = {0};
+
+    StaticPruneRequest request;
+    request.module_path = "/nonexistent-module";
+    request.functions = &functions;
+    request.candidates = {0, 1, 2, 3, 4};
+    request.trace_depth = 2;
+    request.facts = &facts;
+
+    StaticPruneResult result = prune_statically(request);
+    CHECK(result.available);
+    CHECK(result.keep == (std::vector<size_t>{0, 1, 2}));
+    CHECK(result.pruned == 2);
+
+    // Root-only selection uses the facts too.
+    request.trace_depth = 0;
+    result = select_roots(request);
+    CHECK(result.available);
+    CHECK(result.keep == (std::vector<size_t>{0}));
+
+    // Without facts the tracer has no disassembler and degrades.
+    request.trace_depth = 2;
+    request.facts = nullptr;
+    result = prune_statically(request);
+    CHECK(!result.available);
+    CHECK(!result.reason.empty());
+
+    // Explicit roots alone still need the call graph for depth > 0; the
+    // tracer falls back to instrumenting them without descendants.
+    request.has_root_scope = true;
+    request.roots = {1};
+    result = prune_statically(request);
+    CHECK(!result.available);
+
+    // Root-only selection can always honour explicit roots.
+    request.trace_depth = 0;
+    result = select_roots(request);
+    CHECK(result.available);
+    CHECK(result.keep == (std::vector<size_t>{1}));
 }
 
 void test_histogram_bar_proportional()
@@ -3489,6 +3724,10 @@ int main()
     test_trace_depth();
     test_root_scope();
     test_static_graph_export();
+    test_static_graph_json();
+    test_static_graph_join();
+    test_static_graph_roots();
+    test_static_prune_facts();
     test_histogram_bar_proportional();
     test_histogram_call_path_totals();
     test_histogram_tree_units();
