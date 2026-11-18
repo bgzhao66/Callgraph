@@ -375,7 +375,7 @@ bool collect_code_facts(const std::string& path,
                         const std::vector<FunctionInfo>& functions,
                         std::vector<Node>* nodes, const Ranges& ranges,
                         std::vector<std::vector<size_t>>* edges,
-                        std::string* reason)
+                        bool keep_self_edges, std::string* reason)
 {
 #ifdef CALLGRAPH_HAVE_LIBOPCODES
     int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -445,7 +445,7 @@ bool collect_code_facts(const std::string& path,
 
             if ((is_call || is_jump) && !indirect && !tokens.empty()) {
                 if (auto target = ranges.find(*nodes, tokens.front())) {
-                    if (*target != index) {
+                    if (*target != index || keep_self_edges) {
                         // Direct edge; an excluded caller adds no depth.
                         (*edges)[index].push_back(*target);
                     }
@@ -612,7 +612,7 @@ StaticPruneResult compute_pruning(const StaticPruneRequest& request,
 
     std::vector<std::vector<size_t>> edges(nodes.size());
     if (!collect_code_facts(request.module_path, *request.functions, &nodes,
-                            ranges, &edges, &reason))
+                            ranges, &edges, false, &reason))
         return unavailable(reason);
 
     std::vector<size_t> address_taken;
@@ -706,6 +706,21 @@ StaticPruneResult compute_pruning(const StaticPruneRequest& request,
     return result;
 }
 
+// `main` first, then ascending address.  Keeps the output stable across runs.
+void sort_roots(std::vector<size_t>* roots,
+                const std::vector<FunctionInfo>& functions)
+{
+    std::stable_sort(roots->begin(), roots->end(), [&](size_t a, size_t b) {
+        const bool main_a = functions[a].name == "main";
+        const bool main_b = functions[b].name == "main";
+        if (main_a != main_b)
+            return main_a;
+        if (functions[a].low_pc != functions[b].low_pc)
+            return functions[a].low_pc < functions[b].low_pc;
+        return a < b;
+    });
+}
+
 }  // namespace
 
 StaticPruneResult prune_statically(const StaticPruneRequest& request)
@@ -742,6 +757,101 @@ StaticPruneResult select_roots(const StaticPruneRequest& request)
         result.pruned = request.candidates.size() - result.keep.size();
     }
     return result;
+}
+
+StaticCallGraph build_static_call_graph(const StaticCallGraphRequest& request)
+{
+    StaticCallGraph graph;
+    if (!request.functions) {
+        graph.reason = "no function table";
+        return graph;
+    }
+
+    StaticPruneRequest prune;
+    prune.module_path = request.module_path;
+    prune.functions = request.functions;
+    prune.candidates.resize(request.functions->size());
+    for (size_t i = 0; i < prune.candidates.size(); ++i)
+        prune.candidates[i] = i;
+    prune.roots = request.roots;
+    prune.has_root_scope = request.has_root_scope;
+
+    std::vector<Node> nodes;
+    Ranges ranges;
+    std::string reason;
+    if (!build_nodes(prune, &nodes, &ranges, &reason)) {
+        graph.reason = reason;
+        return graph;
+    }
+
+    ElfHandle handle;
+    if (!open_elf(request.module_path, &handle)) {
+        graph.reason = "cannot open module ELF";
+        return graph;
+    }
+    GElf_Ehdr ehdr;
+    if (!gelf_getehdr(handle.elf, &ehdr)) {
+        graph.reason = "cannot read ELF header";
+        return graph;
+    }
+    if (ehdr.e_machine != EM_X86_64) {
+        graph.reason = "static call graphs require an x86-64 module";
+        return graph;
+    }
+
+    ElfFacts facts;
+    if (!collect_elf_facts(handle, nodes, ranges, &facts, &reason)) {
+        graph.reason = reason;
+        return graph;
+    }
+
+    std::vector<std::vector<size_t>> edges(nodes.size());
+    if (!collect_code_facts(request.module_path, *request.functions, &nodes,
+                            ranges, &edges, true, &reason)) {
+        graph.reason = reason;
+        return graph;
+    }
+
+    // One rendered edge per callee: repeated calls to the same function are
+    // the same tree child.
+    for (auto& callees : edges) {
+        std::vector<size_t> unique;
+        unique.reserve(callees.size());
+        for (const size_t callee : callees) {
+            if (std::find(unique.begin(), unique.end(), callee) == unique.end())
+                unique.push_back(callee);
+        }
+        callees = std::move(unique);
+    }
+
+    std::vector<size_t> roots;
+    if (request.has_root_scope) {
+        for (const size_t root : request.roots) {
+            if (root < nodes.size())
+                add_unique(&roots, root);
+        }
+    } else {
+        for (const size_t root : facts.global_roots)
+            add_unique(&roots, root);
+        for (const size_t root : facts.init_roots)
+            add_unique(&roots, root);
+        for (const size_t root : facts.exports)
+            add_unique(&roots, root);
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            if (nodes[i].address_taken)
+                add_unique(&roots, i);
+        }
+        for (size_t i = 0; i < request.functions->size(); ++i) {
+            if ((*request.functions)[i].name == "main")
+                add_unique(&roots, i);
+        }
+    }
+    sort_roots(&roots, *request.functions);
+
+    graph.available = true;
+    graph.roots = std::move(roots);
+    graph.edges = std::move(edges);
+    return graph;
 }
 
 }  // namespace callgraph

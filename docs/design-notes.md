@@ -329,11 +329,22 @@ descendants so retained traces keep their full child tree. Source file/line
 attributes come from DWARF; thread names come from
 `/proc/<pid>/task/<tid>/comm` when the PID namespace permits it.
 
-Offline `callgraph export` has two mutually exclusive modes: `--otel` emits
-OTLP/JSON, and `--flame` emits folded stacks for flamegraph.pl/inferno. The
-flame path reuses `TraceParser` and `CallStack`, does not need a timestamp
-anchor, and records each function exit's current root-to-function stack.
-Incomplete frames are marked with a trailing `[incomplete]` pseudo-frame.
+Offline `callgraph export` has three mutually exclusive modes: `--otel` emits
+OTLP/JSON, `--flame` emits folded stacks for flamegraph.pl/inferno, and
+`--static` prints a direct-call tree for an ELF module. The flame path reuses
+`TraceParser` and `CallStack`, does not need a timestamp anchor, and records
+each function exit's current root-to-function stack. Incomplete frames are
+marked with a trailing `[incomplete]` pseudo-frame.
+
+The static path does not read a trace. It resolves the module's symbols, then
+disassembles function bodies to find direct `call` and unconditional `jmp`
+edges inside that module; indirect, PLT/external, IFUNC, and cross-module
+targets add no edge. Every path is expanded, and a repeated function on the
+current path is cut with `[recursive]`. `--root-scope` selects roots per
+module; otherwise `main`, the ELF entry, init/fini arrays, exported symbols,
+and address-taken functions seed the tree. `--all-modules` adds the transitive
+`DT_NEEDED` closure through `PT_INTERP` or the host loader. The mode is
+x86-64/libopcodes only.
 
 ## Kernel event correlation (P0 MVP)
 

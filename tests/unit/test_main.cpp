@@ -24,6 +24,7 @@
 #include "callgraph/otlp_proto.h"
 #include "callgraph/output.h"
 #include "callgraph/span_generator.h"
+#include "callgraph/static_graph_export.h"
 #include "callgraph/trace_duration_histogram.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
@@ -453,6 +454,70 @@ void test_root_scope()
     CHECK(trace.find(" : 0 -> main") != std::string::npos);
     CHECK(trace.find(" : 1 -> A(int)") != std::string::npos);
     CHECK(trace.find(" : 0 -> A(int)") == std::string::npos);
+}
+
+void test_static_graph_export()
+{
+    std::vector<FunctionInfo> functions(4);
+    functions[0].name = "main";
+    functions[1].name = "B(int)";
+    functions[2].name = "A(int)";
+    functions[3].name = "factorial(int)";
+
+    StaticCallGraph graph;
+    graph.available = true;
+    graph.edges.resize(functions.size());
+    graph.roots = {0};
+    graph.edges[0] = {1, 2};
+    graph.edges[1] = {2};
+
+    CHECK(render_static_graph({&graph, &functions}) ==
+          "main\n"
+          "├── B(int)\n"
+          "│   └── A(int)\n"
+          "└── A(int)\n");
+
+    // Direct recursion is cut, not expanded.
+    graph.roots = {3};
+    graph.edges[3] = {3};
+    CHECK(render_static_graph({&graph, &functions}) ==
+          "factorial(int)\n"
+          "└── factorial(int) [recursive]\n");
+
+    // A cycle through another function is cut at the repeat.
+    graph.roots = {2};
+    graph.edges[2] = {1};
+    graph.edges[1] = {2};
+    CHECK(render_static_graph({&graph, &functions}) ==
+          "A(int)\n"
+          "└── B(int)\n"
+          "    └── A(int) [recursive]\n");
+
+    // Roots are rendered one after another, without separators.
+    graph.roots = {2, 0};
+    graph.edges[2].clear();
+    graph.edges[1] = {2};
+    graph.edges[0] = {2};
+    CHECK(render_static_graph({&graph, &functions}) ==
+          "A(int)\n"
+          "main\n"
+          "└── A(int)\n");
+
+    // Out-of-range edges are ignored.
+    graph.roots = {0};
+    graph.edges[0] = {99};
+    CHECK(render_static_graph({&graph, &functions}) == "main\n");
+
+    // A module with no roots renders nothing.
+    graph.roots.clear();
+    CHECK(render_static_graph({&graph, &functions}).empty());
+
+    // Fall back to the mangled name when the demangled name is empty.
+    functions[2].name.clear();
+    functions[2].linkage_name = "_Z1Ai";
+    graph.roots = {2};
+    graph.edges[2].clear();
+    CHECK(render_static_graph({&graph, &functions}) == "_Z1Ai\n");
 }
 
 void test_histogram_bar_proportional()
@@ -3423,6 +3488,7 @@ int main()
     test_histogram_report();
     test_trace_depth();
     test_root_scope();
+    test_static_graph_export();
     test_histogram_bar_proportional();
     test_histogram_call_path_totals();
     test_histogram_tree_units();

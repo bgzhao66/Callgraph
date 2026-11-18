@@ -187,6 +187,8 @@ add_executable(callgraph
   src/common.cpp
   src/elf_resolver.cpp
   src/static_call_graph.cpp
+  src/static_graph_export.cpp
+  src/module_dependencies.cpp
   src/dwarf_args.cpp
   src/arguments.cpp
   src/module_manager.cpp
@@ -281,6 +283,7 @@ if(BUILD_TESTING)
     src/trace_parser.cpp
     src/trace_metadata.cpp
     src/flame_graph.cpp
+    src/static_graph_export.cpp
     ${OTLP_PROTO_SRCS}
   )
   target_include_directories(callgraph_tests PRIVATE

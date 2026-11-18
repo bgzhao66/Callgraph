@@ -17,11 +17,20 @@ struct ModuleInfo {
     std::vector<FunctionInfo> functions;
 };
 
+struct ResolveOptions {
+    // Disassemble every function to find `ret` instructions.  Only needed for
+    // --return-mode=ret.
+    bool scan_return_instructions = true;
+    // Populate FunctionInfo::source_file/source_line from DWARF.
+    bool annotate_source = true;
+};
+
 class ElfResolver {
 public:
     // Resolves callable function entry points and names from the ELF file.
     // Throws Error when the file has no usable symbol table.
-    static ModuleInfo resolve(const std::string& path);
+    static ModuleInfo resolve(const std::string& path,
+                              const ResolveOptions& options = ResolveOptions{});
 };
 
 }  // namespace callgraph

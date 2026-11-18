@@ -38,6 +38,8 @@ recompiling them or adding instrumentation.
   converts existing text traces offline.
 - **Visualize with flamegraphs.** `callgraph export --flame` emits folded stacks
   for `flamegraph.pl` or `inferno-flamegraph`.
+- **Inspect calls without running.** `callgraph export --static` prints the
+  direct-call tree of an ELF module, optionally across its `DT_NEEDED` closure.
 - **Control overhead and volume.** `--ingest-sample-rate`, `--sample-rate`,
   `--outlier-latency-quantile`, `--log-rate-limit`, `--max-depth`, and
   `--complete-traces` let you trade completeness for cost and focus.
@@ -80,6 +82,8 @@ The current implementation includes:
   (`--exporter otlp-json`), and `callgraph export --otel` for existing text
   traces
 - folded-stack flamegraph export via `callgraph export --flame`
+- static direct-call graph export via `callgraph export --static`, including
+  `--all-modules`, `--root-scope`, and `--regex`
 - correlated kernel event tracing (`--kernel`) with OTel child spans for
   TID-specific syscall, reclaim, scheduler, and page-fault activity
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
@@ -210,16 +214,17 @@ sudo ./build/callgraph run -T --exporter otlp-json \
 ### Options
 
 Every help entry point (`callgraph --help`, `run --help`, `attach --help`,
-`export --help`, and the two export mode pages) prints the same page, organized
-by section. Master options stay at the normal indent; options that refine or
-require a master are indented four spaces further, and every description starts
-in the same column.
+`export --help`, and the three export mode pages) prints the same page,
+organized by section. Master options stay at the normal indent; options that
+refine or require a master are indented four spaces further, and every
+description starts in the same column.
 
 ```
 Usage:
   callgraph run [options] -- program [args...]
   callgraph attach [options] -p PID
   callgraph export --otel|--flame --input TRACE [options]
+  callgraph export --static [options] MODULE
 
 Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
@@ -305,9 +310,14 @@ Live export options (--exporter):
 
 Offline export options (callgraph export):
   Convert an existing text trace without root.  --otel emits an
-  OTLP/JSON request body; --flame emits folded stacks.
-      --input FILE          callgraph text trace to convert
+  OTLP/JSON request body; --flame emits folded stacks; --static
+  prints a direct-call graph of an ELF module.
+      --input FILE          callgraph text trace to convert (--otel/--flame)
       --otel                convert a text trace to OpenTelemetry OTLP/JSON spans
+      --static              print the direct-call graph of an ELF MODULE
+          --all-modules     with --static, analyze MODULE and its DT_NEEDED closure
+          --root-scope GLOB with --static, functions that start a tree (repeatable)
+          --regex           with --static, treat --root-scope as extended regex
           --endpoint URL    POST the OTLP/JSON body to URL
                             (OTLP/HTTP JSON; path defaults to /v1/traces)
           --service-name NAME
@@ -347,6 +357,9 @@ Offline export options (callgraph export):
   --output and --endpoint are alternatives; --otel requires one.
   --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
   protobuf use --exporter otlp or --exporter otlp-http.
+  --static takes the ELF path as MODULE and writes to stdout by
+  default; it follows direct call and unconditional jump edges
+  only and requires an x86-64 module plus libopcodes.
 
 General options:
   -v, --verbose             verbose diagnostics
@@ -393,12 +406,21 @@ Examples:
 
     callgraph export --flame --input trace.log --output stacks.folded
     flamegraph.pl stacks.folded > flame.svg
+
+  Static call graph:
+    callgraph export --static ./app
+    callgraph export --static -o cg.txt ./app
+    callgraph export --static --all-modules ./app
+    callgraph export --static --regex --root-scope '^main$' ./app
 ```
 
-`callgraph export` has two mutually exclusive offline modes: `--otel` emits an
-OTLP/JSON request body and `--flame` emits folded stacks. Both read a text
-trace via `--input`; `--otel` requires either `--output FILE` or
-`--endpoint URL`, while `--flame` writes to stdout unless `--output` is given.
+`callgraph export` has three mutually exclusive offline modes: `--otel` emits
+an OTLP/JSON request body, `--flame` emits folded stacks, and `--static` prints
+a direct-call tree for an ELF executable or shared object. `--otel` and
+`--flame` read a text trace via `--input`; `--otel` requires either
+`--output FILE` or `--endpoint URL`, while `--flame` writes to stdout unless
+`--output` is given. `--static` takes the module path as a positional argument
+and writes to stdout unless `-o/--output` is given.
 
 Filters are matched separately against the demangled name and the mangled
 symbol name, so anchored patterns such as `^main$` work. Glob is the default;
@@ -971,6 +993,47 @@ inferno-flamegraph stacks.folded > flame.svg
 
 `--flame` writes to stdout when `--output` is omitted. It does not require a
 timestamp anchor, OTLP metadata, or network access.
+
+## Static call graph export
+
+`callgraph export --static MODULE` prints the direct-call tree of an ELF
+executable or shared object without running it:
+
+```bash
+callgraph export --static ./app
+callgraph export --static -o cg.txt ./app
+```
+
+```text
+main
+└── C(int)
+    ├── B(int)
+    │   └── A(int)
+    └── A(int)
+```
+
+Only resolved direct `call` and unconditional `jmp` targets inside the module
+are followed. Indirect calls, PLT/external calls, IFUNC targets, and
+cross-module calls are not guessed at. Every call path is expanded in full, so
+the output can grow exponentially; cycles are cut with `[recursive]` instead
+of `[see above]`. On large dependency modules such as libc, pair
+`--all-modules` with `--root-scope` to keep the output bounded.
+
+Without `--root-scope`, roots are `main` (first when present), the ELF entry
+point, init/fini array entries, exported symbols, and address-taken functions.
+`--root-scope GLOB` (repeatable, with `--regex` for ECMAScript patterns)
+restricts roots to matching functions; descendants are still expanded even
+when they do not match. Patterns are tried against both the demangled and
+mangled names. Roots are ordered by address.
+
+`--all-modules` analyzes the input plus its transitive `DT_NEEDED` closure,
+resolved through the module's `PT_INTERP` or the host dynamic loader, and
+prints `== /path/to/module ==` before each section. The root filter applies per
+module: the primary module must have a match, while dependency modules without
+one are skipped.
+
+The module must be x86-64 and retain symbols; the build must have libopcodes.
+`--exclude` is not supported in this mode.
 
 ## Return probes: `uretprobe` vs `ret`
 

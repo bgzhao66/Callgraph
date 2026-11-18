@@ -342,7 +342,8 @@ void annotate_source_info(const std::string& path,
     }
 }
 
-ModuleInfo resolve_with_dwfl(const std::string& path)
+ModuleInfo resolve_with_dwfl(const std::string& path,
+                             const ResolveOptions& options)
 {    Dwfl_Callbacks callbacks = {};
     callbacks.find_elf = dwfl_build_id_find_elf;
     callbacks.find_debuginfo = dwfl_standard_find_debuginfo;
@@ -455,7 +456,7 @@ ModuleInfo resolve_with_dwfl(const std::string& path)
     int fd = -1;
     bool scan_returns = false;
 #ifdef CALLGRAPH_HAVE_LIBOPCODES
-    if (is_x86) {
+    if (is_x86 && options.scan_return_instructions) {
         fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
         scan_returns = fd >= 0;
     }
@@ -469,13 +470,15 @@ ModuleInfo resolve_with_dwfl(const std::string& path)
                      by_offset, fd, scan_returns, is_64bit);
     if (fd >= 0)
         close(fd);
-    annotate_source_info(path, result.functions);
+    if (options.annotate_source)
+        annotate_source_info(path, result.functions);
     return result;
 }
 
 }  // namespace
 
-ModuleInfo ElfResolver::resolve(const std::string& path)
+ModuleInfo ElfResolver::resolve(const std::string& path,
+                                const ResolveOptions& options)
 {
     if (elf_version(EV_CURRENT) == EV_NONE)
         fail("libelf initialization failed");
@@ -549,7 +552,7 @@ ModuleInfo ElfResolver::resolve(const std::string& path)
     }
 
     if (symtab_scn == nullptr)
-        return resolve_with_dwfl(path);
+        return resolve_with_dwfl(path, options);
 
     Elf_Data* symdata = elf_getdata(symtab_scn, nullptr);
     if (!symdata)
@@ -594,11 +597,13 @@ ModuleInfo ElfResolver::resolve(const std::string& path)
     const bool is_64bit = false;
 #endif
 
+    const bool scan_returns = is_x86 && options.scan_return_instructions;
     ModuleInfo result =
         build_module(path, build_id_of(file.elf), has_exception_tables,
-                     is_go_binary(file.elf), by_offset, file.fd, is_x86,
+                     is_go_binary(file.elf), by_offset, file.fd, scan_returns,
                      is_64bit);
-    annotate_source_info(path, result.functions);
+    if (options.annotate_source)
+        annotate_source_info(path, result.functions);
     return result;
 }
 

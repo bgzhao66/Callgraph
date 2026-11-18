@@ -146,9 +146,14 @@ echo "== help hierarchy =="
 "$BIN" export --otel --help | grep -q '^          --complete-traces'
 "$BIN" export --otel --help | grep -q '^              --outlier-latency-quantile Q'
 "$BIN" export --flame --help | grep -q '^      --flame'
+"$BIN" export --static --help | grep -q '^      --static'
+"$BIN" export --static --help | grep -q '^          --all-modules'
+"$BIN" export --static --help | grep -q '^          --root-scope GLOB'
+"$BIN" export --static --help | grep -q 'callgraph export --static \[options\] MODULE'
 "$BIN" --help > "$TMP/help.txt"
 for args in "run --help" "attach --help" "export --help" \
-            "export --otel --help" "export --flame --help"; do
+            "export --otel --help" "export --flame --help" \
+            "export --static --help"; do
     # shellcheck disable=SC2086
     "$BIN" $args > "$TMP/help-variant.txt"
     if ! cmp -s "$TMP/help.txt" "$TMP/help-variant.txt"; then
@@ -431,6 +436,108 @@ if [ -n "$GO_BIN" ]; then
         grep -q 'Go binary without a usable symbol table' \
             "$TMP/gowarn_stripped.err"
     fi
+fi
+
+echo "== static export =="
+static_ok=1
+if ! "$BIN" export --static "$TMP/simple" >"$TMP/static.txt" \
+        2>"$TMP/static.err"; then
+    if grep -qi 'libopcodes' "$TMP/static.err"; then
+        static_ok=0
+        echo "== static export skipped (libopcodes unavailable) =="
+    else
+        cat "$TMP/static.err" >&2
+        exit 1
+    fi
+fi
+
+if [ "$static_ok" -eq 1 ]; then
+    grep -qx 'main' "$TMP/static.txt"
+    grep -q '└── C(int)' "$TMP/static.txt"
+    grep -q '├── B(int)' "$TMP/static.txt"
+    grep -q '│   └── A(int)' "$TMP/static.txt"
+    grep -q '^    └── A(int)$' "$TMP/static.txt"
+
+    "$BIN" export --static -o "$TMP/static_file.txt" "$TMP/simple" 2>/dev/null
+    cmp "$TMP/static.txt" "$TMP/static_file.txt"
+    "$BIN" export --static -o - "$TMP/simple" 2>/dev/null \
+        | cmp - "$TMP/static.txt"
+
+    scoped=$("$BIN" export --static --root-scope 'C*' "$TMP/simple" \
+        2>/dev/null)
+    [ "$(printf '%s\n' "$scoped" | head -n 1)" = "C(int)" ]
+    ! printf '%s\n' "$scoped" | grep -qx 'main'
+
+    "$BIN" export --static --regex --root-scope '^C' "$TMP/simple" \
+        2>/dev/null | grep -qx 'C(int)'
+
+    "$BIN" export --static --root-scope 'factorial*' "$TMP/recursive" \
+        2>/dev/null | grep -q '\[recursive\]'
+
+    if "$BIN" export --static --root-scope 'no_such_function_xyz' \
+            "$TMP/simple" >/dev/null 2>&1; then
+        echo "expected an unmatched --root-scope to fail" >&2
+        exit 1
+    fi
+
+    # --all-modules: a tiny shared object plus its DT_NEEDED dependency.
+    cat > "$TMP/static_dep.c" <<'EOF'
+int dep_leaf(int x) { return x + 1; }
+int dep_root(int x) { return dep_leaf(x); }
+EOF
+    cat > "$TMP/static_main.c" <<'EOF'
+extern int dep_root(int);
+int main_root(int x) { return dep_root(x); }
+int main(void) { return main_root(1); }
+EOF
+    gcc -shared -fPIC -nostdlib -o "$TMP/libstaticdep.so" "$TMP/static_dep.c"
+    gcc -shared -fPIC -nostdlib -o "$TMP/libstaticmain.so" \
+        "$TMP/static_main.c" -L"$TMP" -lstaticdep -Wl,-rpath,"$TMP"
+
+    all=$("$BIN" export --static --all-modules "$TMP/libstaticmain.so" \
+        2>/dev/null)
+    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
+    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticdep.so =="
+    printf '%s\n' "$all" | grep -qx 'dep_leaf'
+
+    # The filter applies per module; dependencies without a match are skipped.
+    all=$("$BIN" export --static --all-modules --root-scope 'main_root' \
+        "$TMP/libstaticmain.so" 2>/dev/null)
+    printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
+    ! printf '%s\n' "$all" | grep -q "== $TMP/libstaticdep.so =="
+fi
+
+echo "== static export CLI gating =="
+echo "not an elf" > "$TMP/notelf"
+if "$BIN" export --static "$TMP/notelf" >/dev/null 2>&1; then
+    echo "expected a non-ELF --static input to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static --input trace.log "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected --input with --static to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static --otel "$TMP/simple" >/dev/null 2>&1; then
+    echo "expected --static --otel to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static >/dev/null 2>&1; then
+    echo "expected --static without MODULE to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static "$TMP/simple" extra >/dev/null 2>&1; then
+    echo "expected two --static MODULE arguments to fail" >&2
+    exit 1
+fi
+if "$BIN" export --otel --input trace.log --output out.json --all-modules \
+    >/dev/null 2>&1; then
+    echo "expected --all-modules with --otel to fail" >&2
+    exit 1
+fi
+if "$BIN" export --static --root-scope 'main' --exclude 'C*' "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected --exclude with --static to fail" >&2
+    exit 1
 fi
 
 if [ "$(id -u)" -ne 0 ]; then

@@ -43,4 +43,30 @@ StaticPruneResult prune_statically(const StaticPruneRequest& request);
 // address-taken metadata and does not require a disassembler.
 StaticPruneResult select_roots(const StaticPruneRequest& request);
 
+// Request for an offline direct-call graph (`export --static`).
+struct StaticCallGraphRequest {
+    std::string module_path;
+    const std::vector<FunctionInfo>* functions = nullptr;
+    // Explicit roots (indices into `functions`).  Used only when
+    // `has_root_scope` is true; otherwise the conventional roots are used.
+    std::vector<size_t> roots;
+    bool has_root_scope = false;
+};
+
+struct StaticCallGraph {
+    // False when the module cannot be analyzed (no libopcodes, not x86-64,
+    // unreadable code, ...).  `reason` explains why.
+    bool available = false;
+    std::string reason;
+    // Indices into `functions`, sorted by address with `main` first.
+    std::vector<size_t> roots;
+    // Direct `call`/unconditional `jmp` targets indexed by function index.
+    // Self-calls are kept so direct recursion is visible.
+    std::vector<std::vector<size_t>> edges;
+};
+
+// Builds a fully expanded direct-call graph.  Indirect calls, PLT/external
+// calls, IFUNC targets, and cross-module calls are not followed.
+StaticCallGraph build_static_call_graph(const StaticCallGraphRequest& request);
+
 }  // namespace callgraph

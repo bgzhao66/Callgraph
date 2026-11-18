@@ -18,6 +18,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <regex>
@@ -35,6 +36,7 @@
 #include "callgraph/histogram_report.h"
 #include "callgraph/kernel_probe_manager.h"
 #include "callgraph/kernel_timeline.h"
+#include "callgraph/module_dependencies.h"
 #include "callgraph/module_manager.h"
 #include "callgraph/otel_exporter.h"
 #include "callgraph/otlp_json.h"
@@ -44,6 +46,7 @@
 #include "callgraph/probe_manager.h"
 #include "callgraph/span_generator.h"
 #include "callgraph/static_call_graph.h"
+#include "callgraph/static_graph_export.h"
 #include "callgraph/clock_converter.h"
 #include "callgraph/trace_metadata.h"
 #include "callgraph/trace_parser.h"
@@ -206,6 +209,7 @@ void usage(FILE* out)
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
+            "  callgraph export --static [options] MODULE\n"
             "\n");
 
     print_help_section(out, "Tracing options", {
@@ -312,10 +316,18 @@ void usage(FILE* out)
     fprintf(out,
             "Offline export options (callgraph export):\n"
             "  Convert an existing text trace without root.  --otel emits an\n"
-            "  OTLP/JSON request body; --flame emits folded stacks.\n");
+            "  OTLP/JSON request body; --flame emits folded stacks; --static\n"
+            "  prints a direct-call graph of an ELF module.\n");
     print_help_options(out, {
-        {"--input FILE", "callgraph text trace to convert"},
+        {"--input FILE", "callgraph text trace to convert (--otel/--flame)"},
         {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
+        {"--static", "print the direct-call graph of an ELF MODULE"},
+        {"--all-modules",
+         "with --static, analyze MODULE and its DT_NEEDED closure", 1},
+        {"--root-scope GLOB",
+         "with --static, functions that start a tree (repeatable)", 1},
+        {"--regex",
+         "with --static, treat --root-scope as extended regex", 1},
         {"--endpoint URL",
          "POST the OTLP/JSON body to URL\n"
          "(OTLP/HTTP JSON; path defaults to /v1/traces)", 1},
@@ -356,6 +368,9 @@ void usage(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
+            "  --static takes the ELF path as MODULE and writes to stdout by\n"
+            "  default; it follows direct call and unconditional jump edges\n"
+            "  only and requires an x86-64 module plus libopcodes.\n"
             "\n");
 
     print_help_section(out, "General options", {
@@ -404,7 +419,13 @@ void usage(FILE* out)
             "        --assume-local-capture\n"
             "\n"
             "    callgraph export --flame --input trace.log --output stacks.folded\n"
-            "    flamegraph.pl stacks.folded > flame.svg\n");
+            "    flamegraph.pl stacks.folded > flame.svg\n"
+            "\n"
+            "  Static call graph:\n"
+            "    callgraph export --static ./app\n"
+            "    callgraph export --static -o cg.txt ./app\n"
+            "    callgraph export --static --all-modules ./app\n"
+            "    callgraph export --static --regex --root-scope '^main$' ./app\n");
 }
 
 void usage_brief(FILE* out)
@@ -414,6 +435,7 @@ void usage_brief(FILE* out)
             "  callgraph run [options] -- program [args...]\n"
             "  callgraph attach [options] -p PID\n"
             "  callgraph export --otel|--flame --input TRACE [options]\n"
+            "  callgraph export --static [options] MODULE\n"
             "\n"
             "Run 'callgraph --help' for all options.\n");
 }
@@ -1082,15 +1104,20 @@ void fill_host_otel_config(OtelConfig& config)
     config.tool_version = CALLGRAPH_VERSION;
 }
 
-enum class ExportMode { Otel, Flame };
+enum class ExportMode { Otel, Flame, Static };
 
 struct ExportOptions {
     std::string input;
     std::string output;
+    std::string module;
     ExportMode mode = ExportMode::Otel;
     bool mode_set = false;
     bool help = false;
     bool otel_option_used = false;
+    bool static_option_used = false;
+    bool all_modules = false;
+    bool use_regex = false;
+    std::vector<std::string> root_scope;
     std::string endpoint;
     std::string service_name;
     std::string service_namespace;
@@ -1128,6 +1155,7 @@ ExportOptions parse_export_args(int argc, char** argv)
     }
 
     ExportOptions options;
+    std::vector<std::string> positionals;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         std::string inline_value;
@@ -1152,14 +1180,31 @@ ExportOptions parse_export_args(int argc, char** argv)
 
         if (arg == "--otel") {
             if (options.mode_set && options.mode != ExportMode::Otel)
-                usage_error("--otel and --flame are mutually exclusive");
+                usage_error("--otel, --flame, and --static are mutually "
+                            "exclusive");
             options.mode = ExportMode::Otel;
             options.mode_set = true;
         } else if (arg == "--flame") {
             if (options.mode_set && options.mode != ExportMode::Flame)
-                usage_error("--otel and --flame are mutually exclusive");
+                usage_error("--otel, --flame, and --static are mutually "
+                            "exclusive");
             options.mode = ExportMode::Flame;
             options.mode_set = true;
+        } else if (arg == "--static") {
+            if (options.mode_set && options.mode != ExportMode::Static)
+                usage_error("--otel, --flame, and --static are mutually "
+                            "exclusive");
+            options.mode = ExportMode::Static;
+            options.mode_set = true;
+        } else if (arg == "--all-modules") {
+            options.all_modules = true;
+            options.static_option_used = true;
+        } else if (arg == "--root-scope") {
+            options.root_scope.push_back(value());
+            options.static_option_used = true;
+        } else if (arg == "--regex") {
+            options.use_regex = true;
+            options.static_option_used = true;
         } else if (arg == "--input") {
             options.input = value();
         } else if (arg == "-o" || arg == "--output") {
@@ -1242,8 +1287,10 @@ ExportOptions parse_export_args(int argc, char** argv)
             mark_otel_option();
         } else if (arg == "-h" || arg == "--help") {
             options.help = true;
-        } else {
+        } else if (arg.rfind("-", 0) == 0) {
             usage_error("unknown export option '%s'", arg.c_str());
+        } else {
+            positionals.push_back(arg);
         }
     }
 
@@ -1253,7 +1300,26 @@ ExportOptions parse_export_args(int argc, char** argv)
     }
 
     if (!options.mode_set)
-        usage_error("export requires --otel or --flame");
+        usage_error("export requires --otel, --flame, or --static");
+
+    if (options.mode == ExportMode::Static) {
+        if (options.otel_option_used)
+            usage_error("OTel options are not valid with --static");
+        if (!options.input.empty())
+            usage_error("--input is not valid with --static; pass the ELF "
+                        "path as a positional argument");
+        if (positionals.size() != 1)
+            usage_error("export --static requires exactly one MODULE argument");
+        options.module = positionals.front();
+        return options;
+    }
+
+    if (!positionals.empty())
+        usage_error("unexpected export argument '%s'",
+                    positionals.front().c_str());
+    if (options.static_option_used)
+        usage_error("--all-modules, --root-scope, and --regex are only valid "
+                    "with --static");
 
     if (options.mode == ExportMode::Flame) {
         if (options.otel_option_used)
@@ -1471,10 +1537,14 @@ int run_flame_export(const ExportOptions& options)
     return 0;
 }
 
+int run_static_export(const ExportOptions& options);
+
 int run_export(const ExportOptions& options)
 {
     if (options.mode == ExportMode::Flame)
         return run_flame_export(options);
+    if (options.mode == ExportMode::Static)
+        return run_static_export(options);
     return run_otel_export(options);
 }
 
@@ -1538,6 +1608,106 @@ private:
     std::vector<std::regex> root_scope_re_;
     std::vector<std::regex> exclude_re_;
 };
+
+int run_static_export(const ExportOptions& options)
+{
+    FunctionFilter filter(options.root_scope, {}, options.use_regex);
+
+    std::vector<std::string> modules;
+    if (options.all_modules) {
+        std::string reason;
+        if (!module_dependencies(options.module, &modules, &reason))
+            fail("cannot resolve dependencies of %s: %s",
+                 options.module.c_str(), reason.c_str());
+    } else {
+        modules.push_back(options.module);
+    }
+
+    const ResolveOptions resolve_options{false, false};
+    std::ofstream file;
+    std::ostream* out = &std::cout;
+    if (!options.output.empty() && options.output != "-") {
+        file.open(options.output, std::ios::binary);
+        if (!file)
+            fail("cannot open %s for writing", options.output.c_str());
+        out = &file;
+    }
+    size_t roots_written = 0;
+    size_t modules_written = 0;
+
+    for (size_t index = 0; index < modules.size(); ++index) {
+        const std::string& path = modules[index];
+        const bool primary = index == 0;
+
+        ModuleInfo module;
+        try {
+            module = ElfResolver::resolve(path, resolve_options);
+        } catch (const std::exception& error) {
+            if (primary)
+                fail("cannot analyze %s: %s", path.c_str(), error.what());
+            log_verbose("skipping dependency %s: %s", path.c_str(),
+                        error.what());
+            continue;
+        }
+
+        StaticCallGraphRequest request;
+        request.module_path = path;
+        request.functions = &module.functions;
+        request.has_root_scope = filter.has_root_scope();
+        if (request.has_root_scope) {
+            for (size_t i = 0; i < module.functions.size(); ++i) {
+                if (filter.root_match(module.functions[i]))
+                    request.roots.push_back(i);
+            }
+            if (request.roots.empty()) {
+                if (primary)
+                    fail("no function in %s matches --root-scope",
+                         path.c_str());
+                log_verbose("skipping dependency %s: no --root-scope match",
+                            path.c_str());
+                continue;
+            }
+        }
+
+        StaticCallGraph graph = build_static_call_graph(request);
+        if (!graph.available) {
+            if (primary)
+                fail("cannot build a static call graph for %s: %s",
+                     path.c_str(), graph.reason.c_str());
+            log_warn("skipping dependency %s: %s", path.c_str(),
+                     graph.reason.c_str());
+            continue;
+        }
+        if (graph.roots.empty()) {
+            if (primary)
+                fail("no call-graph roots found in %s", path.c_str());
+            log_verbose("skipping dependency %s: no call-graph roots",
+                        path.c_str());
+            continue;
+        }
+
+        if (options.all_modules) {
+            if (modules_written > 0)
+                *out << '\n';
+            *out << "== " << path << " ==\n";
+        }
+        write_static_graph({&graph, &module.functions}, *out);
+        roots_written += graph.roots.size();
+        ++modules_written;
+    }
+
+    out->flush();
+    if (!*out) {
+        if (out == &std::cout)
+            fail("cannot write static call graph to stdout");
+        fail("cannot write static call graph to %s", options.output.c_str());
+    }
+
+    fprintf(stderr,
+            "callgraph: static graph: %zu root(s) in %zu module(s)\n",
+            roots_written, modules_written);
+    return 0;
+}
 
 bool module_matches(const std::string& path,
                     const std::vector<std::string>& globs)
