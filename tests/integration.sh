@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BIN=${1:?usage: integration.sh /path/to/callgraph}
+BIN_DIR=${1:?usage: integration.sh /path/to/build-dir}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-DISASM=${CALLGRAPH_DISASM:-$(dirname "$BIN")/callgraph-disasm}
-CALLGRAPH_BIN=$(readlink -f "$BIN")
-DISASM_BIN=$(readlink -f "$DISASM" 2>/dev/null || printf '%s' "$DISASM")
+RUN=$(readlink -f "$BIN_DIR/callgraph-run")
+ATTACH=$(readlink -f "$BIN_DIR/callgraph-attach")
+EXPORT=$(readlink -f "$BIN_DIR/callgraph-export")
+DISASM=$(readlink -f "$BIN_DIR/callgraph-disasm")
+DISASM_BIN=$DISASM
 WRAPPER="$ROOT/callgraph.sh"
 
 g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
@@ -29,26 +31,26 @@ if command -v go >/dev/null 2>&1; then
 fi
 
 echo "== dry run =="
-dry=$("$BIN" run --dry-run --regex \
+dry=$("$RUN" --dry-run --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" 2>/dev/null)
 echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
 echo "$dry" | grep -q 'B(int)'
 
 echo "== dry run: glob + exclude =="
-dry=$("$BIN" run --dry-run --root-scope '*' --exclude 'A*' -- "$TMP/simple" 2>/dev/null)
+dry=$("$RUN" --dry-run --root-scope '*' --exclude 'A*' -- "$TMP/simple" 2>/dev/null)
 ! echo "$dry" | grep -q 'A(int)'
 
 echo "== removed --include =="
-if "$BIN" run --include '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+if "$RUN" --include '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected removed --include to fail" >&2
     exit 1
 fi
-if "$BIN" run --scope '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+if "$RUN" --scope '*' --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected removed --scope to fail" >&2
     exit 1
 fi
-if "$BIN" run --static-prune --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+if "$RUN" --static-prune --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected --static-prune to be unknown" >&2
     exit 1
 fi
@@ -56,7 +58,7 @@ fi
 echo "== dry run: stripped binary fails =="
 cp "$TMP/simple" "$TMP/stripped"
 strip "$TMP/stripped"
-if "$BIN" run --dry-run -- "$TMP/stripped" >/dev/null 2>&1; then
+if "$RUN" --dry-run -- "$TMP/stripped" >/dev/null 2>&1; then
     echo "expected a stripped binary to fail" >&2
     exit 1
 fi
@@ -66,7 +68,7 @@ cp "$TMP/simple" "$TMP/detached"
 objcopy --only-keep-debug "$TMP/detached" "$TMP/detached.debug"
 strip --strip-all "$TMP/detached"
 objcopy --add-gnu-debuglink="$TMP/detached.debug" "$TMP/detached"
-dry=$("$BIN" run --dry-run --regex --root-scope '^(main|A[(]int[)])$' \
+dry=$("$RUN" --dry-run --regex --root-scope '^(main|A[(]int[)])$' \
     -- "$TMP/detached" 2>/dev/null)
 echo "$dry" | grep -q 'main'
 echo "$dry" | grep -q 'A(int)'
@@ -76,46 +78,46 @@ for opt in "--sched" "--futex" "--io" "--block" "--memory" "--network" \
            "--events sched" "--events net" "--preset storage" \
            "--merge-window 1ms" "--require-events"; do
     # shellcheck disable=SC2086
-    if "$BIN" run $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+    if "$RUN" $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
         echo "expected '$opt' without --kernel to fail" >&2
         exit 1
     fi
 done
-"$BIN" run --kernel --dry-run -- "$TMP/simple" >/dev/null 2>&1
-"$BIN" run --kernel --events sched --preset storage \
+"$RUN" --kernel --dry-run -- "$TMP/simple" >/dev/null 2>&1
+"$RUN" --kernel --events sched --preset storage \
     --merge-window 1ms --require-events --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1
 for preset in database cpu; do
-    if "$BIN" run --kernel --preset "$preset" --dry-run -- "$TMP/simple" \
+    if "$RUN" --kernel --preset "$preset" --dry-run -- "$TMP/simple" \
         >/dev/null 2>&1; then
         echo "expected removed preset '$preset' to fail" >&2
         exit 1
     fi
 done
-if "$BIN" run --kernel-events sched --dry-run -- "$TMP/simple" \
+if "$RUN" --kernel-events sched --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected the old --kernel-events name to fail" >&2
     exit 1
 fi
 
 echo "== complete traces CLI gating =="
-if "$BIN" run --complete-traces --dry-run -- "$TMP/simple" \
+if "$RUN" --complete-traces --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected --complete-traces without an exporter to fail" >&2
     exit 1
 fi
-if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+if "$RUN" --exporter otlp-json --export-file "$TMP/unused.json" \
     --trace-buffer-spans 1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected trace-buffer options without --complete-traces to fail" >&2
     exit 1
 fi
-if "$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+if "$RUN" --exporter otlp-json --export-file "$TMP/unused.json" \
     --outlier-latency-quantile 0.99 --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected --outlier-latency-quantile without --complete-traces to fail" >&2
     exit 1
 fi
-"$BIN" run --exporter otlp-json --export-file "$TMP/unused.json" \
+"$RUN" --exporter otlp-json --export-file "$TMP/unused.json" \
     --complete-traces --outlier-latency-quantile 0.99 --dry-run \
     -- "$TMP/simple" >/dev/null
 
@@ -123,52 +125,65 @@ echo "== help hierarchy =="
 # grep -q closes the pipe as soon as it matches.  With pipefail enabled the
 # writer's SIGPIPE would be reported as a test failure.
 set +o pipefail
-"$BIN" run --help | grep -q '^Tracing options:'
-"$BIN" run --help | grep -q '^      --root-scope'
-! "$BIN" run --help | grep -q -- '--scope'
-! "$BIN" run --help | grep -q -- '--static-prune'
-! "$BIN" run --help | grep -q -- '--include-indirect'
-"$BIN" run --help | grep -q -- '--trace-depth'
-"$BIN" run --help | grep -q 'N > 0 prunes probes along direct calls'
-"$BIN" run --help | grep -q '^Kernel event options (--kernel):'
-"$BIN" run --help | grep -q '^              latency       sched, futex, io, net syscalls$'
-"$BIN" run --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
-"$BIN" run --help | grep -q '^              full          sched, futex, io, net syscalls, direct reclaim,$'
-"$BIN" run --help | grep -q '^              extended      sched, futex, io, block, net syscalls, direct reclaim,$'
-"$BIN" run --help | grep -q '^Live export options (--exporter):'
-"$BIN" run --help | grep -q '^Offline export options (callgraph export):'
-"$BIN" run --help | grep -q '^General options:'
-"$BIN" run --help | grep -q '^  Correlated kernel events:'
-"$BIN" run --help | grep -q '^      --kernel'
-"$BIN" run --help | grep -q '^          --events'
-"$BIN" run --help | grep -q '^          --endpoint'
-"$BIN" run --help | grep -q '^          --complete-traces'
-"$BIN" run --help | grep -q '^              --trace-buffer-bytes SIZE'
-"$BIN" run --help | grep -q '^              --outlier-latency-quantile Q'
-"$BIN" run --help | grep -q '^      --ingest-sample-rate R'
-"$BIN" run --help | grep -q '^      --log-rate-limit N'
-"$BIN" run --help | grep -q 'limit stdout user and kernel event lines'
-"$BIN" export --help | grep -q '^      --otel'
-"$BIN" export --help | grep -q '^      --flame'
-"$BIN" export --otel --help | grep -q '^          --endpoint'
-"$BIN" export --otel --help | grep -q '^          --complete-traces'
-"$BIN" export --otel --help | grep -q '^              --outlier-latency-quantile Q'
-"$BIN" export --flame --help | grep -q '^      --flame'
-"$BIN" export --static --help | grep -q '^      --static'
-"$BIN" export --static --help | grep -q '^          --static-graph FILE'
-"$BIN" export --static --help | grep -q '^          --root-scope GLOB'
-"$BIN" export --static --help | grep -q 'callgraph export --static --static-graph FILE'
-"$BIN" --help > "$TMP/help.txt"
-for args in "run --help" "attach --help" "export --help" \
-            "export --otel --help" "export --flame --help" \
-            "export --static --help"; do
-    # shellcheck disable=SC2086
-    "$BIN" $args > "$TMP/help-variant.txt"
-    if ! cmp -s "$TMP/help.txt" "$TMP/help-variant.txt"; then
-        echo "help output differs for: $args" >&2
-        exit 1
-    fi
-done
+"$RUN" --help | grep -q '^Tracing options:'
+"$RUN" --help | grep -q '^      --root-scope'
+! "$RUN" --help | grep -q -- '--scope'
+! "$RUN" --help | grep -q -- '--static-prune'
+! "$RUN" --help | grep -q -- '--include-indirect'
+"$RUN" --help | grep -q -- '--trace-depth'
+"$RUN" --help | grep -q 'N > 0 prunes probes along direct calls'
+"$RUN" --help | grep -q '^Kernel event options (--kernel):'
+"$RUN" --help | grep -q '^              latency       sched, futex, io, net syscalls$'
+"$RUN" --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
+"$RUN" --help | grep -q '^              full          sched, futex, io, net syscalls, direct reclaim,$'
+"$RUN" --help | grep -q '^              extended      sched, futex, io, block, net syscalls, direct reclaim,$'
+"$RUN" --help | grep -q '^Live export options (--exporter):'
+! "$RUN" --help | grep -q '^Offline export options:'
+"$RUN" --help | grep -q '^General options:'
+"$RUN" --help | grep -q '^  Correlated kernel events:'
+"$RUN" --help | grep -q '^      --kernel'
+"$RUN" --help | grep -q '^          --events'
+"$RUN" --help | grep -q '^          --endpoint'
+"$RUN" --help | grep -q '^          --complete-traces'
+"$RUN" --help | grep -q '^              --trace-buffer-bytes SIZE'
+"$RUN" --help | grep -q '^              --outlier-latency-quantile Q'
+"$RUN" --help | grep -q '^      --ingest-sample-rate R'
+"$RUN" --help | grep -q '^      --log-rate-limit N'
+"$RUN" --help | grep -q 'limit stdout user and kernel event lines'
+"$EXPORT" --help | grep -q '^      --otel'
+"$EXPORT" --help | grep -q '^      --flame'
+"$EXPORT" --otel --help | grep -q '^          --endpoint'
+"$EXPORT" --otel --help | grep -q '^          --complete-traces'
+"$EXPORT" --otel --help | grep -q '^              --outlier-latency-quantile Q'
+"$EXPORT" --flame --help | grep -q '^      --flame'
+"$EXPORT" --static --help | grep -q '^      --static'
+"$EXPORT" --static --help | grep -q '^          --static-graph FILE'
+"$EXPORT" --static --help | grep -q '^          --root-scope GLOB'
+"$EXPORT" --static --help | grep -q 'callgraph-export --static --static-graph FILE'
+# Mode pages are narrowed: no options from the other modes.
+! "$EXPORT" --static --help | grep -q -- '--otel'
+! "$EXPORT" --static --help | grep -q -- '--endpoint'
+! "$EXPORT" --otel --help | grep -q -- '--static-graph'
+! "$EXPORT" --otel --help | grep -q '^      --flame'
+! "$EXPORT" --flame --help | grep -q -- '--endpoint'
+! "$EXPORT" --flame --help | grep -q -- '--static-graph'
+# The program-level page still lists every mode.
+"$EXPORT" --help | grep -q '^      --otel'
+"$EXPORT" --help | grep -q '^      --static'
+"$EXPORT" --help | grep -q '^      --flame'
+# The run/attach page points at the exporter instead of duplicating it.
+"$RUN" --help | grep -q "Offline conversion: run 'callgraph-export --help'"
+"$RUN" --help > "$TMP/help-run.txt"
+"$RUN" -h > "$TMP/help-run-short.txt"
+cmp "$TMP/help-run.txt" "$TMP/help-run-short.txt"
+"$ATTACH" --help > "$TMP/help-attach.txt"
+"$EXPORT" --help > "$TMP/help-export.txt"
+grep -q '^  callgraph-run \[options\] -- program' "$TMP/help-run.txt"
+grep -q '^  callgraph-attach \[options\] -p PID' "$TMP/help-attach.txt"
+grep -q '^  callgraph-export --otel|--flame' "$TMP/help-export.txt"
+! grep -q -- '--kernel' "$TMP/help-export.txt"
+! grep -q '^Offline export options:' "$TMP/help-run.txt"
+! grep -q -- '--exporter' "$TMP/help-export.txt"
 set -o pipefail
 
 echo "== OTLP offline conversion =="
@@ -180,22 +195,22 @@ cat > "$TMP/otel.trace" <<'EOF'
 2026-11-12T10:00:00.000004000+00:00 100 : 1 <- C(int)
 2026-11-12T10:00:00.000005000+00:00 100 : 0 <- main
 EOF
-"$BIN" export --otel --input "$TMP/otel.trace" --output "$TMP/otel.json" \
+"$EXPORT" --otel --input "$TMP/otel.trace" --output "$TMP/otel.json" \
     --service-name demo --trace-id-seed 1234 2>"$TMP/otel.err"
 grep -q 'converted 6 events' "$TMP/otel.err"
 grep -q '3 OTLP span(s)' "$TMP/otel.err"
-"$BIN" export --otel --input "$TMP/otel.trace" \
+"$EXPORT" --otel --input "$TMP/otel.trace" \
     --output "$TMP/complete-out.json" --complete-traces \
     2>"$TMP/complete.err"
 grep -q 'trace buffer: 1 completed' "$TMP/complete.err"
 grep -q '"resourceSpans"' "$TMP/complete-out.json"
-if "$BIN" export --otel --input "$TMP/otel.trace" \
+if "$EXPORT" --otel --input "$TMP/otel.trace" \
     --output "$TMP/outlier-only.json" --outlier-latency-quantile 0.99 \
     >/dev/null 2>&1; then
     echo "expected offline --outlier-latency-quantile without --complete-traces to fail" >&2
     exit 1
 fi
-"$BIN" export --otel --input "$TMP/otel.trace" \
+"$EXPORT" --otel --input "$TMP/otel.trace" \
     --output "$TMP/outlier.json" --complete-traces \
     --outlier-latency-quantile 0.99 2>"$TMP/outlier.err"
 grep -q 'outlier sampling' "$TMP/outlier.err"
@@ -209,16 +224,16 @@ cat > "$TMP/args-offline.trace" <<'EOF'
 2026-11-12T10:00:00.000002000+00:00 100 : 1 <- C(int)
 2026-11-12T10:00:00.000003000+00:00 100 : 0 <- main
 EOF
-"$BIN" export --otel --input "$TMP/args-offline.trace" \
+"$EXPORT" --otel --input "$TMP/args-offline.trace" \
     --output "$TMP/args-offline.json" --show-args 2>/dev/null
 grep -q '"key":"code.arguments"' "$TMP/args-offline.json"
 grep -q '"stringValue":"(x=3)"' "$TMP/args-offline.json"
-if "$BIN" export --otel --input "$TMP/args-offline.trace" \
+if "$EXPORT" --otel --input "$TMP/args-offline.trace" \
     --output "$TMP/args-unused.json" --input-show-args >/dev/null 2>&1; then
     echo "expected --input-show-args to be removed" >&2
     exit 1
 fi
-"$BIN" export --otel --input "$TMP/otel.trace" --output "$TMP/sampled.json" \
+"$EXPORT" --otel --input "$TMP/otel.trace" --output "$TMP/sampled.json" \
     --sample-rate 0 2>/dev/null
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$TMP/sampled.json" <<'PY'
@@ -230,7 +245,7 @@ fi
 
 echo "== OTLP drop reasons =="
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$BIN" "$TMP" <<'PY'
+    python3 - "$EXPORT" "$TMP" <<'PY'
 import http.server, os, re, subprocess, sys, threading, time
 
 binary, tmp = sys.argv[1:3]
@@ -260,7 +275,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 try:
     result = subprocess.run(
-        [binary, "export", "--otel", "--input", trace,
+        [binary, "--otel", "--input", trace,
          "--endpoint", f"http://127.0.0.1:{server.server_port}",
          "--queue-spans", "1", "--batch-size", "1",
          "--flush-interval", "10", "--timeout-ms", "1000"],
@@ -288,7 +303,7 @@ cat > "$TMP/depth.trace" <<'EOF'
 2026-11-12T10:00:00.000006000+00:00 100 : 0 -> pq_getmsgend
 2026-11-12T10:00:00.000007000+00:00 100 : 0 <- pq_getmsgend
 EOF
-"$BIN" export --otel --input "$TMP/depth.trace" --output "$TMP/depth.json" \
+"$EXPORT" --otel --input "$TMP/depth.trace" --output "$TMP/depth.json" \
     --trace-id-seed 7 2>/dev/null
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$TMP/depth.json" <<'PY'
@@ -313,7 +328,7 @@ cat > "$TMP/boot.trace" <<'EOF'
 100.000002000 7 : 1 <- C(int)
 100.000003000 7 : 0 <- main
 EOF
-"$BIN" export --otel --input "$TMP/boot.trace" --output "$TMP/boot.json" \
+"$EXPORT" --otel --input "$TMP/boot.trace" --output "$TMP/boot.json" \
     --assume-local-capture 2>"$TMP/boot.err"
 grep -q 'assuming the trace was captured on this host' "$TMP/boot.err"
 if command -v python3 >/dev/null 2>&1; then
@@ -327,7 +342,7 @@ PY
 fi
 
 echo "== Flamegraph export =="
-"$BIN" export --flame --input "$TMP/boot.trace" \
+"$EXPORT" --flame --input "$TMP/boot.trace" \
     --output "$TMP/boot.folded" 2>"$TMP/flame.err"
 grep -q 'converted .* events into .* folds' "$TMP/flame.err"
 grep -qx 'main 1' "$TMP/boot.folded"
@@ -337,24 +352,24 @@ cat > "$TMP/flame-incomplete.trace" <<'EOF'
 100.000001000 7 : 1 -> A(int)
 100.000002000 7 : 0 <- main
 EOF
-"$BIN" export --flame --input "$TMP/flame-incomplete.trace" \
+"$EXPORT" --flame --input "$TMP/flame-incomplete.trace" \
     --output "$TMP/flame-incomplete.folded" 2>/dev/null
 grep -Fqx 'main;A(int);[incomplete] 1' "$TMP/flame-incomplete.folded"
 grep -qx 'main 1' "$TMP/flame-incomplete.folded"
-"$BIN" export --flame --help | grep -q 'flamegraph.pl'
-if "$BIN" export --flame --metadata "$TMP/otel.meta" \
+"$EXPORT" --flame --help | grep -q 'flamegraph.pl'
+if "$EXPORT" --flame --metadata "$TMP/otel.meta" \
     --input "$TMP/boot.trace" >/dev/null 2>&1; then
     echo "expected OTel options to be rejected with --flame" >&2
     exit 1
 fi
-if "$BIN" export otel --input "$TMP/boot.trace" >/dev/null 2>&1; then
+if "$EXPORT" otel --input "$TMP/boot.trace" >/dev/null 2>&1; then
     echo "expected the old 'export otel' form to be rejected" >&2
     exit 1
 fi
 
 if command -v python3 >/dev/null 2>&1; then
     echo "== OTLP JSON validation and HTTP + gzip export =="
-    python3 - "$BIN" "$TMP/otel.json" "$TMP/otel.trace" <<'PY'
+    python3 - "$EXPORT" "$TMP/otel.json" "$TMP/otel.trace" <<'PY'
 import gzip, http.server, json, subprocess, sys, threading, time
 
 binary, json_path, trace_path = sys.argv[1:4]
@@ -394,7 +409,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 port = server.server_port
 result = subprocess.run(
-    [binary, "export", "--otel", "--input", trace_path,
+    [binary, "--otel", "--input", trace_path,
      "--endpoint", f"http://127.0.0.1:{port}",
      "--compression", "gzip", "--header", "X-Test=value"],
     capture_output=True, text=True, timeout=60)
@@ -425,13 +440,13 @@ fi
 
 if [ -n "$GO_BIN" ]; then
     echo "== Go binary warning =="
-    "$BIN" run --dry-run --regex --root-scope '^main\.main$' -- "$GO_BIN" \
+    "$RUN" --dry-run --regex --root-scope '^main\.main$' -- "$GO_BIN" \
         >/dev/null 2>"$TMP/gowarn.err"
     grep -q 'Go binary' "$TMP/gowarn.err"
     grep -q -- '--return-mode=ret' "$TMP/gowarn.err"
 
     "$DISASM" "$GO_BIN" -o "$TMP/gowarn.json"
-    "$BIN" run --dry-run --return-mode ret --regex \
+    "$RUN" --dry-run --return-mode ret --regex \
         --static-graph "$TMP/gowarn.json" \
         --root-scope '^main\.main$' -- "$GO_BIN" \
         >/dev/null 2>"$TMP/gowarn_ret.err"
@@ -439,7 +454,7 @@ if [ -n "$GO_BIN" ]; then
 
     if (cd "$TMP" && go build -ldflags="-s -w" -o "$TMP/gowarn_stripped" \
             gowarn.go) >/dev/null 2>&1; then
-        if "$BIN" run --dry-run -- "$TMP/gowarn_stripped" \
+        if "$RUN" --dry-run -- "$TMP/gowarn_stripped" \
                 >/dev/null 2>"$TMP/gowarn_stripped.err"; then
             echo "expected a stripped Go binary to fail" >&2
             exit 1
@@ -449,17 +464,26 @@ if [ -n "$GO_BIN" ]; then
     fi
 fi
 
-echo "== link guard: the tracer has no disassembler =="
-if command -v ldd >/dev/null 2>&1; then
-    if ldd "$BIN" 2>/dev/null | grep -Eqi 'libopcodes|libbfd'; then
-        echo "callgraph must not link libopcodes/libbfd" >&2
-        exit 1
+echo "== link guard: the tracers have no disassembler =="
+for tracer in "$RUN" "$ATTACH" "$EXPORT"; do
+    if command -v ldd >/dev/null 2>&1; then
+        if ldd "$tracer" 2>/dev/null | grep -Eqi 'libopcodes|libbfd'; then
+            echo "$tracer must not link libopcodes/libbfd" >&2
+            exit 1
+        fi
     fi
-fi
+    if command -v nm >/dev/null 2>&1; then
+        if nm -D "$tracer" 2>/dev/null \
+            | grep -Eq 'init_disassemble_info|disassembler'; then
+            echo "$tracer must not reference the disassembler API" >&2
+            exit 1
+        fi
+    fi
+done
+# The offline converter must not drag in the live tracer stack.
 if command -v nm >/dev/null 2>&1; then
-    if nm -D "$BIN" 2>/dev/null \
-        | grep -Eq 'init_disassemble_info|disassembler'; then
-        echo "callgraph must not reference the disassembler API" >&2
+    if nm -D "$EXPORT" 2>/dev/null | grep -Eq ' bpf_|uprobe'; then
+        echo "callgraph-export must not reference libbpf/uprobes" >&2
         exit 1
     fi
 fi
@@ -479,7 +503,7 @@ grep -q '"return_offsets":\[' "$TMP/simple.json"
 grep -q '"name":"factorial' "$TMP/recursive.json"
 
 echo "== static export from facts =="
-"$BIN" export --static --static-graph "$TMP/simple.json" \
+"$EXPORT" --static --static-graph "$TMP/simple.json" \
     >"$TMP/static.txt" 2>"$TMP/static.err"
 grep -qx 'main' "$TMP/static.txt"
 grep -q '└── C(int)' "$TMP/static.txt"
@@ -487,24 +511,24 @@ grep -q '├── B(int)' "$TMP/static.txt"
 grep -q '│   └── A(int)' "$TMP/static.txt"
 grep -q '^    └── A(int)$' "$TMP/static.txt"
 
-"$BIN" export --static --static-graph "$TMP/simple.json" \
+"$EXPORT" --static --static-graph "$TMP/simple.json" \
     -o "$TMP/static_file.txt" 2>/dev/null
 cmp "$TMP/static.txt" "$TMP/static_file.txt"
-"$BIN" export --static --static-graph "$TMP/simple.json" -o - 2>/dev/null \
+"$EXPORT" --static --static-graph "$TMP/simple.json" -o - 2>/dev/null \
     | cmp - "$TMP/static.txt"
 
-scoped=$("$BIN" export --static --static-graph "$TMP/simple.json" \
+scoped=$("$EXPORT" --static --static-graph "$TMP/simple.json" \
     --root-scope 'C*' 2>/dev/null)
 [ "$(printf '%s\n' "$scoped" | head -n 1)" = "C(int)" ]
 ! printf '%s\n' "$scoped" | grep -qx 'main'
 
-"$BIN" export --static --static-graph "$TMP/simple.json" \
+"$EXPORT" --static --static-graph "$TMP/simple.json" \
     --regex --root-scope '^C' 2>/dev/null | grep -qx 'C(int)'
 
-"$BIN" export --static --static-graph "$TMP/recursive.json" \
+"$EXPORT" --static --static-graph "$TMP/recursive.json" \
     --root-scope 'factorial*' 2>/dev/null | grep -q '\[recursive\]'
 
-if "$BIN" export --static --static-graph "$TMP/simple.json" \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" \
         --root-scope 'no_such_function_xyz' >/dev/null 2>&1; then
     echo "expected an unmatched --root-scope to fail" >&2
     exit 1
@@ -525,13 +549,13 @@ gcc -shared -fPIC -nostdlib -o "$TMP/libstaticmain.so" \
     "$TMP/static_main.c" -L"$TMP" -lstaticdep -Wl,-rpath,"$TMP"
 
 "$DISASM" --all-modules "$TMP/libstaticmain.so" -o "$TMP/all.json"
-all=$("$BIN" export --static --static-graph "$TMP/all.json" 2>/dev/null)
+all=$("$EXPORT" --static --static-graph "$TMP/all.json" 2>/dev/null)
 printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
 printf '%s\n' "$all" | grep -qx "== $TMP/libstaticdep.so =="
 printf '%s\n' "$all" | grep -qx 'dep_leaf'
 
 # The filter applies per module; dependencies without a match are skipped.
-all=$("$BIN" export --static --static-graph "$TMP/all.json" \
+all=$("$EXPORT" --static --static-graph "$TMP/all.json" \
     --root-scope 'main_root' 2>/dev/null)
 printf '%s\n' "$all" | grep -qx "== $TMP/libstaticmain.so =="
 ! printf '%s\n' "$all" | grep -q "== $TMP/libstaticdep.so =="
@@ -551,41 +575,41 @@ if "$DISASM" --format tsv "$TMP/simple" >/dev/null 2>&1; then
     exit 1
 fi
 
-if "$BIN" export --static >/dev/null 2>&1; then
+if "$EXPORT" --static >/dev/null 2>&1; then
     echo "expected export --static without facts to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/simple.json" "$TMP/simple" \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" "$TMP/simple" \
         >/dev/null 2>&1; then
     echo "expected a positional MODULE with --static to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/simple.json" \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" \
         --input trace.log >/dev/null 2>&1; then
     echo "expected --input with --static to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/simple.json" --otel \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" --otel \
         >/dev/null 2>&1; then
     echo "expected --static --otel to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/simple.json" \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" \
         --all-modules >/dev/null 2>&1; then
     echo "expected --all-modules with export to fail" >&2
     exit 1
 fi
-if "$BIN" export --otel --input trace.log --output out.json \
+if "$EXPORT" --otel --input trace.log --output out.json \
         --static-graph "$TMP/simple.json" >/dev/null 2>&1; then
     echo "expected --static-graph with --otel to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/simple.json" \
+if "$EXPORT" --static --static-graph "$TMP/simple.json" \
         --exclude 'C*' >/dev/null 2>&1; then
     echo "expected --exclude with --static to fail" >&2
     exit 1
 fi
-if "$BIN" export --static --static-graph "$TMP/notelf" \
+if "$EXPORT" --static --static-graph "$TMP/notelf" \
         >/dev/null 2>&1; then
     echo "expected malformed facts to fail" >&2
     exit 1
@@ -593,63 +617,93 @@ fi
 printf '%s\n' \
     '{"format":"callgraph-static-graph","version":9,"modules":[]}' \
     > "$TMP/future.json"
-if "$BIN" export --static --static-graph "$TMP/future.json" \
+if "$EXPORT" --static --static-graph "$TMP/future.json" \
         >/dev/null 2>&1; then
     echo "expected an unsupported facts version to fail" >&2
     exit 1
 fi
 
 echo "== ret mode requires facts =="
-if "$BIN" run --return-mode=ret --dry-run -- "$TMP/simple" \
+if "$RUN" --return-mode=ret --dry-run -- "$TMP/simple" \
         >/dev/null 2>"$TMP/ret.err"; then
     echo "expected --return-mode=ret without facts to fail" >&2
     exit 1
 fi
 grep -q -- '--return-mode=ret requires --static-graph' "$TMP/ret.err"
-"$BIN" run --return-mode=ret --static-graph "$TMP/simple.json" \
+"$RUN" --return-mode=ret --static-graph "$TMP/simple.json" \
     --dry-run -- "$TMP/simple" >/dev/null 2>&1
 
 echo "== callgraph.sh =="
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" disasm "$TMP/simple" -o "$TMP/wrapper.json"
 grep -q '"format":"callgraph-static-graph"' "$TMP/wrapper.json"
 
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --static --graph-in "$TMP/wrapper.json" \
     "$TMP/simple" >"$TMP/wrapper.txt" 2>/dev/null
 grep -qx 'main' "$TMP/wrapper.txt"
 
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --static "$TMP/simple" >"$TMP/wrapper2.txt" 2>/dev/null
 cmp "$TMP/wrapper.txt" "$TMP/wrapper2.txt"
 
-if CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+if CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
         "$WRAPPER" export --static --no-graph "$TMP/simple" \
         >/dev/null 2>&1; then
     echo "expected --no-graph static export without facts to fail" >&2
     exit 1
 fi
 
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" run --dry-run -- "$TMP/simple" >/dev/null 2>&1
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" run --no-graph --dry-run -- "$TMP/simple" >/dev/null 2>&1
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" run --trace-depth 1 --dry-run -- "$TMP/simple" \
     >"$TMP/wrapper-dry.txt" 2>"$TMP/wrapper-dry.err"
 grep -q 'main' "$TMP/wrapper-dry.txt"
 # --graph-in must be inserted before the "--" separator, not after it.
-CALLGRAPH="$CALLGRAPH_BIN" CALLGRAPH_DISASM="$DISASM_BIN" \
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" run --graph-in "$TMP/wrapper.json" --trace-depth 1 \
     --dry-run -- "$TMP/simple" >"$TMP/wrapper-dry2.txt" 2>/dev/null
 cmp "$TMP/wrapper-dry.txt" "$TMP/wrapper-dry2.txt"
+
+echo "== callgraph.sh: help and version are side-effect free =="
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" --help | grep -q 'callgraph.sh run'
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --help | grep -q 'callgraph-run \[options\]'
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" attach --help | grep -q 'callgraph-attach \[options\]'
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --otel --help | grep -q -- '--endpoint'
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --static --help | grep -q -- '--static-graph'
+CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --static --version | grep -q '^callgraph-export '
 
 echo "== callgraph.sh: resolves its real path =="
 # A symlinked wrapper must find the binaries next to the real script, not
 # next to the link.
 mkdir -p "$TMP/install" "$TMP/link" "$TMP/broken"
 cp "$WRAPPER" "$TMP/install/callgraph.sh"
-ln -s "$CALLGRAPH_BIN" "$TMP/install/callgraph"
+ln -s "$RUN" "$TMP/install/callgraph-run"
+ln -s "$ATTACH" "$TMP/install/callgraph-attach"
+ln -s "$EXPORT" "$TMP/install/callgraph-export"
 ln -s "$DISASM_BIN" "$TMP/install/callgraph-disasm"
 ln -s ../install/callgraph.sh "$TMP/link/callgraph.sh"
 
@@ -661,12 +715,16 @@ grep -q '"format":"callgraph-static-graph"' "$TMP/self.json"
     cd "$TMP" || exit 1
     PATH="$TMP/link:$PATH" callgraph.sh --version >"$TMP/self-version.txt"
 )
-grep -q '^callgraph ' "$TMP/self-version.txt"
+grep -q '^callgraph-run ' "$TMP/self-version.txt"
+grep -q '^callgraph-attach ' "$TMP/self-version.txt"
+grep -q '^callgraph-export ' "$TMP/self-version.txt"
 grep -q '^callgraph-disasm ' "$TMP/self-version.txt"
 
 # A missing sibling is reported against the real directory.
 cp "$WRAPPER" "$TMP/broken/callgraph.sh"
-ln -s "$CALLGRAPH_BIN" "$TMP/broken/callgraph"
+ln -s "$RUN" "$TMP/broken/callgraph-run"
+ln -s "$ATTACH" "$TMP/broken/callgraph-attach"
+ln -s "$EXPORT" "$TMP/broken/callgraph-export"
 if "$TMP/broken/callgraph.sh" disasm "$TMP/simple" \
         >/dev/null 2>"$TMP/broken.err"; then
     echo "expected a missing callgraph-disasm to fail" >&2
@@ -680,7 +738,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "== trace simple =="
-"$BIN" run -o "$TMP/simple.trace" --regex \
+"$RUN" -o "$TMP/simple.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/simple.err"
 grep -Eq '^[0-9]+\.[0-9]{9} [0-9]+ : 0 -> main' "$TMP/simple.trace"
@@ -692,13 +750,13 @@ grep -q ' : 0 <- main' "$TMP/simple.trace"
 grep -q '0 lost' "$TMP/simple.err"
 
 echo "== ingest sampling and log rate limit =="
-"$BIN" run -o "$TMP/ingest.trace" --ingest-sample-rate 0 --regex \
+"$RUN" -o "$TMP/ingest.trace" --ingest-sample-rate 0 --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/ingest.err"
 test ! -s "$TMP/ingest.trace"
 grep -q 'ingest-sampled out 1 root trace(s)' "$TMP/ingest.err"
 
-"$BIN" run --log-rate-limit 1 --histogram --regex \
+"$RUN" --log-rate-limit 1 --histogram --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >"$TMP/limited.trace" 2>"$TMP/limited.err"
 test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited.trace")" -lt 8
@@ -707,14 +765,14 @@ grep -Eq 'by rate-limit total \(user [1-9][0-9]*, kernel 0\)' "$TMP/limited.err"
 grep -q '^Histograms:$' "$TMP/limited.trace"
 
 # File output is not rate-limited, even when the option is present.
-"$BIN" run --log-rate-limit 1 -o "$TMP/limited-file.trace" --regex \
+"$RUN" --log-rate-limit 1 -o "$TMP/limited-file.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/limited-file.err"
 ! grep -q 'by rate-limit' "$TMP/limited-file.err"
 test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited-file.trace")" -ge 8
 
 # Kernel lines use a separate bucket and are counted separately.
-"$BIN" run --kernel --sched --futex --io --log-rate-limit 1 \
+"$RUN" --kernel --sched --futex --io --log-rate-limit 1 \
     --regex --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" > "$TMP/kernel-limited.trace" 2> "$TMP/kernel-limited.err"
 grep -q 'suppressed [1-9][0-9]* event line(s) by rate-limit total' \
@@ -741,7 +799,7 @@ int main()
 EOF
 g++ -O0 -g -o "$TMP/rate_slow" "$TMP/rate_slow.cpp"
 if command -v timeout >/dev/null 2>&1; then
-    timeout -s INT 7 "$BIN" run --kernel --sched --log-rate-limit 1 --regex \
+    timeout -s INT 7 "$RUN" --kernel --sched --log-rate-limit 1 --regex \
         --root-scope '^(main|tick[(]int[)])$' -- "$TMP/rate_slow" \
         > "$TMP/rate-slow.trace" 2> "$TMP/rate-slow.err" || true
     grep -q 'event line(s) by rate-limit since last report' "$TMP/rate-slow.err"
@@ -753,7 +811,7 @@ else
 fi
 
 echo "== kernel events: scheduler, futex, I/O =="
-"$BIN" run --kernel --sched --futex --io \
+"$RUN" --kernel --sched --futex --io \
     -o "$TMP/kernel.trace" --regex \
     --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel.err"
@@ -765,7 +823,7 @@ grep -q '@IO fsync_begin' "$TMP/kernel.trace"
 grep -q '@IO fsync_end' "$TMP/kernel.trace"
 
 echo "== kernel events: per-frame histograms =="
-"$BIN" run --histogram --kernel --sched --futex --io \
+"$RUN" --histogram --kernel --sched --futex --io \
     -o "$TMP/kernel-hist.trace" --regex \
     --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-hist.err"
@@ -776,7 +834,7 @@ grep -Eq '^     (@futex|@fsync|sched\.(off_cpu|runqueue))$' \
 grep -Eq '^       calls=[1-9][0-9]*  total=' "$TMP/kernel-hist.trace"
 
 echo "== kernel events ignore trace depth =="
-"$BIN" run --trace-depth 0 --kernel --sched --futex --io \
+"$RUN" --trace-depth 0 --kernel --sched --futex --io \
     -o "$TMP/kernel-tdepth.trace" --regex \
     --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-tdepth.err"
@@ -785,7 +843,7 @@ grep -q '@FUTEX wait_begin' "$TMP/kernel-tdepth.trace"
 grep -q '@IO fsync_begin' "$TMP/kernel-tdepth.trace"
 
 echo "== kernel events: memory and network =="
-"$BIN" run --kernel --memory --network \
+"$RUN" --kernel --memory --network \
     -o "$TMP/kernel-mm.trace" --regex \
     --root-scope '^(main|memory_work[(][)]|network_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-mm.err"
@@ -797,7 +855,7 @@ grep -q '@NET sendto_end' "$TMP/kernel-mm.trace"
 
 echo "== kernel preset scopes =="
 preset_include='^(main|fsync_work[(][)]|memory_work[(][)]|network_work[(][)])$'
-"$BIN" run --kernel --preset latency -o "$TMP/preset-latency.trace" \
+"$RUN" --kernel --preset latency -o "$TMP/preset-latency.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-latency.err"
 grep -q '@SCHED switch' "$TMP/preset-latency.trace"
@@ -807,14 +865,14 @@ grep -q '@NET socket_begin' "$TMP/preset-latency.trace"
 ! grep -q '@BLOCK' "$TMP/preset-latency.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-latency.err"
 
-"$BIN" run --kernel --preset proxy -o "$TMP/preset-net.trace" \
+"$RUN" --kernel --preset proxy -o "$TMP/preset-net.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-net.err"
 grep -q '@NET socket_begin' "$TMP/preset-net.trace"
 ! grep -q '@BLOCK' "$TMP/preset-net.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-net.err"
 
-"$BIN" run --kernel --preset storage -o "$TMP/preset-storage.trace" \
+"$RUN" --kernel --preset storage -o "$TMP/preset-storage.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-storage.err"
 grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
@@ -822,7 +880,7 @@ grep -q '@IO fsync_begin' "$TMP/preset-storage.trace"
 ! grep -q '@BLOCK' "$TMP/preset-storage.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-storage.err"
 
-"$BIN" run --kernel --preset computation \
+"$RUN" --kernel --preset computation \
     -o "$TMP/preset-computation.trace" --regex \
     --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-computation.err"
@@ -831,7 +889,7 @@ grep -q '@MM page_fault' "$TMP/preset-computation.trace"
 ! grep -q '@IO' "$TMP/preset-computation.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-computation.err"
 
-"$BIN" run --kernel --preset full -o "$TMP/preset-full.trace" \
+"$RUN" --kernel --preset full -o "$TMP/preset-full.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-full.err"
 grep -q '@MM page_fault' "$TMP/preset-full.trace"
@@ -839,14 +897,14 @@ grep -q '@NET socket_begin' "$TMP/preset-full.trace"
 ! grep -q '@BLOCK' "$TMP/preset-full.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-full.err"
 
-"$BIN" run --kernel --preset extended -o "$TMP/preset-extended.trace" \
+"$RUN" --kernel --preset extended -o "$TMP/preset-extended.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-extended.err"
 grep -q '@MM page_fault' "$TMP/preset-extended.trace"
 grep -q '@NET socket_begin' "$TMP/preset-extended.trace"
 grep -q 'block tracepoints are global' "$TMP/preset-extended.err"
 
-"$BIN" run --kernel --block -o "$TMP/preset-block-only.trace" \
+"$RUN" --kernel --block -o "$TMP/preset-block-only.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-block-only.err"
 grep -q 'block tracepoints are global' "$TMP/preset-block-only.err"
@@ -855,7 +913,7 @@ grep -q 'block tracepoints are global' "$TMP/preset-block-only.err"
 ! grep -q '@NET' "$TMP/preset-block-only.trace"
 ! grep -q '@MM' "$TMP/preset-block-only.trace"
 
-"$BIN" run --kernel --block --io --network \
+"$RUN" --kernel --block --io --network \
     -o "$TMP/preset-combined.trace" --regex \
     --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-combined.err"
@@ -866,7 +924,7 @@ grep -q '@NET socket_begin' "$TMP/preset-combined.trace"
 ! grep -q '@MM' "$TMP/preset-combined.trace"
 
 echo "== OTLP native file export =="
-"$BIN" run -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
+"$RUN" -T --exporter otlp-json --export-file "$TMP/live.json" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/live.err"
 grep -q 'OTLP .* span(s) exported' "$TMP/live.err"
@@ -892,7 +950,7 @@ assert attributes["callgraph.module"]["stringValue"] == "simple"
 PY
 fi
 
-"$BIN" run -T --exporter otlp-json --export-file "$TMP/live-complete.json" \
+"$RUN" -T --exporter otlp-json --export-file "$TMP/live-complete.json" \
     --complete-traces --outlier-latency-quantile 0.99 --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>"$TMP/live-complete.err"
@@ -900,7 +958,7 @@ grep -q 'trace buffer: 1 completed' "$TMP/live-complete.err"
 grep -q 'callgraph.quantile' "$TMP/live-complete.json"
 
 echo "== OTLP kernel spans =="
-"$BIN" run -T --kernel --io --sched --memory \
+"$RUN" -T --kernel --io --sched --memory \
     --exporter otlp-json --export-file "$TMP/kernel-spans.json" --regex \
     --root-scope '^(main|fsync_work[(][)]|memory_work[(][)]|lock_work[(][)]|work[(]int[)]|network_work[(][)])$' \
     -- "$TMP/kernel" >/dev/null 2>"$TMP/kernel-spans.err"
@@ -931,8 +989,8 @@ PY
 fi
 
 echo "== OTLP/HTTP protobuf export =="
-if command -v python3 >/dev/null 2>&1 && "$BIN" --version | grep -q 'otlp protobuf: yes'; then
-    python3 - "$BIN" "$TMP/simple" <<'PY'
+if command -v python3 >/dev/null 2>&1 && "$RUN" --version | grep -q 'otlp protobuf: yes'; then
+    python3 - "$RUN" "$TMP/simple" <<'PY'
 import http.server, subprocess, sys, threading, time
 
 binary, target = sys.argv[1:3]
@@ -957,7 +1015,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 port = server.server_port
 result = subprocess.run(
-    [binary, "run", "-T",
+    [binary, "-T",
      "--exporter", "otlp-http",
      "--endpoint", f"http://127.0.0.1:{port}",
      "--regex", "--root-scope", "^(main|C[(]int[)])$", "--", target],
@@ -990,7 +1048,7 @@ g++ -O0 -g -o "$TMP/attach_target" "$TMP/attach_target.cpp"
 "$TMP/attach_target" &
 attach_pid=$!
 sleep 0.2
-"$BIN" attach -p "$attach_pid" \
+"$ATTACH" -p "$attach_pid" \
     --exporter otlp-json --export-file "$TMP/attach.json" \
     --service-name attach-test --regex \
     --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
@@ -1003,8 +1061,8 @@ grep -q '"name":"worker(int)"' "$TMP/attach.json"
 
 echo "== OTLP complete traces =="
 if command -v python3 >/dev/null 2>&1 &&
-   "$BIN" --version | grep -q 'otlp protobuf: yes' &&
-   "$BIN" --version | grep -q 'otlp http: yes'; then
+   "$RUN" --version | grep -q 'otlp protobuf: yes' &&
+   "$RUN" --version | grep -q 'otlp http: yes'; then
     cat > "$TMP/complete_target.cpp" <<'EOF'
 #include <unistd.h>
 __attribute__((noinline)) int child(int x) { return x + 1; }
@@ -1016,7 +1074,7 @@ __attribute__((noinline)) int worker(int x) {
 int main() { sleep(2); return worker(1); }
 EOF
     g++ -O0 -g -o "$TMP/complete_target" "$TMP/complete_target.cpp"
-    python3 - "$BIN" "$TMP/complete_target" <<'PY'
+    python3 - "$ATTACH" "$TMP/complete_target" <<'PY'
 import http.server, subprocess, sys, threading, time
 
 binary, target = sys.argv[1:3]
@@ -1041,7 +1099,7 @@ try:
     time.sleep(0.2)
     started = time.time()
     result = subprocess.run(
-        [binary, "attach", "-p", str(proc.pid), "--complete-traces",
+        [binary, "-p", str(proc.pid), "--complete-traces",
          "--exporter", "otlp-http",
          "--endpoint", f"http://127.0.0.1:{server.server_port}",
          "--regex", "--root-scope", "^(main|worker[(]int[)]|child[(]int[)])$"],
@@ -1081,7 +1139,7 @@ g++ -O0 -g -o "$TMP/attach_kernel_target" "$TMP/attach_kernel_target.cpp"
 "$TMP/attach_kernel_target" &
 attach_pid=$!
 sleep 0.2
-"$BIN" attach -p "$attach_pid" --kernel -o "$TMP/attach-default.trace" \
+"$ATTACH" -p "$attach_pid" --kernel -o "$TMP/attach-default.trace" \
     --regex --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-default.err"
 wait "$attach_pid" || true
@@ -1091,7 +1149,7 @@ grep -q 'kernel events:' "$TMP/attach-default.err"
 "$TMP/attach_kernel_target" &
 attach_pid=$!
 sleep 0.2
-"$BIN" attach -p "$attach_pid" --kernel --preset storage --block \
+"$ATTACH" -p "$attach_pid" --kernel --preset storage --block \
     -o "$TMP/attach-storage.trace" --regex \
     --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-storage.err"
@@ -1101,7 +1159,7 @@ grep -q 'block tracepoints are global' "$TMP/attach-storage.err"
 "$TMP/attach_kernel_target" &
 attach_pid=$!
 sleep 0.2
-"$BIN" attach -p "$attach_pid" --kernel --block \
+"$ATTACH" -p "$attach_pid" --kernel --block \
     -o "$TMP/attach-block-only.trace" --regex \
     --root-scope '^(worker[(]int[)]|leaf[(]int[)])$' \
     >/dev/null 2>"$TMP/attach-block-only.err"
@@ -1113,12 +1171,12 @@ grep -q 'block tracepoints are global' "$TMP/attach-block-only.err"
 ! grep -q '@MM' "$TMP/attach-block-only.trace"
 
 echo "== wall-clock timestamps =="
-"$BIN" run -T -o "$TMP/wall.trace" --regex \
+"$RUN" -T -o "$TMP/wall.trace" --regex \
     --root-scope '^(main|C[(]int[)])$' -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}[+-][0-9]{2}:[0-9]{2} [0-9]+ : 0 -> main' "$TMP/wall.trace"
 
 echo "== indentation =="
-"$BIN" run --indent 2 -o "$TMP/indent.trace" --regex \
+"$RUN" --indent 2 -o "$TMP/indent.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -Eq ' : 0 -> main$' "$TMP/indent.trace"
@@ -1151,7 +1209,7 @@ int main()
 }
 EOF
     g++ -O0 -g -o "$TMP/args" "$TMP/args.cpp"
-    "$BIN" run --show-args -o "$TMP/args.trace" --regex \
+    "$RUN" --show-args -o "$TMP/args.trace" --regex \
         --root-scope '^(main|many[(]int, int, int, int, int, int, int[)]|ptr[(]char const[*], bool, char[)])$' \
         -- "$TMP/args" >/dev/null 2>/dev/null
     grep -q ' : 1 -> many(int, int, int, int, int, int, int) (a=1, b=2, c=3, d=4, e=5, f=6, g=7)' "$TMP/args.trace"
@@ -1159,7 +1217,7 @@ EOF
     grep -q ' : 1 <- many(int, int, int, int, int, int, int)$' "$TMP/args.trace"
 
     echo "== function arguments with external debug info =="
-    "$BIN" run --show-args -o "$TMP/detached-args.trace" --regex \
+    "$RUN" --show-args -o "$TMP/detached-args.trace" --regex \
         --root-scope '^(main|A[(]int[)])$' -- "$TMP/detached" \
         >/dev/null 2>/dev/null
     grep -q 'A(int) (x=3)' "$TMP/detached-args.trace"
@@ -1168,7 +1226,7 @@ else
 fi
 
 echo "== trace recursive =="
-"$BIN" run -o "$TMP/rec.trace" --regex \
+"$RUN" -o "$TMP/rec.trace" --regex \
     --root-scope '^(main|factorial[(]int[)])$' -- "$TMP/recursive" \
     >/dev/null 2>/dev/null
 grep -q ' : 1 -> factorial(int)' "$TMP/rec.trace"
@@ -1177,7 +1235,7 @@ grep -q ' : 3 -> factorial(int)' "$TMP/rec.trace"
 grep -q ' : 3 <- factorial(int)' "$TMP/rec.trace"
 
 echo "== trace multithreaded =="
-"$BIN" run -o "$TMP/mt.trace" --regex \
+"$RUN" -o "$TMP/mt.trace" --regex \
     --root-scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
     >/dev/null 2>/dev/null
 grep -q 'worker(int)' "$TMP/mt.trace"
@@ -1185,7 +1243,7 @@ grep -q 'leaf(int)' "$TMP/mt.trace"
 awk '{print $2}' "$TMP/mt.trace" | sort -u | wc -l | grep -qx '3'
 
 echo "== max depth =="
-"$BIN" run -o "$TMP/depth.trace" --max-depth 1 --regex \
+"$RUN" -o "$TMP/depth.trace" --max-depth 1 --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q ' : 2 ' "$TMP/depth.trace"
@@ -1193,20 +1251,20 @@ grep -q ' : 1 -> C(int)' "$TMP/depth.trace"
 
 echo "== trace depth =="
 # The default is unlimited.
-"$BIN" run -o "$TMP/tdepth-default.trace" --regex \
+"$RUN" -o "$TMP/tdepth-default.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q ' : 2 ' "$TMP/tdepth-default.trace"
 
 # 0 is explicit root-only.
-"$BIN" run --trace-depth 0 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 0 --static-graph "$TMP/simple.json" \
     -o "$TMP/tdepth-0.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q ' : 1 ' "$TMP/tdepth-0.trace"
 
 # 1 keeps the root and one level.
-"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 1 --static-graph "$TMP/simple.json" \
     -o "$TMP/tdepth-1.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
@@ -1214,14 +1272,14 @@ grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
 ! grep -q ' : 2 ' "$TMP/tdepth-1.trace"
 
 # Without --root-scope the same rule counts from global depth 0.
-"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 1 --static-graph "$TMP/simple.json" \
     -o "$TMP/tdepth-global.trace" --regex \
     -- "$TMP/simple" >/dev/null 2>/dev/null
 ! grep -Eq ' : ([2-9]|[1-9][0-9]+) ' "$TMP/tdepth-global.trace"
 
 # An excluded node is skipped and its descendants splice up: B is absent,
 # and A appears at depth 2 under C.
-"$BIN" run --trace-depth 2 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 2 --static-graph "$TMP/simple.json" \
     -o "$TMP/tdepth-exclude.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' \
     --exclude '^B[(]int[)]$' -- "$TMP/simple" >/dev/null 2>/dev/null
@@ -1229,20 +1287,20 @@ grep -q ' : 1 -> C(int)' "$TMP/tdepth-1.trace"
 grep -q ' : 2 -> A(int)' "$TMP/tdepth-exclude.trace"
 
 # Deeper user frames are absent from the histogram too.
-"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 1 --static-graph "$TMP/simple.json" \
     --histogram -o "$TMP/tdepth-hist.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 ! grep -q '^2\. ' "$TMP/tdepth-hist.trace"
 
-if "$BIN" run --trace-depth -1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+if "$RUN" --trace-depth -1 --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
     echo "expected negative --trace-depth to fail" >&2
     exit 1
 fi
 
 echo "== root scope and static pruning =="
 # --root-scope selects roots; descendants outside the pattern are traced.
-"$BIN" run -o "$TMP/rootdesc.trace" --regex --root-scope '^main$' \
+"$RUN" -o "$TMP/rootdesc.trace" --regex --root-scope '^main$' \
     -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -q ' : 0 -> main' "$TMP/rootdesc.trace"
 grep -q ' : 1 -> C(int)' "$TMP/rootdesc.trace"
@@ -1250,7 +1308,7 @@ grep -q ' : 2 -> B(int)' "$TMP/rootdesc.trace"
 grep -q ' : 3 -> A(int)' "$TMP/rootdesc.trace"
 
 # N=1 prunes depth-2 descendants and reports the pruning decision.
-"$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 1 --static-graph "$TMP/simple.json" \
     -o "$TMP/rootprune1.trace" --regex \
     --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>"$TMP/rootprune1.err"
 grep -q ' : 1 -> C(int)' "$TMP/rootprune1.trace"
@@ -1258,13 +1316,13 @@ grep -q ' : 1 -> C(int)' "$TMP/rootprune1.trace"
 grep -q 'static prune: kept' "$TMP/rootprune1.err"
 
 # Dry-run applies the same pruning.
-dry=$("$BIN" run --trace-depth 1 --static-graph "$TMP/simple.json" \
+dry=$("$RUN" --trace-depth 1 --static-graph "$TMP/simple.json" \
     --dry-run --regex --root-scope '^main$' -- "$TMP/simple" 2>/dev/null)
 ! echo "$dry" | grep -q 'B(int)'
 ! echo "$dry" | grep -q 'A(int)'
 
 # N=2 keeps the depth-2 functions but still hides depth 3 at runtime.
-"$BIN" run --trace-depth 2 --static-graph "$TMP/simple.json" \
+"$RUN" --trace-depth 2 --static-graph "$TMP/simple.json" \
     -o "$TMP/rootprune2.trace" --regex \
     --root-scope '^main$' -- "$TMP/simple" >/dev/null 2>/dev/null
 grep -q ' : 2 -> B(int)' "$TMP/rootprune2.trace"
@@ -1290,13 +1348,13 @@ int main()
 EOF
 g++ -O0 -g -o "$TMP/indirect" "$TMP/indirect.cpp"
 "$DISASM" "$TMP/indirect" -o "$TMP/indirect.json"
-"$BIN" run --trace-depth 1 --static-graph "$TMP/indirect.json" --dry-run \
+"$RUN" --trace-depth 1 --static-graph "$TMP/indirect.json" --dry-run \
     --root-scope 'root*' \
     -- "$TMP/indirect" > "$TMP/indirect.direct" 2>/dev/null
 grep -q 'direct_callee(int)' "$TMP/indirect.direct"
 ! grep -q 'indirect_callee(int)' "$TMP/indirect.direct"
 # Omitting --trace-depth disables pruning, so the indirect callee is included.
-"$BIN" run --dry-run --root-scope 'root*' -- "$TMP/indirect" \
+"$RUN" --dry-run --root-scope 'root*' -- "$TMP/indirect" \
     > "$TMP/indirect.unlimited" 2>/dev/null
 grep -q 'indirect_callee(int)' "$TMP/indirect.unlimited"
 
@@ -1337,7 +1395,7 @@ EOF
     as -o "$TMP/jcc.o" "$TMP/jcc.s"
     ld -static -o "$TMP/jcc" "$TMP/jcc.o"
     "$DISASM" "$TMP/jcc" -o "$TMP/jcc.json"
-    "$BIN" run --trace-depth 1 --static-graph "$TMP/jcc.json" --dry-run \
+    "$RUN" --trace-depth 1 --static-graph "$TMP/jcc.json" --dry-run \
         -- "$TMP/jcc" > "$TMP/jcc.direct" 2>"$TMP/jcc.err"
     if grep -q 'static prune: kept' "$TMP/jcc.err"; then
         ! grep -q 'cold' "$TMP/jcc.direct"
@@ -1358,14 +1416,14 @@ g++ -O0 -g -o "$TMP/attach_slow" "$TMP/attach_slow.cpp"
 "$TMP/attach_slow" &
 attach_pid=$!
 sleep 0.1
-"$BIN" attach --dry-run -p "$attach_pid" --trace-depth 1 --regex \
+"$ATTACH" --dry-run -p "$attach_pid" --trace-depth 1 --regex \
     >/dev/null 2>"$TMP/attach-none.err" || true
 wait "$attach_pid" || true
 grep -q 'static call-graph analysis unavailable' "$TMP/attach-none.err"
 grep -q 'Instrumenting 0 functions' "$TMP/attach-none.err"
 
 echo "== latency histogram =="
-"$BIN" run --histogram -o "$TMP/hist.trace" --regex \
+"$RUN" --histogram -o "$TMP/hist.trace" --regex \
     --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
     >/dev/null 2>/dev/null
 grep -q '^=== thread [0-9][0-9]* ===$' "$TMP/hist.trace"
@@ -1390,14 +1448,14 @@ hist_line=$(grep -n '^Histograms:$' "$TMP/hist.trace" | head -1 | cut -d: -f1)
 ! grep -q '^=== thread ' "$TMP/simple.trace"
 
 echo "== latency histogram: one pair per root =="
-"$BIN" run --histogram -o "$TMP/hist_mt.trace" --regex \
+"$RUN" --histogram -o "$TMP/hist_mt.trace" --regex \
     --root-scope '^(main|worker[(]int[)]|leaf[(]int[)])$' -- "$TMP/multithread" \
     >/dev/null 2>/dev/null
 sections=$(grep -c '^=== thread ' "$TMP/hist_mt.trace" || true)
 [ "$sections" -ge 2 ]
 
 echo "== latency histogram: tree and histograms paired per root =="
-"$BIN" run --histogram -o "$TMP/hist_roots.trace" --regex \
+"$RUN" --histogram -o "$TMP/hist_roots.trace" --regex \
     --root-scope '^(task_a[(]int[)]|task_b[(]int[)]|leaf[(]int[)])$' -- "$TMP/tworoots" \
     >/dev/null 2>/dev/null
 [ "$(grep -c '^Tree:$' "$TMP/hist_roots.trace")" -eq 2 ]
@@ -1410,7 +1468,7 @@ echo "== latency histogram: tree and histograms paired per root =="
 
 echo "== exception-safe return mode =="
 if "$DISASM" "$TMP/exceptions" -o "$TMP/exceptions.json" 2>/dev/null; then
-    "$BIN" run --return-mode ret --static-graph "$TMP/exceptions.json" \
+    "$RUN" --return-mode ret --static-graph "$TMP/exceptions.json" \
         -o "$TMP/exc.trace" --regex \
         --root-scope '^(main|outer[(][)]|middle[(][)]|inner[(][)])$' -- "$TMP/exceptions" \
         >/dev/null 2>"$TMP/exc.err"
@@ -1423,7 +1481,7 @@ else
 fi
 
 echo "== longjmp resynchronisation =="
-"$BIN" run -o "$TMP/lj.trace" --regex \
+"$RUN" -o "$TMP/lj.trace" --regex \
     --root-scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
     >/dev/null 2>"$TMP/lj.err"
 grep -q ' : 0 -> main' "$TMP/lj.trace"
@@ -1437,7 +1495,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/lj.err"
 
 # --no-rsp-resync disables that repair: the abandoned frames accumulate, so
 # the error path starts deeper on every iteration.
-"$BIN" run --no-rsp-resync -o "$TMP/lj_norsp.trace" --regex \
+"$RUN" --no-rsp-resync -o "$TMP/lj_norsp.trace" --regex \
     --root-scope '^(main|error_path[(][)]|deep[(]int[)])$' -- "$TMP/longjmp" \
     >/dev/null 2>"$TMP/lj_norsp.err"
 awk '$5 == "->" && $6 == "error_path()" {
@@ -1447,7 +1505,7 @@ awk '$5 == "->" && $6 == "error_path()" {
      END { exit (n == 3 && !bad) ? 0 : 1 }' "$TMP/lj_norsp.trace"
 
 echo "== stackful coroutine (ucontext) =="
-"$BIN" run -o "$TMP/uctx.trace" --regex \
+"$RUN" -o "$TMP/uctx.trace" --regex \
     --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
     >/dev/null 2>"$TMP/uctx.err"
 # The fiber runs on a separate stack.  Switching back to the main stack looks
@@ -1458,7 +1516,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
 
 # --no-rsp-resync keeps the suspended frame, so every leaf nests under
 # fiber_body.
-"$BIN" run --no-rsp-resync -o "$TMP/uctx_norsp.trace" --regex \
+"$RUN" --no-rsp-resync -o "$TMP/uctx_norsp.trace" --regex \
     --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' -- "$TMP/ucontext" \
     >/dev/null 2>"$TMP/uctx_norsp.err"
 [ "$(grep -c ' : 2 -> leaf()' "$TMP/uctx_norsp.trace")" -eq 3 ]
@@ -1466,7 +1524,7 @@ grep -Eq '[1-9][0-9]* desync' "$TMP/uctx.err"
 # uretprobes lose the fiber's return across the switch, so ret mode is needed
 # for complete pairing.  Together with --no-rsp-resync nothing is desynced.
 if "$DISASM" "$TMP/ucontext" -o "$TMP/ucontext.json" 2>/dev/null; then
-    "$BIN" run --return-mode ret --static-graph "$TMP/ucontext.json" \
+    "$RUN" --return-mode ret --static-graph "$TMP/ucontext.json" \
         --no-rsp-resync -o "$TMP/uctx_ret.trace" \
         --regex --root-scope '^(main|fiber_body[(][)]|leaf[(][)])$' \
         -- "$TMP/ucontext" >/dev/null 2>"$TMP/uctx_ret.err"
@@ -1491,7 +1549,7 @@ int main() {
 EOF
 g++ -O0 -g -shared -fPIC -o "$TMP/libfoo.so" "$TMP/lib.cpp"
 g++ -O0 -g -o "$TMP/use_lib" "$TMP/use_lib.cpp" -L"$TMP" -lfoo -Wl,-rpath,"$TMP"
-"$BIN" run --module 'libfoo.so' -o "$TMP/lib.trace" --regex --root-scope '^foo' \
+"$RUN" --module 'libfoo.so' -o "$TMP/lib.trace" --regex --root-scope '^foo' \
     -- "$TMP/use_lib" >/dev/null 2>/dev/null
 grep -q 'foo(int)' "$TMP/lib.trace"
 grep -q ' <- foo(int)' "$TMP/lib.trace"

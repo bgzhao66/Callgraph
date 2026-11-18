@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -9,6 +10,14 @@ namespace callgraph {
 
 enum class LogLevel { Quiet, Normal, Verbose };
 extern LogLevel g_log_level;
+
+// Set by the signal handler and polled by the collector.
+extern volatile sig_atomic_t g_stop;
+
+// Prefix used by log_* and by the CLI's top-level error reporter.  Defaults to
+// "callgraph"; each executable sets its own name.
+void set_program_name(const char* name);
+const char* program_name();
 
 class Error : public std::runtime_error {
 public:

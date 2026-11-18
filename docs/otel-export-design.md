@@ -387,50 +387,51 @@ attributes. No normal return timestamp is fabricated for an unfinished call.
 
 ```bash
 # Existing human-readable output (default)
-callgraph run -- ./my_app
+callgraph-run -- ./my_app
 
 # OTLP/gRPC to Jaeger on localhost:4317
-callgraph run --exporter otlp -- ./my_app
+callgraph-run --exporter otlp -- ./my_app
 
 # OTLP/HTTP/protobuf to localhost:4318
-callgraph run --exporter otlp-http -- ./my_app
+callgraph-run --exporter otlp-http -- ./my_app
 
 # Explicit endpoint and batching
-callgraph attach -p 12345 \
+callgraph-attach -p 12345 \
     --exporter otlp \
     --endpoint localhost:4317 \
     --batch-size 512 \
     --flush-interval 1000
 
 # Root sampling and filtering
-callgraph run --exporter otlp --sample-rate 0.1 \
+callgraph-run --exporter otlp --sample-rate 0.1 \
     --root-scope 'Database::*' -- ./my_app
 
 # Tail sampling: keep slow traces even with a low baseline sample
-callgraph run --exporter otlp --complete-traces \
+callgraph-run --exporter otlp --complete-traces \
     --sample-rate 0.01 --outlier-latency-quantile 0.99 -- ./my_app
 
 # File/offline paths (complete traces are available for both)
-callgraph run --exporter otlp-json --export-file trace.otlp.json \
+callgraph-run --exporter otlp-json --export-file trace.otlp.json \
     --complete-traces -- ./my_app
-callgraph export --otel --input trace.log --output spans.json --complete-traces
-callgraph export --flame --input trace.log --output stacks.folded
+callgraph-export --otel --input trace.log --output spans.json --complete-traces
+callgraph-export --flame --input trace.log --output stacks.folded
 callgraph-disasm ./app -o facts.json
-callgraph export --static --static-graph facts.json -o cg.txt
+callgraph-export --static --static-graph facts.json -o cg.txt
 ```
 
-The default exporter is stdout. OTLP is explicitly enabled. `callgraph export`
+The default exporter is stdout. OTLP is explicitly enabled. `callgraph-export`
 has three mutually exclusive offline modes: `--otel` emits OTLP/JSON,
 `--flame` emits folded stacks for flamegraph tools, and `--static` renders a
 direct-call tree from facts written by `callgraph-disasm`. `--otel` and
 `--flame` read a text trace through `--input`; `--static` reads a JSON facts
 document through `--static-graph` and takes no positional argument.
 `--batch-size` controls OTLP batching; `--probe-batch-size`
-controls the `uprobe_multi` link batch independently. The unified `--help` page
+controls the `uprobe_multi` link batch independently. `callgraph-export --help`
 has an Offline export options section where `--otel`, `--flame`, and `--static`
 are master entries with their mode-specific options indented beneath them;
 `--input`, `--output`, and the `--static` filters are listed there, and
-`--help` is under General options.
+`--help` is under General options. `callgraph-export --otel|--flame|--static
+--help` narrows the page to that mode and omits the other modes' options.
 
 The facts document is produced by the libopcodes-enabled `callgraph-disasm`
 and lists direct `call` and unconditional `jmp` targets inside one module;
@@ -452,7 +453,7 @@ then select the service in the UI:
 docker run --rm -p 16686:16686 -p 4317:4317 -p 4318:4318 \
     jaegertracing/jaeger:latest
 
-callgraph run --exporter otlp --service-name my_app -- ./my_app
+callgraph-run --exporter otlp --service-name my_app -- ./my_app
 ```
 
 Jaeger shows:

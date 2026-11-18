@@ -54,7 +54,9 @@ resolve_self_dir() {
 }
 
 self_dir=$(resolve_self_dir)
-callgraph=${CALLGRAPH:-"$self_dir/callgraph"}
+callgraph_run=${CALLGRAPH_RUN:-"$self_dir/callgraph-run"}
+callgraph_attach=${CALLGRAPH_ATTACH:-"$self_dir/callgraph-attach"}
+callgraph_export=${CALLGRAPH_EXPORT:-"$self_dir/callgraph-export"}
 callgraph_disasm=${CALLGRAPH_DISASM:-"$self_dir/callgraph-disasm"}
 
 usage() {
@@ -97,10 +99,10 @@ case $1 in
         exit 0
         ;;
     --version)
-        "$callgraph" --version
-        if [[ -x $callgraph_disasm ]]; then
-            "$callgraph_disasm" --version
-        fi
+        "$callgraph_run" --version
+        "$callgraph_attach" --version
+        "$callgraph_export" --version
+        "$callgraph_disasm" --version
         exit 0
         ;;
     run | attach | export | disasm) ;;
@@ -171,6 +173,16 @@ if [[ $mode == disasm ]]; then
     [[ -x $callgraph_disasm ]] || die "callgraph-disasm not found at $callgraph_disasm"
     exec "$callgraph_disasm" "$@"
 fi
+
+# Help and version must not trigger fact generation.  Forward them straight to
+# the mode's own program so it prints its own page.
+help_only=0
+for arg in "$@"; do
+    case $arg in
+        --) break ;;
+        -h | --help | --version) help_only=1 ;;
+    esac
+done
 
 # Scans arguments for tracer flags that need facts.  Sets trace_depth,
 # return_mode, all_modules and user_static_graph.
@@ -249,6 +261,9 @@ generate_facts() {
 facts_path=
 
 if [[ $mode == export ]]; then
+    if ((help_only)); then
+        exec "$callgraph_export" "$@"
+    fi
     scan_flags "$@"
     # Detect the export sub-mode.
     export_static=0
@@ -278,7 +293,7 @@ if [[ $mode == export ]]; then
         done
 
         if ((user_static_graph)); then
-            exec "$callgraph" export "$@"
+            exec "$callgraph_export" "$@"
         fi
 
         if ((no_graph == 0)); then
@@ -315,18 +330,28 @@ if [[ $mode == export ]]; then
                         ;;
                 esac
             done
-            exec "$callgraph" export "${rebuilt[@]}" --static-graph "$facts_path"
+            exec "$callgraph_export" "${rebuilt[@]}" --static-graph "$facts_path"
         fi
     fi
 
-    exec "$callgraph" export "$@"
+    exec "$callgraph_export" "$@"
 fi
 
 # run / attach
 scan_flags "$@"
 
+if [[ $mode == run ]]; then
+    mode_bin=$callgraph_run
+else
+    mode_bin=$callgraph_attach
+fi
+
+if ((help_only)); then
+    exec "$mode_bin" "$@"
+fi
+
 if ((user_static_graph)) || ((no_graph)); then
-    exec "$callgraph" "$mode" "$@"
+    exec "$mode_bin" "$@"
 fi
 
 if [[ -n $graph_in ]]; then
@@ -358,7 +383,7 @@ elif needs_graph; then
     fi
     generate_facts "$module"
 else
-    exec "$callgraph" "$mode" "$@"
+    exec "$mode_bin" "$@"
 fi
 
 if [[ $mode == run ]]; then
@@ -372,7 +397,7 @@ if [[ $mode == run ]]; then
         fi
         final+=("$arg")
     done
-    exec "$callgraph" run "${final[@]}"
+    exec "$callgraph_run" "${final[@]}"
 fi
 
-exec "$callgraph" attach "$@" --static-graph "$facts_path"
+exec "$callgraph_attach" "$@" --static-graph "$facts_path"

@@ -330,7 +330,7 @@ descendants so retained traces keep their full child tree. Source file/line
 attributes come from DWARF; thread names come from
 `/proc/<pid>/task/<tid>/comm` when the PID namespace permits it.
 
-Offline `callgraph export` has three mutually exclusive modes: `--otel` emits
+Offline `callgraph-export` has three mutually exclusive modes: `--otel` emits
 OTLP/JSON, `--flame` emits folded stacks for flamegraph.pl/inferno, and
 `--static` renders a direct-call tree from facts written by
 `callgraph-disasm`. The flame path reuses
@@ -342,7 +342,7 @@ The static path does not read a trace. `callgraph-disasm` resolves the
 module's symbols and disassembles function bodies to find direct `call` and
 unconditional `jmp` edges inside that module; indirect, PLT/external, IFUNC,
 and cross-module targets add no edge. It writes the functions, flags, edges,
-default roots, and `ret` offsets as JSON. `callgraph export --static
+default roots, and `ret` offsets as JSON. `callgraph-export --static
 --static-graph FILE` renders that document: every path is expanded, and a
 repeated function on the current path is cut with `[recursive]`.
 `--root-scope` selects roots per module; otherwise `main`, the ELF entry,

@@ -1029,48 +1029,49 @@ userspace receipt and marked `approximate=true`.
 
 Kernel events are opt-in: `--kernel` is the master switch, and every other
 kernel option is secondary to it. Without `--kernel`, the CLI and output are
-unchanged. `--kernel` alone selects the `latency` preset. In the unified
-`--help` page, `--kernel` appears under the Kernel event options section and
-its family shortcuts and modifiers are indented beneath it.
+unchanged. `--kernel` alone selects the `latency` preset. In the
+`callgraph-run`/`callgraph-attach` `--help` page, `--kernel` appears under the
+Kernel event options section and its family shortcuts and modifiers are
+indented beneath it.
 
 ```text
 # Default scopes (latency preset: sched, futex, io, net syscalls, direct
 # reclaim; no block, page-fault points, or global TCP retransmits)
-callgraph attach -p 4242 --kernel
+callgraph-attach -p 4242 --kernel
 
 # Explicit family combination: block, io, and network only
-callgraph attach -p 4242 --kernel --block --io --network
+callgraph-attach -p 4242 --kernel --block --io --network
 
 # Scheduler only
-callgraph attach -p 4242 --kernel --sched
+callgraph-attach -p 4242 --kernel --sched
 
 # Synchronization
-callgraph attach -p 4242 --kernel --futex
+callgraph-attach -p 4242 --kernel --futex
 
 # Storage syscalls and block layer
-callgraph attach -p 4242 --kernel --io --block
+callgraph-attach -p 4242 --kernel --io --block
 
 # Presets
-callgraph attach -p 4242 --kernel --preset latency
-callgraph attach -p 4242 --kernel --preset proxy
-callgraph attach -p 4242 --kernel --preset storage
-callgraph attach -p 4242 --kernel --preset computation
-callgraph attach -p 4242 --kernel --preset full
-callgraph attach -p 4242 --kernel --preset extended
+callgraph-attach -p 4242 --kernel --preset latency
+callgraph-attach -p 4242 --kernel --preset proxy
+callgraph-attach -p 4242 --kernel --preset storage
+callgraph-attach -p 4242 --kernel --preset computation
+callgraph-attach -p 4242 --kernel --preset full
+callgraph-attach -p 4242 --kernel --preset extended
 
 # Explicit family list
-callgraph attach -p 4242 \
+callgraph-attach -p 4242 \
     --kernel --events sched,futex,io,block,mm
 
 # Follow new threads and child processes
-callgraph attach -p 4242 --kernel --children --sched
+callgraph-attach -p 4242 --kernel --children --sched
 
 # Hardware performance counters
-callgraph attach -p 4242 --pmu cycles,instructions,cache-misses
-callgraph attach -p 4242 --pmu cache-misses --pmu-sampling 100000
+callgraph-attach -p 4242 --pmu cycles,instructions,cache-misses
+callgraph-attach -p 4242 --pmu cache-misses --pmu-sampling 100000
 
 # System-wide kernel events (no user-stack attribution)
-callgraph attach --kernel --system-wide --sched
+callgraph-attach --kernel --system-wide --sched
 ```
 
 | Option | Meaning |
@@ -1310,10 +1311,10 @@ as errors.
 and `unknown_kernel_events`. `--show-args` and the legacy `[args]`
 handling remain function-only.
 
-`callgraph export --otel` replays function and kernel events through the same
+`callgraph-export --otel` replays function and kernel events through the same
 merger/timeline path, so span attributes and kernel child spans match a live
 trace.
-`callgraph export --flame` ignores kernel lines; folded stacks remain
+`callgraph-export --flame` ignores kernel lines; folded stacks remain
 function-only.
 
 `--trace-metadata` records the kernel configuration and discovery results.

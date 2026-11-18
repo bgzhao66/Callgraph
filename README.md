@@ -34,12 +34,12 @@ recompiling them or adding instrumentation.
   latency block.
 - **Export to Jaeger and OTLP.** Native OTLP/gRPC, OTLP/HTTP protobuf, and
   OTLP/JSON output; spans carry source file/line, module/build-id, thread name,
-  optional `--show-args` arguments, and kernel attributes. `callgraph export`
+  optional `--show-args` arguments, and kernel attributes. `callgraph-export`
   converts existing text traces offline.
-- **Visualize with flamegraphs.** `callgraph export --flame` emits folded stacks
+- **Visualize with flamegraphs.** `callgraph-export --flame` emits folded stacks
   for `flamegraph.pl` or `inferno-flamegraph`.
 - **Inspect calls without running.** `callgraph-disasm` writes static facts for
-  an ELF module (or its `DT_NEEDED` closure) and `callgraph export --static`
+  an ELF module (or its `DT_NEEDED` closure) and `callgraph-export --static`
   renders them as a direct-call tree, without linking a disassembler into the
   tracer.
 - **Control overhead and volume.** `--ingest-sample-rate`, `--sample-rate`,
@@ -59,7 +59,7 @@ Typical questions it helps answer:
 
 Direct-call pruning is deliberately predictable: an indirect call site adds no
 static edge, so its possible callees are not instrumented. Omit `--trace-depth`
-when those calls matter. If the call graph cannot be built reliably, `callgraph`
+when those calls matter. If the call graph cannot be built reliably, the tracer
 does not silently instrument everything: it warns and instruments only explicit
 `--root-scope` matches, or none when no roots are given.
 
@@ -81,12 +81,12 @@ The current implementation includes:
 - two return-probe modes: `uretprobe` (default) and `ret` (exception-safe)
 - OTLP export for Jaeger: gRPC (`--exporter otlp`), OTLP/HTTP with
   protobuf (`--exporter otlp-http`), OTLP/JSON file output
-  (`--exporter otlp-json`), and `callgraph export --otel` for existing text
+  (`--exporter otlp-json`), and `callgraph-export --otel` for existing text
   traces
-- folded-stack flamegraph export via `callgraph export --flame`
+- folded-stack flamegraph export via `callgraph-export --flame`
 - static call-graph facts from `callgraph-disasm`, consumed by
-  `callgraph --static-graph` for `--trace-depth`, `--return-mode=ret`, and
-  `callgraph export --static`
+  the tracer programs' `--static-graph` for `--trace-depth`,
+  `--return-mode=ret`, and `callgraph-export --static`
 - correlated kernel event tracing (`--kernel`) with OTel child spans for
   TID-specific syscall, reclaim, scheduler, and page-fault activity
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
@@ -128,11 +128,19 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ```
 
-The build produces `build/callgraph` (tracer, no libopcodes),
-`build/callgraph-disasm` (GPL-3.0-only static facts generator, needs
-libopcodes), and `callgraph.sh` (the orchestration wrapper). Install all three
-together; the wrapper looks for the other two next to its own real path, with
-symlinks resolved. `CALLGRAPH` and `CALLGRAPH_DISASM` override those paths.
+The build produces four programs and a wrapper:
+
+| Path | Role |
+|---|---|
+| `build/callgraph-run` | launch a program and trace it |
+| `build/callgraph-attach` | attach to a running process |
+| `build/callgraph-export` | offline trace conversion and static rendering |
+| `build/callgraph-disasm` | static facts generator (needs libopcodes) |
+| `callgraph.sh` | orchestration wrapper (not built) |
+
+Install them together. The wrapper looks for the programs next to its own real
+path, with symlinks resolved. `CALLGRAPH_RUN`, `CALLGRAPH_ATTACH`,
+`CALLGRAPH_EXPORT`, and `CALLGRAPH_DISASM` override those paths.
 
 On Debian/Ubuntu, Fedora/RHEL/CentOS, Arch, or openSUSE, the dependency
 installer handles the system packages and initializes the libbpf submodule:
@@ -161,78 +169,78 @@ non-excluded function, including possible indirect callees.
 
 ```bash
 # Launch and trace from the first instruction
-sudo ./build/callgraph run -- ./my_app arg1 arg2
+sudo ./build/callgraph-run -- ./my_app arg1 arg2
 
 # Wall-clock timestamps instead of seconds since boot
-sudo ./build/callgraph run -T -- ./my_app
+sudo ./build/callgraph-run -T -- ./my_app
 
 # Indent names by depth (two spaces per level)
-sudo ./build/callgraph run --indent 2 -- ./my_app
+sudo ./build/callgraph-run --indent 2 -- ./my_app
 
 # Show argument values after names (requires DWARF debug info)
-sudo ./build/callgraph run --show-args -- ./my_app
+sudo ./build/callgraph-run --show-args -- ./my_app
 
 # Attach to a running process
-sudo ./build/callgraph attach -p 12345
+sudo ./build/callgraph-attach -p 12345
 
 # List resolved functions without attaching
-./build/callgraph run --dry-run -- ./my_app
+./build/callgraph-run --dry-run -- ./my_app
 
 # Only your code, with full regex syntax
-sudo ./build/callgraph attach -p 12345 --regex \
+sudo ./build/callgraph-attach -p 12345 --regex \
     --root-scope '^(main|Database::)' --exclude 'Database::Debug'
 
 # Exception-using C++ program: avoid uretprobe unwinding breakage
 ./build/callgraph-disasm ./my_app -o facts.json
-sudo ./build/callgraph run --static-graph facts.json --return-mode ret -- ./my_app
+sudo ./build/callgraph-run --static-graph facts.json --return-mode ret -- ./my_app
 
 # Redirect the event stream to a file (keeps the app's stdout separate)
-sudo ./build/callgraph run -o trace.log -- ./my_app
+sudo ./build/callgraph-run -o trace.log -- ./my_app
 
 # Correlate scheduler, futex, and I/O events with the call tree
-sudo ./build/callgraph run --kernel --sched --futex --io \
+sudo ./build/callgraph-run --kernel --sched --futex --io \
     -o trace.log -- ./my_app
 
 # All kernel event families
-sudo ./build/callgraph run --kernel --events sched,futex,io,block,net,mm \
+sudo ./build/callgraph-run --kernel --events sched,futex,io,block,net,mm \
     -- ./my_app
 
 # Page faults, direct reclaim, socket syscalls, and TCP retransmits
-sudo ./build/callgraph run --kernel --memory --network -- ./my_app
+sudo ./build/callgraph-run --kernel --memory --network -- ./my_app
 
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
-sudo ./build/callgraph run -T --exporter otlp -- ./my_app
+sudo ./build/callgraph-run -T --exporter otlp -- ./my_app
 
 # Export over OTLP/HTTP with protobuf (default http://localhost:4318)
-sudo ./build/callgraph run -T --exporter otlp-http -- ./my_app
+sudo ./build/callgraph-run -T --exporter otlp-http -- ./my_app
 
 # Write an OTLP/JSON request body that can be POSTed later
-sudo ./build/callgraph run -T --exporter otlp-json \
+sudo ./build/callgraph-run -T --exporter otlp-json \
     --export-file trace.otlp.json -- ./my_app
 
 # Convert an existing text trace (use -T, --metadata, or --assume-local-capture)
-./build/callgraph export --otel \
+./build/callgraph-export --otel \
     --input trace.log --output spans.json --service-name my_app
 
 # Export folded stacks for flamegraph.pl / inferno-flamegraph
-./build/callgraph export --flame \
+./build/callgraph-export --flame \
     --input trace.log --output stacks.folded
 ```
 
 ### Options
 
-Every help entry point (`callgraph --help`, `run --help`, `attach --help`,
-`export --help`, and the three export mode pages) prints the same page,
-organized by section. Master options stay at the normal indent; options that
-refine or require a master are indented four spaces further, and every
-description starts in the same column.
+Each program prints its own page; `-h` and `--help` are equivalent. Master
+options stay at the normal indent, options that refine or require a master are
+indented four spaces further, and descriptions share one column.
+`callgraph-export` narrows to the selected mode when `--otel`, `--flame`, or
+`--static` is present, e.g. `callgraph-export --static --help`; the bare
+`callgraph-export --help` page lists all three.
 
-```
+`callgraph-run`:
+
+```text
 Usage:
-  callgraph run [options] -- program [args...]
-  callgraph attach [options] -p PID
-  callgraph export --otel|--flame --input TRACE [options]
-  callgraph export --static --static-graph FILE [options]
+  callgraph-run [options] -- program [args...]
 
 Tracing options:
   -o, --output FILE         write events to FILE (default: stdout)
@@ -246,8 +254,7 @@ Tracing options:
       --all-modules         trace every mapped ELF module
       --module GLOB         also trace mapped modules matching GLOB
       --static-graph FILE   call-graph facts from callgraph-disasm (repeatable);
-                            enables --trace-depth pruning, --return-mode=ret,
-                            and export --static
+                            enables --trace-depth pruning and --return-mode=ret
   -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
       --max-depth N         print events with depth <= N (default: unlimited)
       --trace-depth N       trace user frames N levels below the root
@@ -255,8 +262,7 @@ Tracing options:
                             N > 0 prunes probes along direct calls;
                             kernel events unaffected
       --indent N            indent names by depth*N spaces (default: 0)
-      --show-args           show function arguments after names (needs DWARF);
-                            preserve text suffixes in offline export
+      --show-args           show function arguments after names (needs DWARF)
       --histogram           append per-root call trees and latency histograms to the output
       --ingest-sample-rate R
                             ingest root traces at rate R, 0..1 (default: 1)
@@ -319,17 +325,155 @@ Live export options (--exporter):
                             quantile; annotates root spans with
                             callgraph.quantile (root scope)
 
-Offline export options (callgraph export):
-  Convert an existing text trace without root.  --otel emits an
-  OTLP/JSON request body; --flame emits folded stacks; --static
-  renders a direct-call graph from callgraph-disasm facts.
+General options:
+  -v, --verbose             verbose diagnostics
+  -h, --help                show this help
+      --version             show version
+
+Examples:
+  Trace a program:
+    sudo callgraph-run -- ./demo
+    sudo callgraph-run --root-scope 'Database::*' -- ./demo
+    callgraph-run --dry-run -- ./demo
+
+  Correlated kernel events:
+    sudo callgraph-run --kernel --preset latency -- ./demo
+    sudo callgraph-run --kernel --preset proxy -- ./proxy
+    sudo callgraph-run --kernel --preset storage -- ./db
+    sudo callgraph-run --kernel --sched --futex -- ./demo
+    sudo callgraph-run --kernel --memory --network -- ./demo
+
+  Live export:
+    sudo callgraph-run --exporter otlp --endpoint localhost:4317 -- ./demo
+    sudo callgraph-run --exporter otlp-http -- ./demo
+    sudo callgraph-run --exporter otlp-json --export-file trace.json -- ./demo
+
+  Offline conversion: run 'callgraph-export --help'
+```
+
+`callgraph-attach`:
+
+```text
+Usage:
+  callgraph-attach [options] -p PID
+
+Tracing options:
+  -o, --output FILE         write events to FILE (default: stdout)
+      --root-scope GLOB     functions that may start a traced call tree (repeatable)
+      --exclude GLOB        skip functions matching GLOB (repeatable)
+      --regex               treat --root-scope/--exclude as extended regex
+      --return-mode M       uretprobe (default) or ret (exception-safe)
+      --no-rsp-resync       keep frames across stack switches (stackful
+                            runtimes such as ucontext, Boost.Context);
+                            disables longjmp/siglongjmp depth repair
+      --all-modules         trace every mapped ELF module
+      --module GLOB         also trace mapped modules matching GLOB
+      --static-graph FILE   call-graph facts from callgraph-disasm (repeatable);
+                            enables --trace-depth pruning and --return-mode=ret
+  -T, --wall-clock          wall-clock timestamps (default: seconds since boot)
+      --max-depth N         print events with depth <= N (default: unlimited)
+      --trace-depth N       trace user frames N levels below the root
+                            (0: root only; default: unlimited);
+                            N > 0 prunes probes along direct calls;
+                            kernel events unaffected
+      --indent N            indent names by depth*N spaces (default: 0)
+      --show-args           show function arguments after names (needs DWARF)
+      --histogram           append per-root call trees and latency histograms to the output
+      --ingest-sample-rate R
+                            ingest root traces at rate R, 0..1 (default: 1)
+      --log-rate-limit N    limit stdout user and kernel event lines to N per second each
+                            (default: 0, off)
+      --probe-batch-size N  functions per uprobe_multi link (default: 1000)
+      --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
+      --dry-run             list resolved functions and exit
+      --trace-metadata FILE write an offline-conversion sidecar
+
+Kernel event options (--kernel):
+      --kernel              enable correlated kernel event tracing
+          --sched           trace scheduler switch/wakeup events
+          --futex           trace futex syscall begin/end events
+          --io              trace read/write/fsync syscall events
+          --block           trace block request events (global)
+          --network         trace socket syscalls and TCP retransmits
+          --memory          trace page faults and direct reclaim
+          --events L        comma-separated: sched,futex,io,block,net,mm
+          --preset P        latency (default), proxy, storage, computation, full, or extended
+              latency       sched, futex, io, net syscalls
+              proxy         sched, futex, io, net syscalls, TCP retransmits
+              storage       sched, futex, io, direct reclaim
+              computation   sched, futex, direct reclaim, page faults
+              full          sched, futex, io, net syscalls, direct reclaim,
+                            page faults, TCP retransmits
+              extended      sched, futex, io, block, net syscalls, direct reclaim,
+                            page faults, TCP retransmits
+          --merge-window D  reorder window, ns/us/ms/s (default: 1ms)
+          --require-events  fail if a requested tracepoint is unavailable
+
+Live export options (--exporter):
+      --exporter M          stdout (default), otlp, otlp-http, or otlp-json
+          --endpoint URL    OTLP endpoint; default localhost:4317 / :4318
+          --export-file FILE
+                            output file for --exporter otlp-json
+          --service-name NAME
+                            override service.name (default: exe basename)
+          --service-namespace NAME
+                            override service.namespace
+          --trace-scope M   root (default), thread, or process
+          --batch-size N    spans per OTLP batch (default: 512)
+          --batch-bytes N   OTLP request size limit (default: 1m)
+          --flush-interval N
+                            OTLP batch flush interval in ms (default: 1000)
+          --timeout-ms N    OTLP HTTP timeout (default: 5000)
+          --queue-spans N   exporter queue limit (default: 10000)
+          --header K=V      add an HTTP header (repeatable)
+          --compression M   none (default) or gzip (OTLP/HTTP only)
+          --sample-rate R   baseline root-trace sampling rate, 0..1 (default: 1)
+          --fail-on-export-error
+                            exit non-zero if export fails
+          --complete-traces export only complete traces
+              --trace-buffer-bytes SIZE
+                            trace buffer byte limit (default: 256m)
+              --trace-buffer-spans N
+                            trace buffer span limit (default: 1000000)
+              --outlier-latency-quantile Q
+                            export traces above the trace-duration Q
+                            quantile; annotates root spans with
+                            callgraph.quantile (root scope)
+
+General options:
+  -v, --verbose             verbose diagnostics
+  -h, --help                show this help
+      --version             show version
+
+Examples:
+  Attach to a running process:
+    sudo callgraph-attach -p 12345
+    sudo callgraph-attach -p 12345 --root-scope 'Database::*'
+
+  Correlated kernel events:
+    sudo callgraph-attach -p 12345 --kernel
+    sudo callgraph-attach -p 12345 --kernel --block --io --network
+
+  Live export:
+    sudo callgraph-attach -p 12345 --exporter otlp \
+        --endpoint localhost:4317 --service-name my_app
+
+  Offline conversion: run 'callgraph-export --help'
+```
+
+`callgraph-export`:
+
+```text
+Usage:
+  callgraph-export --otel|--flame --input TRACE [options]
+  callgraph-export --static --static-graph FILE [options]
+
+Offline export options:
+  Convert an existing text trace.  --otel emits an OTLP/JSON
+  request body; --flame emits folded stacks; --static renders a
+  direct-call graph from callgraph-disasm facts.
       --input FILE          callgraph text trace to convert (--otel/--flame)
       --otel                convert a text trace to OpenTelemetry OTLP/JSON spans
-      --static              render a direct-call graph from facts
-          --static-graph FILE
-                            facts produced by callgraph-disasm (repeatable)
-          --root-scope GLOB with --static, functions that start a tree (repeatable)
-          --regex           with --static, treat --root-scope as extended regex
           --endpoint URL    POST the OTLP/JSON body to URL
                             (OTLP/HTTP JSON; path defaults to /v1/traces)
           --service-name NAME
@@ -363,6 +507,11 @@ Offline export options (callgraph export):
           --compression M   none (default) or gzip
           --fail-on-export-error
                             exit non-zero if export fails
+      --static              render a direct-call graph from facts
+          --static-graph FILE
+                            facts produced by callgraph-disasm (repeatable)
+          --root-scope GLOB with --static, functions that start a tree (repeatable)
+          --regex           with --static, treat --root-scope as extended regex
       --flame               convert a text trace to folded stacks for flame graphs
   -o, --output FILE         write the converted output to FILE (default: stdout)
 
@@ -379,155 +528,32 @@ General options:
       --version             show version
 
 Examples:
-  Trace a program:
-    sudo callgraph run -- ./demo
-    sudo callgraph run --root-scope 'Database::*' -- ./demo
-    callgraph run --dry-run -- ./demo
+  # Record the timestamp anchor while capturing, then convert
+  callgraph-run -o trace.log --trace-metadata trace.meta -- ./app
+  callgraph-export --otel --input trace.log \
+      --metadata trace.meta --output spans.json
 
-  Attach to a running process:
-    sudo callgraph attach -p 12345 --root-scope 'Database::*'
+  # ISO wall-clock trace with no sidecar
+  callgraph-export --otel --input trace.log --output spans.json
 
-  Correlated kernel events:
-    sudo callgraph run --kernel --preset latency -- ./demo
-    sudo callgraph run --kernel --preset proxy -- ./proxy
-    sudo callgraph run --kernel --preset storage -- ./db
-    sudo callgraph run --kernel --sched --futex -- ./demo
-    sudo callgraph run --kernel --memory --network -- ./demo
-    sudo callgraph attach -p 12345 --kernel
-    sudo callgraph attach -p 12345 --kernel --block --io --network
+  # Boot-second trace with no sidecar; approximate this-host anchor
+  callgraph-export --otel --input trace.log --output spans.json \
+      --assume-local-capture
 
-  Live export:
-    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo
-    sudo callgraph run --exporter otlp-http -- ./demo
-    sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo
-    sudo callgraph attach -p 12345 --exporter otlp \
-        --endpoint localhost:4317 --service-name my_app
+  # Folded stacks for flamegraph.pl / inferno-flamegraph
+  callgraph-export --flame --input trace.log --output stacks.folded
+  flamegraph.pl stacks.folded > flame.svg
 
-  Offline export:
-    # Record the timestamp anchor while capturing, then convert
-    callgraph run -o trace.log --trace-metadata trace.meta -- ./app
-    callgraph export --otel --input trace.log \
-        --metadata trace.meta --output spans.json
-
-    # ISO wall-clock trace with no sidecar
-    callgraph export --otel --input trace.log --output spans.json
-
-    # Boot-second trace with no sidecar; approximate this-host anchor
-    callgraph export --otel --input trace.log --output spans.json \
-        --assume-local-capture
-
-    callgraph export --flame --input trace.log --output stacks.folded
-    flamegraph.pl stacks.folded > flame.svg
-
-  Static call graph:
-    callgraph-disasm ./app -o facts.json
-    callgraph export --static --static-graph facts.json
-    callgraph-disasm --all-modules ./app -o facts.json
-    callgraph export --static --static-graph facts.json \
-        --regex --root-scope '^main$'
+  # Static call graph from disassembler facts
+  callgraph-disasm ./app -o facts.json
+  callgraph-export --static --static-graph facts.json
+  callgraph-disasm --all-modules ./app -o facts.json
+  callgraph-export --static --static-graph facts.json \
+      --regex --root-scope '^main$'
 ```
 
-`callgraph export` has three mutually exclusive offline modes: `--otel` emits
-an OTLP/JSON request body, `--flame` emits folded stacks, and `--static` prints
-a direct-call tree for an ELF executable or shared object. `--otel` and
-`--flame` read a text trace via `--input`; `--otel` requires either
-`--output FILE` or `--endpoint URL`, while `--flame` writes to stdout unless
-`--output` is given. `--static` takes the module path as a positional argument
-and writes to stdout unless `-o/--output` is given.
-
-Filters are matched separately against the demangled name and the mangled
-symbol name, so anchored patterns such as `^main$` work. Glob is the default;
-`--regex` switches to C++ `std::regex` (ECMAScript) syntax. `--root-scope`
-selects functions that may **start** a traced call tree; descendants are traced
-even when they do not match the pattern, up to `--trace-depth`. `--exclude`
-removes a function entirely. `--root-scope` is unrelated to `--trace-scope`,
-which controls how exported OTel spans are grouped.
-
-The main executable is always considered. `--all-modules` adds every mapped
-ELF file that has a usable symbol table; `--module GLOB` adds matching mapped
-modules (the glob is tried against both the full path and the basename).
-Modules loaded after tracing starts (shared libraries, `dlopen`) are discovered
-by polling `/proc/<pid>/maps` roughly every 100 ms. Calls made before the new
-module is attached (for example, early constructors) are not seen. With
-`--all-modules` and no `--trace-depth`, every non-excluded function in every
-mapped module is instrumented, including the dynamic loader; prefer
-`--trace-depth`, `--module`, or `--exclude` for large processes.
-
-## Output
-
-Each event is one complete line:
-
-```
-<ts> <tid> : <depth> -> <demangled name>
-<ts> <tid> : <depth> <- <demangled name>
-```
-
-Example (`examples/simple.cpp`, filtered to `main`, `A`, `B`, `C`):
-
-```
-85215.196474365 26570 : 0 -> main
-85215.196489646 26570 : 1 -> C(int)
-85215.196498980 26570 : 1 <- C(int)
-85215.196522041 26570 : 0 <- main
-```
-
-- `ts` is seconds since boot (`CLOCK_MONOTONIC`, nine fractional digits) by
-  default. It is not an epoch timestamp.
-- With `-T` / `--wall-clock`, `ts` is local wall-clock time in ISO 8601, for
-  example `2026-11-10T00:19:31.462805287+08:00`.
-- `--indent N` inserts `depth * N` spaces before the name, leaving the arrow
-  column fixed.
-- `tid` is the Linux thread ID; all threads share the same stream.
-- `depth` is maintained independently per TID.
-- Entry events print the stack size *before* pushing the frame.
-- Return events print the depth of the matched frame *before* popping it.
-
-With `--indent 2`:
-
-```
-85215.196474365 26570 : 0 -> main
-85215.196489646 26570 : 1 ->   C(int)
-85215.196498980 26570 : 2 ->     B(int)
-85215.196522041 26570 : 1 <-   C(int)
-```
-
-With `--show-args`, entry events append the captured parameter values:
-
-```
-85215.196474365 26570 : 0 -> main
-85215.196489646 26570 : 1 -> C(int) (x=3)
-85215.196498980 26570 : 1 <- C(int)
-85215.196522041 26570 : 0 <- main
-```
-
-Arguments are shown only on `->` lines. Parameter names and types come from
-DWARF, so the target must be compiled with `-g` (or have separate debug info).
-The values are captured at function entry. Return events do not repeat them.
-Exported spans carry the formatted values as one `code.arguments` string;
-the attribute is omitted for functions with no parameters or when no DWARF
-signature is available. The same flag replays existing text-trace suffixes when
-converting with `callgraph export --otel`.
-
-Limitations:
-
-- `--show-args` live capture currently supports the x86-64 SysV ABI only;
-  offline text-suffix replay (`callgraph export --otel --show-args`) is not
-  architecture-dependent.
-- Floating-point arguments passed in XMM registers are printed as `?`, because
-  the uprobe `pt_regs` context does not contain XMM state. Stack-passed
-  `float`/`double` values can still be decoded.
-- Aggregates are printed as raw 64-bit words (`{0x..., 0x...}`); aggregates
-  containing floating-point fields are printed as `?`.
-- Pointers are printed as hexadecimal addresses; they are not dereferenced.
-- Functions without DWARF information simply have no argument suffix.
-
-All events go to stdout by default; diagnostics and the final summary go to
-stderr.
-
-The wall-clock offset is sampled at startup from `CLOCK_REALTIME -
-CLOCK_MONOTONIC`. If the system clock is stepped by NTP or the machine
-suspends while tracing, wall-clock values drift; seconds since boot remain
-exact.
+`callgraph-disasm --help` covers the facts generator, and `callgraph.sh --help`
+covers the wrapper.
 
 ### Depth semantics and roots
 
@@ -871,7 +897,7 @@ OTLP/gRPC and OTLP/HTTP use the protobuf messages in
 docker run --rm -p 16686:16686 -p 4317:4317 -p 4318:4318 \
     jaegertracing/jaeger:latest
 
-sudo ./build/callgraph run -T \
+sudo ./build/callgraph-run -T \
     --exporter otlp \
     --endpoint localhost:4317 \
     --service-name my_app \
@@ -882,7 +908,7 @@ sudo ./build/callgraph run -T \
 The same exporter options work in attach mode:
 
 ```bash
-sudo ./build/callgraph attach -p 12345 \
+sudo ./build/callgraph-attach -p 12345 \
     --exporter otlp \
     --endpoint localhost:4317 \
     --service-name my_app
@@ -941,9 +967,9 @@ To convert an existing text trace:
 
 ```bash
 # -T records Unix-capable wall-clock timestamps.
-sudo ./build/callgraph run -T -o trace.log -- ./my_app
+sudo ./build/callgraph-run -T -o trace.log -- ./my_app
 
-./build/callgraph export --otel \
+./build/callgraph-export --otel \
     --input trace.log --output spans.json --service-name my_app
 
 curl -sS -X POST -H 'Content-Type: application/json' \
@@ -954,10 +980,10 @@ A default (boot-second) trace needs a timestamp anchor. Prefer recording a
 sidecar during capture and passing it to the converter:
 
 ```bash
-sudo ./build/callgraph run -o trace.log \
+sudo ./build/callgraph-run -o trace.log \
     --trace-metadata trace.meta -- ./my_app
 
-./build/callgraph export --otel \
+./build/callgraph-export --otel \
     --input trace.log --metadata trace.meta --output spans.json
 ```
 
@@ -966,7 +992,7 @@ boot session, `--assume-local-capture` derives an approximate anchor from the
 local realtime/monotonic clocks and prints a warning:
 
 ```bash
-./build/callgraph export --otel \
+./build/callgraph-export --otel \
     --input trace.log --output spans.json --assume-local-capture
 ```
 
@@ -985,7 +1011,7 @@ See `docs/otel-export-design.md` for the full OTel mapping and edge-case semanti
 
 ## Flamegraph export
 
-`callgraph export --flame` converts a text trace into folded stacks:
+`callgraph-export --flame` converts a text trace into folded stacks:
 
 ```text
 main 1
@@ -998,7 +1024,7 @@ Identical stacks are aggregated, and the output is sorted for deterministic
 diffs. Frames closed by desync or shutdown end in `[incomplete]`.
 
 ```bash
-callgraph export --flame --input trace.log --output stacks.folded
+callgraph-export --flame --input trace.log --output stacks.folded
 flamegraph.pl stacks.folded > flame.svg
 # or:
 inferno-flamegraph stacks.folded > flame.svg
@@ -1009,31 +1035,33 @@ timestamp anchor, OTLP metadata, or network access.
 
 ## Static call graphs and the disassembler
 
-The project ships three artifacts:
+The project ships five artifacts:
 
 | Artifact | Role | License |
 |---|---|---|
-| `callgraph` | tracer and exporter | AGPL-3.0-only, or commercial |
+| `callgraph-run` | launch + trace | AGPL-3.0-only, or commercial |
+| `callgraph-attach` | attach + trace | AGPL-3.0-only, or commercial |
+| `callgraph-export` | offline conversion, static rendering | AGPL-3.0-only, or commercial |
 | `callgraph-disasm` | static facts generator | GPL-3.0-only |
 | `callgraph.sh` | orchestration wrapper | MIT |
 
 `callgraph-disasm` is the only program that links libopcodes. It writes JSON
-facts (functions, flags, direct edges, roots, return offsets) and `callgraph`
-consumes them with `--static-graph FILE`. This keeps the tracer free of GPL
-code and gives the facts format an independent reason to exist.
+facts (functions, flags, direct edges, roots, return offsets) and the tracer
+programs consume them with `--static-graph FILE`. This keeps the tracers free
+of GPL code and gives the facts format an independent reason to exist.
 
 ```bash
 # Facts for one module
 callgraph-disasm ./app -o facts.json
 
 # Direct-call tree from those facts
-callgraph export --static --static-graph facts.json
+callgraph-export --static --static-graph facts.json
 
 # Facts for the static DT_NEEDED closure
 callgraph-disasm --all-modules ./app -o facts.json
 
 # Restrict roots without regenerating
-callgraph export --static --static-graph facts.json --regex \
+callgraph-export --static --static-graph facts.json --regex \
     --root-scope '^main$'
 ```
 
@@ -1078,10 +1106,10 @@ warning. `--exclude` is not supported in static export mode.
 ```bash
 # --trace-depth N>0 prunes probes along the facts' direct edges
 callgraph-disasm ./app -o facts.json
-sudo callgraph run --static-graph facts.json --trace-depth 2 -- ./app
+sudo callgraph-run --static-graph facts.json --trace-depth 2 -- ./app
 
 # Exception-safe return mode uses the facts' ret offsets
-sudo callgraph run --static-graph facts.json --return-mode ret -- ./app
+sudo callgraph-run --static-graph facts.json --return-mode ret -- ./app
 ```
 
 `--static-graph` is repeatable; later files add modules to the same document.
@@ -1140,7 +1168,7 @@ The tool prints a warning when the target contains `.gcc_except_table`
 ### `--return-mode=ret`
 
 `callgraph-disasm` disassembles each function, records its `ret` instruction
-offsets in the facts file, and `callgraph` attaches ordinary uprobes there.
+offsets in the facts file, and the tracer attaches ordinary uprobes there.
 The return address on the stack is never modified, so exceptions and unwinding
 keep working.
 
@@ -1267,7 +1295,7 @@ probe is emitted per offset, with a preferred name.
 At exit the tool prints one line to stderr:
 
 ```
-callgraph: N events, N entries, N returns, N lost, N desync, N stray, N dropped
+callgraph-run: N events, N entries, N returns, N lost, N desync, N stray, N dropped
 ```
 
 - `lost`: ring-buffer reservation failures (the trace is incomplete)
@@ -1280,13 +1308,13 @@ When OTEL export is enabled, one additional line reports exported, dropped, and
 failed span writes:
 
 ```
-callgraph: OTLP 5 span(s) exported, 0 dropped, 0 failed
+callgraph-run: OTLP 5 span(s) exported, 0 dropped, 0 failed
 ```
 
 If spans were dropped, a second line breaks the count down by reason:
 
 ```
-callgraph: OTLP drop reasons: queue-bytes-full=123 send-failed=4
+callgraph-run: OTLP drop reasons: queue-bytes-full=123 send-failed=4
 ```
 
 The reasons are `queue-spans-full`, `queue-bytes-full`, `no-sink`,

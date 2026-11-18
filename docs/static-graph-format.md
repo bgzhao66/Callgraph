@@ -1,8 +1,8 @@
 # Static graph facts format
 
 `callgraph-disasm` writes one JSON document describing the static call graph of
-one or more ELF modules. `callgraph` reads it with `--static-graph FILE` for
-three features:
+one or more ELF modules. The tracer programs read it with `--static-graph FILE`
+for three features:
 
 - `--trace-depth N >= 0` probe pruning and root selection
 - `--return-mode=ret` return-instruction offsets
@@ -159,5 +159,5 @@ no switch to shrink the file at the cost of `ret` mode.
 ## Licensing
 
 `callgraph-disasm` links libopcodes and is GPL-3.0-only. The facts file it
-writes is data, not code; it carries no license of its own. `callgraph` reads
+writes is data, not code; it carries no license of its own. The tracers read
 the format without linking the generator.

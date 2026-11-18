@@ -182,28 +182,22 @@ else()
   message(STATUS "protobuf/protoc not found: OTLP gRPC and HTTP/protobuf unavailable")
 endif()
 
-add_executable(callgraph
-  src/main.cpp
+# ---------------------------------------------------------------------------
+# Shared objects.
+#
+# callgraph_core has no BPF program, no libbpf, and no libdw, so
+# callgraph-export stays a small offline converter.  callgraph_trace adds the
+# live tracing stack used by callgraph-run and callgraph-attach.
+# ---------------------------------------------------------------------------
+add_library(callgraph_core STATIC
   src/common.cpp
-  src/elf_resolver.cpp
-  src/static_prune.cpp
-  src/static_elf_facts.cpp
-  src/static_graph_export.cpp
-  src/static_graph_json_read.cpp
-  src/dwarf_args.cpp
   src/arguments.cpp
-  src/module_manager.cpp
-  src/probe_manager.cpp
-  src/kernel_probe_manager.cpp
   src/call_stack.cpp
   src/kernel_event.cpp
-  src/kernel_timeline.cpp
   src/latency_stats.cpp
   src/histogram_report.cpp
   src/trace_duration_histogram.cpp
   src/output.cpp
-  src/process_controller.cpp
-  src/event_collector.cpp
   src/clock_converter.cpp
   src/span_context.cpp
   src/span_generator.cpp
@@ -213,30 +207,71 @@ add_executable(callgraph
   src/trace_parser.cpp
   src/trace_metadata.cpp
   src/flame_graph.cpp
+  src/static_prune.cpp
+  src/static_elf_facts.cpp
+  src/static_graph_export.cpp
+  src/static_graph_json_read.cpp
+  src/cli_common.cpp
+  src/export_session.cpp
   ${OTLP_PROTO_SRCS}
-  ${BPF_BLOB}
-  ${KERNEL_BPF_BLOB}
 )
 
-target_include_directories(callgraph PRIVATE
+target_include_directories(callgraph_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/bpf
+  ${LIBBPF_PREFIX}/include
   ${CMAKE_BINARY_DIR}
   ${OTLP_PROTO_ROOT}
 )
-target_compile_definitions(callgraph PRIVATE CALLGRAPH_VERSION="${PROJECT_VERSION}")
-if(CALLGRAPH_HAVE_OTLP_PROTO)
-  target_compile_definitions(callgraph PRIVATE CALLGRAPH_HAVE_OTLP_PROTO=1)
-  target_link_libraries(callgraph PRIVATE protobuf::libprotobuf)
-endif()
-target_compile_options(callgraph PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(callgraph PRIVATE
-  libbpf
+target_compile_definitions(callgraph_core PUBLIC
+  CALLGRAPH_VERSION="${PROJECT_VERSION}"
+)
+target_compile_options(callgraph_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_link_libraries(callgraph_core PUBLIC
   PkgConfig::LIBELF
-  PkgConfig::LIBDW
   ZLIB::ZLIB
   Threads::Threads
 )
+if(CALLGRAPH_HAVE_OTLP_PROTO)
+  target_compile_definitions(callgraph_core PUBLIC CALLGRAPH_HAVE_OTLP_PROTO=1)
+  target_link_libraries(callgraph_core PUBLIC protobuf::libprotobuf)
+endif()
+
+add_library(callgraph_trace STATIC
+  src/elf_resolver.cpp
+  src/dwarf_args.cpp
+  src/module_manager.cpp
+  src/probe_manager.cpp
+  src/kernel_probe_manager.cpp
+  src/process_controller.cpp
+  src/event_collector.cpp
+  src/kernel_timeline.cpp
+  src/trace_session.cpp
+  ${BPF_BLOB}
+  ${KERNEL_BPF_BLOB}
+)
+target_compile_options(callgraph_trace PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_link_libraries(callgraph_trace PUBLIC
+  callgraph_core
+  libbpf
+  PkgConfig::LIBELF
+  PkgConfig::LIBDW
+)
+
+# ---------------------------------------------------------------------------
+# Three executables: one per mode.
+# ---------------------------------------------------------------------------
+add_executable(callgraph-run src/main_run.cpp)
+add_executable(callgraph-attach src/main_attach.cpp)
+add_executable(callgraph-export src/main_export.cpp)
+
+target_compile_options(callgraph-run PRIVATE -Wall -Wextra)
+target_compile_options(callgraph-attach PRIVATE -Wall -Wextra)
+target_compile_options(callgraph-export PRIVATE -Wall -Wextra)
+
+target_link_libraries(callgraph-run PRIVATE callgraph_trace)
+target_link_libraries(callgraph-attach PRIVATE callgraph_trace)
+target_link_libraries(callgraph-export PRIVATE callgraph_core)
 
 # ---------------------------------------------------------------------------
 # callgraph-disasm: GPL-3.0-only static facts generator.
@@ -280,14 +315,14 @@ message(STATUS "callgraph-disasm: libopcodes found, static facts enabled")
 
 # Optional: OTLP network export.  --exporter otlp-json works without curl.
 if(CURL_FOUND)
-  target_compile_definitions(callgraph PRIVATE CALLGRAPH_HAVE_CURL=1)
-  target_link_libraries(callgraph PRIVATE CURL::libcurl)
+  target_compile_definitions(callgraph_core PUBLIC CALLGRAPH_HAVE_CURL=1)
+  target_link_libraries(callgraph_core PUBLIC CURL::libcurl)
   message(STATUS "libcurl found: OTLP network export enabled")
 else()
   message(STATUS "libcurl not found: OTLP network export unavailable")
 endif()
 
-add_dependencies(callgraph libbpf_build)
+add_dependencies(callgraph_trace libbpf_build)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -340,9 +375,10 @@ if(BUILD_TESTING)
   add_test(NAME unit COMMAND callgraph_tests)
   add_test(NAME integration
            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.sh
-                   $<TARGET_FILE:callgraph>)
+                   $<TARGET_FILE_DIR:callgraph-run>)
   set_tests_properties(integration PROPERTIES TIMEOUT 180)
 endif()
 
-install(TARGETS callgraph callgraph-disasm RUNTIME DESTINATION bin)
+install(TARGETS callgraph-run callgraph-attach callgraph-export
+        callgraph-disasm RUNTIME DESTINATION bin)
 install(PROGRAMS callgraph.sh DESTINATION bin)

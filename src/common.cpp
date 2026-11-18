@@ -12,17 +12,31 @@
 namespace callgraph {
 
 LogLevel g_log_level = LogLevel::Normal;
+volatile sig_atomic_t g_stop = 0;
 
 namespace {
 
+std::string g_program_name = "callgraph";
+
 void vlog(const char* prefix, const char* fmt, va_list ap)
 {
-    fprintf(stderr, "callgraph: %s", prefix);
+    fprintf(stderr, "%s: %s", g_program_name.c_str(), prefix);
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
 }
 
 }  // namespace
+
+void set_program_name(const char* name)
+{
+    if (name && *name)
+        g_program_name = name;
+}
+
+const char* program_name()
+{
+    return g_program_name.c_str();
+}
 
 uint64_t splitmix64(uint64_t value)
 {
