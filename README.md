@@ -1146,8 +1146,11 @@ Facts are generated for `run`/`attach` with `--trace-depth N>=0` or
 `--return-mode=ret`, and for `export --static`. `--all-modules` is forwarded to
 both the generator and the tracer; for `export --static` it goes to the
 generator only. A user-supplied `--static-graph` suppresses generation. Facts
-live in a temporary directory that is removed on exit unless `--graph-out` is
-given. Generator failure aborts before the tracer starts.
+live in `$TMPDIR/callgraph-facts.XXXXXX` and are removed on exit (including
+signals) unless `--graph-out` is given. When it generated temporary facts the
+wrapper waits for the tracer so it can clean up, and exits with the tracer's
+status; otherwise it `exec`s the tracer directly. Generator failure aborts
+before the tracer starts and still removes the directory.
 
 ## Return probes: `uretprobe` vs `ret`
 

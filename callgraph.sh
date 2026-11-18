@@ -30,6 +30,21 @@
 
 set -euo pipefail
 
+# Temporary facts are removed on every exit path, including signals.  When a
+# temporary directory exists the wrapper waits for the child instead of
+# exec'ing it, so this trap gets a chance to run.
+tmp_dir=
+
+cleanup() {
+    if [[ -n $tmp_dir ]]; then
+        rm -rf -- "$tmp_dir"
+        tmp_dir=
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # The binaries are installed next to the real script.  Resolve this script
 # through symlinks (and through PATH when invoked by name) so a symlinked
 # wrapper still finds its own directory.
@@ -237,14 +252,9 @@ generate_facts() {
     [[ -x $callgraph_disasm ]] || die "callgraph-disasm not found at $callgraph_disasm"
 
     local facts=$graph_out
-    local cleanup=0
     if [[ -z $facts ]]; then
-        local dir
-        dir=$(mktemp -d "${TMPDIR:-/tmp}/callgraph-facts.XXXXXX")
-        facts=$dir/facts.json
-        cleanup=1
-        # shellcheck disable=SC2064
-        trap "rm -rf -- '$dir'" EXIT
+        tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/callgraph-facts.XXXXXX")
+        facts=$tmp_dir/facts.json
     fi
 
     local args=()
@@ -252,10 +262,22 @@ generate_facts() {
     args+=("$module" -o "$facts")
 
     "$callgraph_disasm" "${args[@]}"
-    if ((cleanup == 0)); then
+    if [[ -n $graph_out ]]; then
         printf 'callgraph.sh: facts written to %s\n' "$facts" >&2
     fi
     facts_path=$facts
+}
+
+# Runs the child and preserves its status.  Without temporary facts this is a
+# plain exec (one process hop); with them the wrapper stays alive so the EXIT
+# trap can remove the directory.
+run_and_exit() {
+    if [[ -z $tmp_dir ]]; then
+        exec "$@"
+    fi
+    local status=0
+    "$@" || status=$?
+    exit "$status"
 }
 
 facts_path=
@@ -330,7 +352,8 @@ if [[ $mode == export ]]; then
                         ;;
                 esac
             done
-            exec "$callgraph_export" "${rebuilt[@]}" --static-graph "$facts_path"
+            run_and_exit "$callgraph_export" "${rebuilt[@]}" \
+                --static-graph "$facts_path"
         fi
     fi
 
@@ -397,7 +420,7 @@ if [[ $mode == run ]]; then
         fi
         final+=("$arg")
     done
-    exec "$callgraph_run" "${final[@]}"
+    run_and_exit "$callgraph_run" "${final[@]}"
 fi
 
-exec "$callgraph_attach" "$@" --static-graph "$facts_path"
+run_and_exit "$callgraph_attach" "$@" --static-graph "$facts_path"

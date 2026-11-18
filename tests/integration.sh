@@ -696,6 +696,59 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --static --version | grep -q '^callgraph-export '
 
+echo "== callgraph.sh: temporary facts are cleaned up =="
+mkdir -p "$TMP/factstmp"
+assert_factstmp_empty() {
+    if [ -n "$(ls -A "$TMP/factstmp")" ]; then
+        echo "temporary facts were not removed: $(ls -A "$TMP/factstmp")" >&2
+        exit 1
+    fi
+}
+
+TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --trace-depth 1 --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1
+assert_factstmp_empty
+
+TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" export --static "$TMP/simple" >/dev/null 2>&1
+assert_factstmp_empty
+
+# A generator failure must still remove the directory.
+if TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+        CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+        "$WRAPPER" export --static "$TMP/notelf" >/dev/null 2>&1; then
+    echo "expected a non-ELF static export to fail" >&2
+    exit 1
+fi
+assert_factstmp_empty
+
+# --graph-out keeps the facts and leaves no temporary directory.
+TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --trace-depth 1 --dry-run \
+    --graph-out "$TMP/wrapper-kept.json" -- "$TMP/simple" >/dev/null 2>&1
+test -s "$TMP/wrapper-kept.json"
+assert_factstmp_empty
+
+# --graph-in reuses a user file and creates nothing.
+TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --graph-in "$TMP/wrapper.json" --trace-depth 1 \
+    --dry-run -- "$TMP/simple" >/dev/null 2>&1
+assert_factstmp_empty
+
+# The child's exit status survives the wait-and-clean path.
+status=0
+TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
+    CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
+    "$WRAPPER" run --trace-depth 1 --dry-run --bogus -- "$TMP/simple" \
+    >/dev/null 2>&1 || status=$?
+[ "$status" -eq 2 ]
+assert_factstmp_empty
+
 echo "== callgraph.sh: resolves its real path =="
 # A symlinked wrapper must find the binaries next to the real script, not
 # next to the link.
