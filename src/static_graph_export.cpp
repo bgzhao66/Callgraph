@@ -29,24 +29,66 @@ void write_connector(std::ostream& out, const std::vector<Frame>& stack,
     out << (last ? "└── " : "├── ");
 }
 
+bool has_in_module_children(const StaticGraphModule& module, size_t index)
+{
+    if (index >= module.edges.size())
+        return false;
+    for (const size_t child : module.edges[index]) {
+        if (child < module.functions.size())
+            return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 void write_static_graph(const StaticGraphModule& module, std::ostream& out)
 {
     const std::vector<StaticGraphFunction>& functions = module.functions;
+    if (functions.empty())
+        return;
+
+    // A function with no in-module callees has no branch to suppress, so
+    // repeated leaves still print plainly.
+    std::vector<unsigned char> has_children(functions.size(), 0);
+    for (size_t i = 0; i < functions.size(); ++i)
+        has_children[i] = has_in_module_children(module, i);
+
+    std::vector<unsigned char> expanded(functions.size(), 0);
+    std::vector<unsigned char> on_path(functions.size(), 0);
+    std::vector<Frame> stack;
+    bool wrote_section = false;
 
     for (const size_t root : module.roots) {
         if (root >= functions.size())
             continue;
 
-        out << display_name(functions[root]) << '\n';
-        if (root >= module.edges.size())
+        // One blank line between root sections, never before the first.
+        if (wrote_section)
+            out << '\n';
+        wrote_section = true;
+
+        out << display_name(functions[root]);
+        if (root >= module.edges.size()) {
+            out << '\n';
+            continue;
+        }
+
+        if (expanded[root]) {
+            if (has_children[root])
+                out << " [...]";
+            out << '\n';
+            continue;
+        }
+        expanded[root] = 1;
+
+        out << '\n';
+        if (!has_children[root])
             continue;
 
-        std::vector<unsigned char> on_path(functions.size(), 0);
-        std::vector<Frame> stack;
-        stack.push_back({root, 0, true});
+        stack.clear();
         on_path[root] = 1;
+        stack.push_back({root, 0, true});
 
         while (!stack.empty()) {
             Frame& frame = stack.back();
@@ -65,11 +107,22 @@ void write_static_graph(const StaticGraphModule& module, std::ostream& out)
             write_connector(out, stack, last);
             out << display_name(functions[child]);
             if (on_path[child]) {
+                // A cycle takes precedence over the already-expanded marker.
                 out << " [recursive]\n";
                 continue;
             }
+            if (expanded[child]) {
+                if (has_children[child])
+                    out << " [...]";
+                out << '\n';
+                continue;
+            }
 
+            expanded[child] = 1;
             out << '\n';
+            if (!has_children[child])
+                continue;
+
             on_path[child] = 1;
             stack.push_back({child, 0, last});
         }

@@ -510,6 +510,8 @@ grep -q '└── C(int)' "$TMP/static.txt"
 grep -q '├── B(int)' "$TMP/static.txt"
 grep -q '│   └── A(int)' "$TMP/static.txt"
 grep -q '^    └── A(int)$' "$TMP/static.txt"
+# Root sections are separated by a blank line.
+grep -q '^$' "$TMP/static.txt"
 
 "$EXPORT" --static --static-graph "$TMP/simple.json" \
     -o "$TMP/static_file.txt" 2>/dev/null

@@ -343,8 +343,10 @@ module's symbols and disassembles function bodies to find direct `call` and
 unconditional `jmp` edges inside that module; indirect, PLT/external, IFUNC,
 and cross-module targets add no edge. It writes the functions, flags, edges,
 default roots, and `ret` offsets as JSON. `callgraph-export --static
---static-graph FILE` renders that document: every path is expanded, and a
-repeated function on the current path is cut with `[recursive]`.
+--static-graph FILE` renders that document: each function's subtree is expanded
+once per module, later occurrences end with `[...]`, root sections are separated
+by a blank line, and a repeated function on the current path is cut with
+`[recursive]`.
 `--root-scope` selects roots per module; otherwise `main`, the ELF entry,
 init/fini arrays, exported symbols, and address-taken functions seed the tree.
 `callgraph-disasm --all-modules` adds the transitive `DT_NEEDED` closure

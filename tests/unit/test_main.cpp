@@ -494,15 +494,46 @@ void test_static_graph_export()
           "└── B(int)\n"
           "    └── A(int) [recursive]\n");
 
-    // Roots are rendered one after another, without separators.
+    // Root sections are separated by one blank line.
     module.roots = {2, 0};
     module.edges[2].clear();
     module.edges[1] = {2};
     module.edges[0] = {2};
     CHECK(render_static_graph(module) ==
           "A(int)\n"
+          "\n"
           "main\n"
           "└── A(int)\n");
+
+    // A non-leaf function is expanded once; later occurrences are marked.
+    StaticGraphModule shared;
+    shared.functions.resize(4);
+    shared.functions[0].name = "main";
+    shared.functions[1].name = "A(int)";
+    shared.functions[2].name = "B(int)";
+    shared.functions[3].name = "leaf()";
+    shared.edges.resize(shared.functions.size());
+    shared.edges[0] = {1, 2};
+    shared.edges[1] = {3};
+    shared.edges[2] = {1};
+    shared.roots = {0};
+    CHECK(render_static_graph(shared) ==
+          "main\n"
+          "├── A(int)\n"
+          "│   └── leaf()\n"
+          "└── B(int)\n"
+          "    └── A(int) [...]\n");
+
+    // A root already expanded as a descendant is not expanded again.
+    shared.roots = {0, 2};
+    CHECK(render_static_graph(shared) ==
+          "main\n"
+          "├── A(int)\n"
+          "│   └── leaf()\n"
+          "└── B(int)\n"
+          "    └── A(int) [...]\n"
+          "\n"
+          "B(int) [...]\n");
 
     // Out-of-range edges are ignored.
     module.roots = {0};

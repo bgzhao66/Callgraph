@@ -1062,14 +1062,20 @@ main
     ├── B(int)
     │   └── A(int)
     └── A(int)
+
+other_root()
+└── C(int) [...]
 ```
 
 Only resolved direct `call` and unconditional `jmp` targets inside the module
 are followed. Indirect calls, PLT/external calls, IFUNC targets, and
-cross-module calls are not guessed at. Every call path is expanded in full, so
-the output can grow exponentially; cycles are cut with `[recursive]`. On large
-dependency modules such as libc, pair `--all-modules` with `--root-scope` to
-keep the output bounded.
+cross-module calls are not guessed at. Each function's subtree is expanded once
+per module; later occurrences print the name followed by `[...]` instead of
+repeating the subtree, and leaves are not marked. Cycles are cut with
+`[recursive]`, which takes precedence. Root trees are separated by one blank
+line, and the output stays linear in the number of functions and edges. On
+large dependency modules such as libc, pair `--all-modules` with
+`--root-scope` to keep the output focused.
 
 Without `--root-scope`, roots are `main` (first when present), the ELF entry
 point, init/fini array entries, exported symbols, and address-taken functions.

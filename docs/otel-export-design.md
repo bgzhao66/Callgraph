@@ -436,7 +436,9 @@ are master entries with their mode-specific options indented beneath them;
 The facts document is produced by the libopcodes-enabled `callgraph-disasm`
 and lists direct `call` and unconditional `jmp` targets inside one module;
 indirect, PLT/external, IFUNC, and cross-module calls are not guessed at. The
-renderer expands edges into a full tree, with path cycles cut by `[recursive]`.
+renderer expands each function's subtree once per module, marks later
+occurrences with `[...]`, separates root sections with a blank line, and cuts
+path cycles with `[recursive]`.
 Default roots are `main` (first), the ELF entry, init/fini arrays, exported
 symbols, and address-taken functions; `--root-scope`/`--regex` post-filter them
 per module. A multi-module document prints `== PATH ==` before each section.
