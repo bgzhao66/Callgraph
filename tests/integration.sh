@@ -139,6 +139,7 @@ echo "== help hierarchy =="
 "$BIN" run --help | grep -q '^              --outlier-latency-quantile Q'
 "$BIN" run --help | grep -q '^      --ingest-sample-rate R'
 "$BIN" run --help | grep -q '^      --log-rate-limit N'
+"$BIN" run --help | grep -q 'limit stdout user and kernel event lines'
 "$BIN" export --help | grep -q '^      --otel'
 "$BIN" export --help | grep -q '^      --flame'
 "$BIN" export --otel --help | grep -q '^          --endpoint'
@@ -461,7 +462,54 @@ grep -q 'ingest-sampled out 1 root trace(s)' "$TMP/ingest.err"
     >"$TMP/limited.trace" 2>"$TMP/limited.err"
 test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited.trace")" -lt 8
 grep -q 'rate-limited [1-9][0-9]* event line(s)' "$TMP/limited.err"
+grep -Eq 'total \(user [1-9][0-9]*, kernel 0\)' "$TMP/limited.err"
 grep -q '^Histograms:$' "$TMP/limited.trace"
+
+# File output is not rate-limited, even when the option is present.
+"$BIN" run --log-rate-limit 1 -o "$TMP/limited-file.trace" --regex \
+    --root-scope '^(main|A[(]int[)]|B[(]int[)]|C[(]int[)])$' -- "$TMP/simple" \
+    >/dev/null 2>"$TMP/limited-file.err"
+! grep -q 'rate-limited' "$TMP/limited-file.err"
+test "$(grep -Ec '^[0-9]+\.[0-9]{9} ' "$TMP/limited-file.trace")" -ge 8
+
+# Kernel lines use a separate bucket and are counted separately.
+"$BIN" run --kernel --sched --futex --io --log-rate-limit 1 \
+    --regex --root-scope '^(main|work[(]int[)]|lock_work[(][)]|fsync_work[(][)])$' \
+    -- "$TMP/kernel" > "$TMP/kernel-limited.trace" 2> "$TMP/kernel-limited.err"
+grep -q 'rate-limited [1-9][0-9]* event line(s) total' \
+    "$TMP/kernel-limited.err"
+grep -Eq '\(user [0-9]+, kernel [1-9][0-9]*\)' "$TMP/kernel-limited.err"
+
+# A long-running trace reports the throttled delta periodically.
+cat > "$TMP/rate_slow.cpp" <<'EOF'
+#include <unistd.h>
+
+__attribute__((noinline)) int tick(int x)
+{
+    return x + 1;
+}
+
+int main()
+{
+    for (int i = 0; i < 80; ++i) {
+        tick(i);
+        usleep(100000);
+    }
+    return 0;
+}
+EOF
+g++ -O0 -g -o "$TMP/rate_slow" "$TMP/rate_slow.cpp"
+if command -v timeout >/dev/null 2>&1; then
+    timeout -s INT 7 "$BIN" run --kernel --sched --log-rate-limit 1 --regex \
+        --root-scope '^(main|tick[(]int[)])$' -- "$TMP/rate_slow" \
+        > "$TMP/rate-slow.trace" 2> "$TMP/rate-slow.err" || true
+    grep -q 'event line(s) since last report' "$TMP/rate-slow.err"
+    grep -Eq 'since last report \(user [0-9]+, kernel [0-9]+\)' \
+        "$TMP/rate-slow.err"
+    grep -q 'event line(s) total' "$TMP/rate-slow.err"
+else
+    echo "timeout not available; skipping periodic rate-limit fixture"
+fi
 
 echo "== kernel events: scheduler, futex, I/O =="
 "$BIN" run --kernel --sched --futex --io \

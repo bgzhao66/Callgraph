@@ -67,33 +67,6 @@ bool CallStack::ingest_root(uint32_t tid)
     return (value % 1000000ULL) < threshold;
 }
 
-bool CallStack::log_allowed(uint64_t ts)
-{
-    if (log_rate_limit_ == 0)
-        return true;
-
-    const double capacity =
-        static_cast<double>(log_rate_limit_ > 1 ? log_rate_limit_ : 1);
-    if (!log_bucket_started_) {
-        log_tokens_ = capacity;
-        log_last_ts_ = ts;
-        log_bucket_started_ = true;
-    } else if (ts > log_last_ts_) {
-        const double elapsed = static_cast<double>(ts - log_last_ts_);
-        log_tokens_ += elapsed * static_cast<double>(log_rate_limit_) / 1e9;
-        if (log_tokens_ > capacity)
-            log_tokens_ = capacity;
-        log_last_ts_ = ts;
-    }
-
-    if (log_tokens_ < 1.0) {
-        ++lines_suppressed_;
-        return false;
-    }
-    log_tokens_ -= 1.0;
-    return true;
-}
-
 size_t CallStack::close_skipped_frames(uint32_t tid,
                                        std::vector<CallFrame>& frames,
                                        size_t keep, uint64_t ts)
@@ -259,8 +232,7 @@ void CallStack::on_event(const TraceEvent& event,
             display += " " + arguments;
 
         if (logged &&
-            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
-            log_allowed(event.ts))
+            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)))
             emit_line(event.ts, event.tid, depth, "->", display);
 
         const uint64_t parent_token =
@@ -348,8 +320,7 @@ void CallStack::on_event(const TraceEvent& event,
 
     if (within_root) {
         if (frame.logged &&
-            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)) &&
-            log_allowed(event.ts))
+            (max_depth_ < 0 || depth <= static_cast<uint32_t>(max_depth_)))
             emit_line(event.ts, event.tid, depth, "<-", name);
 
         if (collect_latency_) {

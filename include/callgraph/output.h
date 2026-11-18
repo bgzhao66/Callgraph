@@ -40,6 +40,34 @@ public:
     void emit_kernel(uint64_t ts, uint32_t tid, int depth,
                      const char* category, const std::string& event,
                      const std::string& attributes = {});
+
+    // Limits stdout user lines and kernel lines independently.  Each stream
+    // gets its own token bucket at this rate; zero disables the limit.
+    // Suppressed lines are counted but not queued.
+    void set_log_rate_limit(uint64_t lines_per_second);
+
+    struct RateLimitReport {
+        uint64_t user = 0;
+        uint64_t kernel = 0;
+        uint64_t total() const { return user + kernel; }
+    };
+
+    uint64_t user_lines_suppressed() const
+    {
+        return user_lines_suppressed_;
+    }
+    uint64_t kernel_lines_suppressed() const
+    {
+        return kernel_lines_suppressed_;
+    }
+    uint64_t lines_suppressed() const
+    {
+        return user_lines_suppressed_ + kernel_lines_suppressed_;
+    }
+
+    // Returns the suppressions since the previous call and resets the delta.
+    RateLimitReport take_rate_limit_report();
+
     void stop();
     // Stops the writer and appends a trailer (for example the histogram
     // report) directly to the stream, after every queued event line.
@@ -52,6 +80,14 @@ public:
     }
 
 private:
+    struct RateBucket {
+        uint64_t rate = 0;
+        double tokens = 0.0;
+        uint64_t last_ts = 0;
+        bool started = false;
+    };
+
+    bool log_allowed(RateBucket& bucket, uint64_t ts);
     void worker();
     void enqueue_line(std::string line, bool kernel);
     std::string format_timestamp(uint64_t ts_ns) const;
@@ -72,6 +108,15 @@ private:
     std::thread thread_;
     std::atomic<uint64_t> dropped_{0};
     std::atomic<uint64_t> dropped_kernel_{0};
+
+    // The limiter is called from the collector thread only.  The counters are
+    // read from that thread (periodic reports) or after it stops (summary).
+    RateBucket user_rate_;
+    RateBucket kernel_rate_;
+    uint64_t user_lines_suppressed_ = 0;
+    uint64_t kernel_lines_suppressed_ = 0;
+    uint64_t reported_user_lines_ = 0;
+    uint64_t reported_kernel_lines_ = 0;
 
     static constexpr size_t kMaxQueuedBytes = 64ull << 20;
 };

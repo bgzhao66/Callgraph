@@ -83,8 +83,8 @@ The current implementation includes:
 - correlated kernel event tracing (`--kernel`) with OTel child spans for
   TID-specific syscall, reclaim, scheduler, and page-fault activity
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
-  stdout log rate limiting, source file/line attributes, and best-effort thread
-  names
+  stdout user/kernel log rate limiting with periodic drop reports, source
+  file/line attributes, and best-effort thread names
 
 Not implemented yet: a `--summary` aggregated statistics mode and
 child-process (`fork`) following.
@@ -244,7 +244,8 @@ Tracing options:
       --histogram           append per-root call trees and latency histograms to the output
       --ingest-sample-rate R
                             ingest root traces at rate R, 0..1 (default: 1)
-      --log-rate-limit N    limit stdout event lines per second (default: 0, off)
+      --log-rate-limit N    limit stdout user and kernel event lines to N per second each
+                            (default: 0, off)
       --probe-batch-size N  functions per uprobe_multi link (default: 1000)
       --ringbuf-size N      function and kernel ring buffer size, k/m/g suffix (default: 16m)
       --dry-run             list resolved functions and exit
@@ -569,11 +570,13 @@ whether the trace is ingested. A rejected root suppresses both its text lines
 and its spans; the stack is still tracked so returns and depth remain correct
 for accepted traces. Kernel events are not affected.
 
-`--log-rate-limit N` limits stdout event lines to `N` per second using a token
-bucket over event timestamps. `0` (the default) disables the limit. It applies
-only to stdout, so file output keeps the complete line stream, and it does not
-affect `--histogram` or exported spans. Suppressed lines are counted in the
-final summary.
+`--log-rate-limit N` limits stdout event lines to `N` per second. User and
+kernel lines use separate token buckets, so each stream gets at most `N` lines
+per second. `0` (the default) disables the limit. It applies only to stdout, so
+file output keeps the complete line stream, and it does not affect
+`--histogram` or exported spans. When lines are throttled, stderr gets a report
+every 5 seconds with the number suppressed since the previous report, split by
+user and kernel. The final summary shows the cumulative total.
 
 ### Latency histogram
 

@@ -1849,19 +1849,37 @@ void test_ingest_sampling_and_log_rate_limit()
     const std::string limited_path = temp_path();
     {
         Output output(limited_path);
+        output.set_log_rate_limit(2);
         CallStack stack(names, output, -1, false);
-        stack.set_log_rate_limit(2);
         stack.on_event(make_event(0, 61, kEventEnter, 0));
         stack.on_event(make_event(1, 61, kEventEnter, 0));
         stack.on_event(make_event(1, 61, kEventExit, 0));
         stack.on_event(make_event(0, 61, kEventExit, 0));
-        CHECK(stack.lines_suppressed() == 2);
+        CHECK(output.user_lines_suppressed() == 2);
+        CHECK(output.kernel_lines_suppressed() == 0);
+
+        // Kernel lines have a separate bucket, so they do not consume the
+        // user bucket's tokens.
+        for (int i = 0; i < 4; ++i)
+            output.emit_kernel(0, 62, 1, "SCHED", "switch", "");
+        CHECK(output.kernel_lines_suppressed() == 2);
+        CHECK(output.lines_suppressed() == 4);
+
+        const auto report = output.take_rate_limit_report();
+        CHECK(report.user == 2);
+        CHECK(report.kernel == 2);
+        CHECK(report.total() == 4);
+        const auto empty_report = output.take_rate_limit_report();
+        CHECK(empty_report.total() == 0);
+
         stack.on_event(make_event(0, 61, kEventEnter, 1000000000ULL));
         stack.on_event(make_event(0, 61, kEventExit, 1000000000ULL));
+        output.emit_kernel(1000000000ULL, 62, 1, "SCHED", "switch", "");
+        output.emit_kernel(1000000000ULL, 62, 1, "SCHED", "switch", "");
         output.stop();
     }
     const auto lines = read_lines(limited_path);
-    CHECK(lines.size() == 4);
+    CHECK(lines.size() == 8);
     unlink(limited_path.c_str());
 }
 

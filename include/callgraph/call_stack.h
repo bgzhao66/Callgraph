@@ -98,14 +98,6 @@ public:
     // matched correctly.  1.0 keeps every root.
     void set_ingest_sample_rate(double rate) { ingest_sample_rate_ = rate; }
 
-    // Limits emitted text lines per second with a token bucket over event
-    // timestamps.  Zero disables the limit.  The caller only enables this for
-    // stdout output; histogram output is unaffected.
-    void set_log_rate_limit(uint64_t lines_per_second)
-    {
-        log_rate_limit_ = lines_per_second;
-    }
-
     // Marks frames still live at shutdown as incomplete.  Safe to call more
     // than once; only the first call has an effect.
     void finish_statistics();
@@ -127,12 +119,10 @@ public:
     uint64_t stray_returns() const { return stray_returns_; }
     uint64_t bad_events() const { return bad_events_; }
     uint64_t ingest_skipped_roots() const { return ingest_skipped_roots_; }
-    uint64_t lines_suppressed() const { return lines_suppressed_; }
     size_t live_threads() const { return threads_.size(); }
 
 private:
     bool ingest_root(uint32_t tid);
-    bool log_allowed(uint64_t ts);
     void emit_line(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
                    const std::string& name);
 
@@ -170,12 +160,6 @@ private:
     double ingest_sample_rate_ = 1.0;
     std::unordered_map<uint32_t, uint64_t> ingest_sequences_;
     uint64_t ingest_skipped_roots_ = 0;
-
-    uint64_t log_rate_limit_ = 0;
-    double log_tokens_ = 0.0;
-    uint64_t log_last_ts_ = 0;
-    bool log_bucket_started_ = false;
-    uint64_t lines_suppressed_ = 0;
 };
 
 }  // namespace callgraph

@@ -87,9 +87,55 @@ std::string Output::format_timestamp(uint64_t ts_ns) const
     return buffer;
 }
 
+void Output::set_log_rate_limit(uint64_t lines_per_second)
+{
+    user_rate_.rate = lines_per_second;
+    kernel_rate_.rate = lines_per_second;
+}
+
+bool Output::log_allowed(RateBucket& bucket, uint64_t ts)
+{
+    if (bucket.rate == 0)
+        return true;
+
+    const double capacity =
+        static_cast<double>(bucket.rate > 1 ? bucket.rate : 1);
+    if (!bucket.started) {
+        bucket.tokens = capacity;
+        bucket.last_ts = ts;
+        bucket.started = true;
+    } else if (ts > bucket.last_ts) {
+        const double elapsed = static_cast<double>(ts - bucket.last_ts);
+        bucket.tokens += elapsed * static_cast<double>(bucket.rate) / 1e9;
+        if (bucket.tokens > capacity)
+            bucket.tokens = capacity;
+        bucket.last_ts = ts;
+    }
+
+    if (bucket.tokens < 1.0)
+        return false;
+    bucket.tokens -= 1.0;
+    return true;
+}
+
+Output::RateLimitReport Output::take_rate_limit_report()
+{
+    RateLimitReport report;
+    report.user = user_lines_suppressed_ - reported_user_lines_;
+    report.kernel = kernel_lines_suppressed_ - reported_kernel_lines_;
+    reported_user_lines_ = user_lines_suppressed_;
+    reported_kernel_lines_ = kernel_lines_suppressed_;
+    return report;
+}
+
 void Output::emit(uint64_t ts, uint32_t tid, uint32_t depth, const char* arrow,
                   const std::string& name)
 {
+    if (!log_allowed(user_rate_, ts)) {
+        ++user_lines_suppressed_;
+        return;
+    }
+
     const std::string stamp = format_timestamp(ts);
 
     char suffix[80];
@@ -123,6 +169,11 @@ void Output::emit_kernel(uint64_t ts, uint32_t tid, int depth,
                          const char* category, const std::string& event,
                          const std::string& attributes)
 {
+    if (!log_allowed(kernel_rate_, ts)) {
+        ++kernel_lines_suppressed_;
+        return;
+    }
+
     const std::string stamp = format_timestamp(ts);
     const std::string depth_text =
         depth == -2 ? "*" : depth == -1 ? "-" : std::to_string(depth);

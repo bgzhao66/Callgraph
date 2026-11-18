@@ -238,7 +238,8 @@ void usage(FILE* out)
         {"--ingest-sample-rate R",
          "ingest root traces at rate R, 0..1 (default: 1)"},
         {"--log-rate-limit N",
-         "limit stdout event lines per second (default: 0, off)"},
+         "limit stdout user and kernel event lines to N per second each\n"
+         "(default: 0, off)"},
         {"--probe-batch-size N",
          "functions per uprobe_multi link (default: 1000)"},
         {"--ringbuf-size N",
@@ -1904,6 +1905,14 @@ int main(int argc, char** argv)
                                           ? TimestampMode::WallClock
                                           : TimestampMode::BootSeconds,
                       options.indent_step, &clock_converter);
+        // Rate limiting is a stdout convenience; file output and the
+        // histogram trailer keep their complete line stream.
+        const bool log_rate_limit_enabled =
+            (options.output.empty() || options.output == "-") &&
+            options.log_rate_limit != 0;
+        if (log_rate_limit_enabled)
+            output.set_log_rate_limit(options.log_rate_limit);
+
         ProbeManager probes(target, options.ringbuf_size, options.probe_batch_size,
                             options.verbose);
         probes.load();
@@ -2065,10 +2074,6 @@ int main(int argc, char** argv)
         stack.set_trace_depth(options.trace_depth);
         stack.set_trace_roots(&registry.root_ids(), filter.has_root_scope());
         stack.set_ingest_sample_rate(options.ingest_sample_rate);
-        // Rate limiting is a stdout convenience; file output and the
-        // histogram trailer keep their complete line stream.
-        if (options.output.empty() || options.output == "-")
-            stack.set_log_rate_limit(options.log_rate_limit);
 
         if (is_child) {
             ProcessController::detach(target);
@@ -2094,6 +2099,8 @@ int main(int argc, char** argv)
 
         uint64_t last_calibration_ns = ClockConverter::now_monotonic_ns();
         uint64_t last_target_refresh_ns = last_calibration_ns;
+        uint64_t last_rate_report_ns = last_calibration_ns;
+        constexpr uint64_t kRateLimitReportIntervalNs = 5000000000ULL;
         auto collector_tick = [&]() {
             refresh_modules();
             const uint64_t now = ClockConverter::now_monotonic_ns();
@@ -2102,6 +2109,18 @@ int main(int argc, char** argv)
                 kernel_probes->set_target_tids(tids);
                 kernel_timeline->set_target_tids(tids);
                 last_target_refresh_ns = now;
+            }
+            if (log_rate_limit_enabled &&
+                now - last_rate_report_ns >= kRateLimitReportIntervalNs) {
+                const auto report = output.take_rate_limit_report();
+                if (report.total() != 0) {
+                    fprintf(stderr,
+                            "callgraph: rate-limited %" PRIu64
+                            " event line(s) since last report "
+                            "(user %" PRIu64 ", kernel %" PRIu64 ")\n",
+                            report.total(), report.user, report.kernel);
+                }
+                last_rate_report_ns = now;
             }
             if (now - last_calibration_ns >= 30000000000ULL) {
                 clock_converter.recalibrate();
@@ -2176,10 +2195,15 @@ int main(int argc, char** argv)
                     " root trace(s)\n",
                     stack.ingest_skipped_roots());
         }
-        if (stack.lines_suppressed() != 0) {
+        const uint64_t rate_limited_user = output.user_lines_suppressed();
+        const uint64_t rate_limited_kernel = output.kernel_lines_suppressed();
+        if (rate_limited_user + rate_limited_kernel != 0) {
             fprintf(stderr,
-                    "callgraph: rate-limited %" PRIu64 " event line(s)\n",
-                    stack.lines_suppressed());
+                    "callgraph: rate-limited %" PRIu64
+                    " event line(s) total (user %" PRIu64
+                    ", kernel %" PRIu64 ")\n",
+                    rate_limited_user + rate_limited_kernel, rate_limited_user,
+                    rate_limited_kernel);
         }
         if (span_generator && options.complete_traces)
             print_trace_buffer_stats(*span_generator);
