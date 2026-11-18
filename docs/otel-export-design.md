@@ -426,11 +426,11 @@ direct-call tree from facts written by `callgraph-disasm`. `--otel` and
 `--flame` read a text trace through `--input`; `--static` reads a JSON facts
 document through `--static-graph` and takes no positional argument.
 `--batch-size` controls OTLP batching; `--probe-batch-size`
-controls the `uprobe_multi` link batch independently. `callgraph-export --help`
+controls the `uprobe_multi` link batch independently. `callgraph export --help`
 has an Offline export options section where `--otel`, `--flame`, and `--static`
 are master entries with their mode-specific options indented beneath them;
 `--input`, `--output`, and the `--static` filters are listed there, and
-`--help` is under General options. `callgraph-export --otel|--flame|--static
+`--help` is under General options. `callgraph export --otel|--flame|--static
 --help` narrows the page to that mode and omits the other modes' options.
 
 The facts document is produced by the libopcodes-enabled `callgraph-disasm`

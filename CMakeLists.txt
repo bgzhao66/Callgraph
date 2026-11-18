@@ -381,4 +381,4 @@ endif()
 
 install(TARGETS callgraph-run callgraph-attach callgraph-export
         callgraph-disasm RUNTIME DESTINATION bin)
-install(PROGRAMS callgraph.sh DESTINATION bin)
+install(PROGRAMS callgraph DESTINATION bin)

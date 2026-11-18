@@ -1030,7 +1030,7 @@ userspace receipt and marked `approximate=true`.
 Kernel events are opt-in: `--kernel` is the master switch, and every other
 kernel option is secondary to it. Without `--kernel`, the CLI and output are
 unchanged. `--kernel` alone selects the `latency` preset. In the
-`callgraph-run`/`callgraph-attach` `--help` page, `--kernel` appears under the
+`callgraph run`/`callgraph attach` `--help` page, `--kernel` appears under the
 Kernel event options section and its family shortcuts and modifiers are
 indented beneath it.
 

@@ -41,7 +41,7 @@ constexpr int kPrimaryShortIndent = 2;
 constexpr int kPrimaryIndent = 6;
 constexpr int kSecondaryIndent = 10;
 constexpr int kTertiaryIndent = 14;
-constexpr int kDescColumn = 28;
+constexpr int kDescColumn = 32;
 
 void print_help_description(FILE* out, const char* desc, int column)
 {
@@ -103,45 +103,45 @@ void print_help_section(FILE* out, const char* title,
 void print_tracing_options(FILE* out)
 {
     print_help_section(out, "Tracing options", {
-        {"-o, --output FILE", "write events to FILE (default: stdout)"},
-        {"--root-scope GLOB",
+        {"-o, --output <file>", "write events to <file> (default: stdout)"},
+        {"--root-scope <glob>",
          "functions that may start a traced call tree (repeatable)"},
-        {"--exclude GLOB", "skip functions matching GLOB (repeatable)"},
+        {"--exclude <glob>", "skip functions matching <glob> (repeatable)"},
         {"--regex", "treat --root-scope/--exclude as extended regex"},
-        {"--return-mode M", "uretprobe (default) or ret (exception-safe)"},
+        {"--return-mode <mode>", "uretprobe (default) or ret (exception-safe)"},
         {"--no-rsp-resync",
          "keep frames across stack switches (stackful\n"
          "runtimes such as ucontext, Boost.Context);\n"
          "disables longjmp/siglongjmp depth repair"},
         {"--all-modules", "trace every mapped ELF module"},
-        {"--module GLOB", "also trace mapped modules matching GLOB"},
-        {"--static-graph FILE",
-         "call-graph facts from callgraph-disasm (repeatable);\n"
+        {"--module <glob>", "also trace mapped modules matching <glob>"},
+        {"--static-graph <file>",
+         "call-graph facts from callgraph disasm (repeatable);\n"
          "enables --trace-depth pruning and --return-mode=ret"},
         {"-T, --wall-clock",
          "wall-clock timestamps (default: seconds since boot)"},
-        {"--max-depth N", "print events with depth <= N (default: unlimited)"},
-        {"--trace-depth N",
-         "trace user frames N levels below the root\n"
+        {"--max-depth <n>", "print events with depth <= <n> (default: unlimited)"},
+        {"--trace-depth <n>",
+         "trace user frames <n> levels below the root\n"
          "(0: root only; default: unlimited);\n"
-         "N > 0 prunes probes along direct calls;\n"
+         "<n> > 0 prunes probes along direct calls;\n"
          "kernel events unaffected"},
-        {"--indent N", "indent names by depth*N spaces (default: 0)"},
+        {"--indent <n>", "indent names by depth*<n> spaces (default: 0)"},
         {"--show-args",
          "show function arguments after names (needs DWARF)"},
         {"--histogram",
          "append per-root call trees and latency histograms to the output"},
-        {"--ingest-sample-rate R",
-         "ingest root traces at rate R, 0..1 (default: 1)"},
-        {"--log-rate-limit N",
-         "limit stdout user and kernel event lines to N per second each\n"
+        {"--ingest-sample-rate <rate>",
+         "ingest root traces at rate <rate>, 0..1 (default: 1)"},
+        {"--log-rate-limit <n>",
+         "limit stdout user and kernel event lines to <n> per second each\n"
          "(default: 0, off)"},
-        {"--probe-batch-size N",
+        {"--probe-batch-size <n>",
          "functions per uprobe_multi link (default: 1000)"},
-        {"--ringbuf-size N",
+        {"--ringbuf-size <size>",
          "function and kernel ring buffer size, k/m/g suffix (default: 16m)"},
         {"--dry-run", "list resolved functions and exit"},
-        {"--trace-metadata FILE", "write an offline-conversion sidecar"},
+        {"--trace-metadata <file>", "write an offline-conversion sidecar"},
     });
 }
 
@@ -155,8 +155,8 @@ void print_kernel_options(FILE* out)
         {"--block", "trace block request events (global)", 1},
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
-        {"--events L", "comma-separated: sched,futex,io,block,net,mm", 1},
-        {"--preset P",
+        {"--events <events>", "comma-separated: sched,futex,io,block,net,mm", 1},
+        {"--preset <preset>",
          "latency (default), proxy, storage, computation, full, or extended", 1},
         {"latency", "sched, futex, io, net syscalls", 2},
         {"proxy", "sched, futex, io, net syscalls, TCP retransmits", 2},
@@ -170,7 +170,7 @@ void print_kernel_options(FILE* out)
          "sched, futex, io, block, net syscalls, direct reclaim,\n"
          "page faults, TCP retransmits",
          2},
-        {"--merge-window D",
+        {"--merge-window <duration>",
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
         {"--require-events",
          "fail if a requested tracepoint is unavailable", 1},
@@ -180,32 +180,32 @@ void print_kernel_options(FILE* out)
 void print_live_export_options(FILE* out)
 {
     print_help_section(out, "Live export options (--exporter)", {
-        {"--exporter M", "stdout (default), otlp, otlp-http, or otlp-json"},
-        {"--endpoint URL",
+        {"--exporter <mode>", "stdout (default), otlp, otlp-http, or otlp-json"},
+        {"--endpoint <url>",
          "OTLP endpoint; default localhost:4317 / :4318", 1},
-        {"--export-file FILE", "output file for --exporter otlp-json", 1},
-        {"--service-name NAME",
+        {"--export-file <file>", "output file for --exporter otlp-json", 1},
+        {"--service-name <name>",
          "override service.name (default: exe basename)", 1},
-        {"--service-namespace NAME", "override service.namespace", 1},
-        {"--trace-scope M", "root (default), thread, or process", 1},
-        {"--batch-size N", "spans per OTLP batch (default: 512)", 1},
-        {"--batch-bytes N", "OTLP request size limit (default: 1m)", 1},
-        {"--flush-interval N",
+        {"--service-namespace <name>", "override service.namespace", 1},
+        {"--trace-scope <mode>", "root (default), thread, or process", 1},
+        {"--batch-size <n>", "spans per OTLP batch (default: 512)", 1},
+        {"--batch-bytes <n>", "OTLP request size limit (default: 1m)", 1},
+        {"--flush-interval <n>",
          "OTLP batch flush interval in ms (default: 1000)", 1},
-        {"--timeout-ms N", "OTLP HTTP timeout (default: 5000)", 1},
-        {"--queue-spans N", "exporter queue limit (default: 10000)", 1},
-        {"--header K=V", "add an HTTP header (repeatable)", 1},
-        {"--compression M", "none (default) or gzip (OTLP/HTTP only)", 1},
-        {"--sample-rate R",
+        {"--timeout-ms <n>", "OTLP HTTP timeout (default: 5000)", 1},
+        {"--queue-spans <n>", "exporter queue limit (default: 10000)", 1},
+        {"--header <key=value>", "add an HTTP header (repeatable)", 1},
+        {"--compression <mode>", "none (default) or gzip (OTLP/HTTP only)", 1},
+        {"--sample-rate <rate>",
          "baseline root-trace sampling rate, 0..1 (default: 1)", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
         {"--complete-traces", "export only complete traces", 1},
-        {"--trace-buffer-bytes SIZE",
+        {"--trace-buffer-bytes <size>",
          "trace buffer byte limit (default: 256m)", 2},
-        {"--trace-buffer-spans N",
+        {"--trace-buffer-spans <n>",
          "trace buffer span limit (default: 1000000)", 2},
-        {"--outlier-latency-quantile Q",
-         "export traces above the trace-duration Q\n"
+        {"--outlier-latency-quantile <quantile>",
+         "export traces above the trace-duration <quantile>\n"
          "quantile; annotates root spans with\n"
          "callgraph.quantile (root scope)",
          2},
@@ -215,15 +215,15 @@ void print_live_export_options(FILE* out)
 void print_export_input_options(FILE* out)
 {
     print_help_options(out, {
-        {"--input FILE", "callgraph text trace to convert (--otel/--flame)"},
+        {"--input <file>", "callgraph text trace to convert (--otel/--flame)"},
     });
 }
 
 void print_export_output_option(FILE* out)
 {
     print_help_options(out, {
-        {"-o, --output FILE",
-         "write the converted output to FILE (default: stdout)"},
+        {"-o, --output <file>",
+         "write the converted output to <file> (default: stdout)"},
     });
 }
 
@@ -231,36 +231,36 @@ void print_otel_option_group(FILE* out)
 {
     print_help_options(out, {
         {"--otel", "convert a text trace to OpenTelemetry OTLP/JSON spans"},
-        {"--endpoint URL",
-         "POST the OTLP/JSON body to URL\n"
+        {"--endpoint <url>",
+         "POST the OTLP/JSON body to <url>\n"
          "(OTLP/HTTP JSON; path defaults to /v1/traces)", 1},
-        {"--service-name NAME", "override service.name", 1},
-        {"--service-namespace NAME", "override service.namespace", 1},
-        {"--metadata FILE", "trace metadata sidecar", 1},
+        {"--service-name <name>", "override service.name", 1},
+        {"--service-namespace <name>", "override service.namespace", 1},
+        {"--metadata <file>", "trace metadata sidecar", 1},
         {"--assume-local-capture",
          "assume the trace came from this host/boot session", 1},
-        {"--trace-scope MODE", "root (default), thread, or process", 1},
-        {"--trace-id-seed HEX", "deterministic trace IDs", 1},
-        {"--sample-rate R",
+        {"--trace-scope <mode>", "root (default), thread, or process", 1},
+        {"--trace-id-seed <hex>", "deterministic trace IDs", 1},
+        {"--sample-rate <rate>",
          "baseline root-trace sampling rate, 0..1", 1},
         {"--complete-traces", "export only complete traces", 1},
-        {"--trace-buffer-bytes SIZE",
+        {"--trace-buffer-bytes <size>",
          "trace buffer byte limit (default: 256m)", 2},
-        {"--trace-buffer-spans N",
+        {"--trace-buffer-spans <n>",
          "trace buffer span limit (default: 1000000)", 2},
-        {"--outlier-latency-quantile Q",
-         "export traces above the trace-duration Q\n"
+        {"--outlier-latency-quantile <quantile>",
+         "export traces above the trace-duration <quantile>\n"
          "quantile; annotates root spans with\n"
          "callgraph.quantile (root scope)",
          2},
-        {"--batch-size N", "spans per OTLP batch (default: 512)", 1},
-        {"--batch-bytes N", "request size limit (default: 1m)", 1},
-        {"--flush-interval N",
+        {"--batch-size <n>", "spans per OTLP batch (default: 512)", 1},
+        {"--batch-bytes <n>", "request size limit (default: 1m)", 1},
+        {"--flush-interval <n>",
          "batch flush interval in ms (default: 1000)", 1},
-        {"--timeout-ms N", "HTTP timeout (default: 5000)", 1},
-        {"--queue-spans N", "exporter queue limit (default: 10000)", 1},
-        {"--header K=V", "add an HTTP header (repeatable)", 1},
-        {"--compression M", "none (default) or gzip", 1},
+        {"--timeout-ms <n>", "HTTP timeout (default: 5000)", 1},
+        {"--queue-spans <n>", "exporter queue limit (default: 10000)", 1},
+        {"--header <key=value>", "add an HTTP header (repeatable)", 1},
+        {"--compression <mode>", "none (default) or gzip", 1},
         {"--fail-on-export-error", "exit non-zero if export fails", 1},
     });
 }
@@ -269,9 +269,9 @@ void print_static_option_group(FILE* out)
 {
     print_help_options(out, {
         {"--static", "render a direct-call graph from facts"},
-        {"--static-graph FILE",
-         "facts produced by callgraph-disasm (repeatable)", 1},
-        {"--root-scope GLOB",
+        {"--static-graph <file>",
+         "facts produced by callgraph disasm (repeatable)", 1},
+        {"--root-scope <glob>",
          "with --static, functions that start a tree (repeatable)", 1},
         {"--regex",
          "with --static, treat --root-scope as extended regex", 1},
@@ -298,8 +298,8 @@ void print_static_notes(FILE* out)
 {
     fprintf(out,
             "\n"
-            "  --static renders facts written by callgraph-disasm; generate\n"
-            "  them with 'callgraph-disasm --all-modules MODULE -o facts.json'.\n"
+            "  --static renders facts written by callgraph disasm; generate\n"
+            "  them with 'callgraph disasm --all-modules <module> -o facts.json'.\n"
             "  The tracer never links a disassembler.\n");
 }
 
@@ -309,7 +309,7 @@ void print_offline_export_options(FILE* out)
             "Offline export options:\n"
             "  Convert an existing text trace.  --otel emits an OTLP/JSON\n"
             "  request body; --flame emits folded stacks; --static renders a\n"
-            "  direct-call graph from callgraph-disasm facts.\n");
+            "  direct-call graph from callgraph disasm facts.\n");
     print_export_input_options(out);
     print_otel_option_group(out);
     print_static_option_group(out);
@@ -320,8 +320,8 @@ void print_offline_export_options(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
-            "  --static renders facts written by callgraph-disasm; generate\n"
-            "  them with 'callgraph-disasm --all-modules MODULE -o facts.json'.\n"
+            "  --static renders facts written by callgraph disasm; generate\n"
+            "  them with 'callgraph disasm --all-modules <module> -o facts.json'.\n"
             "  The tracer never links a disassembler.\n"
             "\n");
 }
@@ -342,47 +342,47 @@ void print_live_examples(FILE* out, bool attach)
     if (!attach) {
         fprintf(out,
                 "  Trace a program:\n"
-                "    sudo callgraph-run -- ./demo\n"
-                "    sudo callgraph-run --root-scope 'Database::*' -- ./demo\n"
-                "    callgraph-run --dry-run -- ./demo\n"
+                "    sudo callgraph run -- ./demo\n"
+                "    sudo callgraph run --root-scope 'Database::*' -- ./demo\n"
+                "    callgraph run --dry-run -- ./demo\n"
                 "\n");
     } else {
         fprintf(out,
                 "  Attach to a running process:\n"
-                "    sudo callgraph-attach -p 12345\n"
-                "    sudo callgraph-attach -p 12345 --root-scope 'Database::*'\n"
+                "    sudo callgraph attach -p 12345\n"
+                "    sudo callgraph attach -p 12345 --root-scope 'Database::*'\n"
                 "\n");
     }
     fprintf(out,
             "  Correlated kernel events:\n");
     if (!attach) {
         fprintf(out,
-                "    sudo callgraph-run --kernel --preset latency -- ./demo\n"
-                "    sudo callgraph-run --kernel --preset proxy -- ./proxy\n"
-                "    sudo callgraph-run --kernel --preset storage -- ./db\n"
-                "    sudo callgraph-run --kernel --sched --futex -- ./demo\n"
-                "    sudo callgraph-run --kernel --memory --network -- ./demo\n");
+                "    sudo callgraph run --kernel --preset latency -- ./demo\n"
+                "    sudo callgraph run --kernel --preset proxy -- ./proxy\n"
+                "    sudo callgraph run --kernel --preset storage -- ./db\n"
+                "    sudo callgraph run --kernel --sched --futex -- ./demo\n"
+                "    sudo callgraph run --kernel --memory --network -- ./demo\n");
     } else {
         fprintf(out,
-                "    sudo callgraph-attach -p 12345 --kernel\n"
-                "    sudo callgraph-attach -p 12345 --kernel --block --io --network\n");
+                "    sudo callgraph attach -p 12345 --kernel\n"
+                "    sudo callgraph attach -p 12345 --kernel --block --io --network\n");
     }
     fprintf(out,
             "\n"
             "  Live export:\n");
     if (!attach) {
         fprintf(out,
-                "    sudo callgraph-run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
-                "    sudo callgraph-run --exporter otlp-http -- ./demo\n"
-                "    sudo callgraph-run --exporter otlp-json --export-file trace.json -- ./demo\n");
+                "    sudo callgraph run --exporter otlp --endpoint localhost:4317 -- ./demo\n"
+                "    sudo callgraph run --exporter otlp-http -- ./demo\n"
+                "    sudo callgraph run --exporter otlp-json --export-file trace.json -- ./demo\n");
     } else {
         fprintf(out,
-                "    sudo callgraph-attach -p 12345 --exporter otlp \\\n"
+                "    sudo callgraph attach -p 12345 --exporter otlp \\\n"
                 "        --endpoint localhost:4317 --service-name my_app\n");
     }
     fprintf(out,
             "\n"
-            "  Offline conversion: run 'callgraph-export --help'\n");
+            "  Offline conversion: run 'callgraph export --help'\n");
 }
 
 void print_export_otel_examples(FILE* out)
@@ -390,14 +390,14 @@ void print_export_otel_examples(FILE* out)
     fprintf(out,
             "Examples:\n"
             "  # ISO wall-clock trace\n"
-            "  callgraph-export --otel --input trace.log --output spans.json\n"
+            "  callgraph export --otel --input trace.log --output spans.json\n"
             "\n"
             "  # Record the timestamp anchor while capturing, then convert\n"
-            "  callgraph-export --otel --input trace.log \\\n"
+            "  callgraph export --otel --input trace.log \\\n"
             "      --metadata trace.meta --output spans.json\n"
             "\n"
             "  # Boot-second trace with no sidecar\n"
-            "  callgraph-export --otel --input trace.log --output spans.json \\\n"
+            "  callgraph export --otel --input trace.log --output spans.json \\\n"
             "      --assume-local-capture\n");
 }
 
@@ -405,7 +405,7 @@ void print_export_flame_examples(FILE* out)
 {
     fprintf(out,
             "Examples:\n"
-            "  callgraph-export --flame --input trace.log --output stacks.folded\n"
+            "  callgraph export --flame --input trace.log --output stacks.folded\n"
             "  flamegraph.pl stacks.folded > flame.svg\n");
 }
 
@@ -413,10 +413,10 @@ void print_export_static_examples(FILE* out)
 {
     fprintf(out,
             "Examples:\n"
-            "  callgraph-disasm ./app -o facts.json\n"
-            "  callgraph-export --static --static-graph facts.json\n"
-            "  callgraph-disasm --all-modules ./app -o facts.json\n"
-            "  callgraph-export --static --static-graph facts.json \\\n"
+            "  callgraph disasm ./app -o facts.json\n"
+            "  callgraph export --static --static-graph facts.json\n"
+            "  callgraph disasm --all-modules ./app -o facts.json\n"
+            "  callgraph export --static --static-graph facts.json \\\n"
             "      --regex --root-scope '^main$'\n");
 }
 
@@ -425,26 +425,26 @@ void print_export_examples(FILE* out)
     fprintf(out,
             "Examples:\n"
             "  # Record the timestamp anchor while capturing, then convert\n"
-            "  callgraph-run -o trace.log --trace-metadata trace.meta -- ./app\n"
-            "  callgraph-export --otel --input trace.log \\\n"
+            "  callgraph run -o trace.log --trace-metadata trace.meta -- ./app\n"
+            "  callgraph export --otel --input trace.log \\\n"
             "      --metadata trace.meta --output spans.json\n"
             "\n"
             "  # ISO wall-clock trace with no sidecar\n"
-            "  callgraph-export --otel --input trace.log --output spans.json\n"
+            "  callgraph export --otel --input trace.log --output spans.json\n"
             "\n"
             "  # Boot-second trace with no sidecar; approximate this-host anchor\n"
-            "  callgraph-export --otel --input trace.log --output spans.json \\\n"
+            "  callgraph export --otel --input trace.log --output spans.json \\\n"
             "      --assume-local-capture\n"
             "\n"
             "  # Folded stacks for flamegraph.pl / inferno-flamegraph\n"
-            "  callgraph-export --flame --input trace.log --output stacks.folded\n"
+            "  callgraph export --flame --input trace.log --output stacks.folded\n"
             "  flamegraph.pl stacks.folded > flame.svg\n"
             "\n"
             "  # Static call graph from disassembler facts\n"
-            "  callgraph-disasm ./app -o facts.json\n"
-            "  callgraph-export --static --static-graph facts.json\n"
-            "  callgraph-disasm --all-modules ./app -o facts.json\n"
-            "  callgraph-export --static --static-graph facts.json \\\n"
+            "  callgraph disasm ./app -o facts.json\n"
+            "  callgraph export --static --static-graph facts.json\n"
+            "  callgraph disasm --all-modules ./app -o facts.json\n"
+            "  callgraph export --static --static-graph facts.json \\\n"
             "      --regex --root-scope '^main$'\n");
 }
 
@@ -472,9 +472,9 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
 {
     if (!mode_set) {
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-export --otel|--flame --input TRACE [options]\n"
-                "  callgraph-export --static --static-graph FILE [options]\n"
+                "usage:\n"
+                "  callgraph export --otel|--flame --input <trace> [<options>]\n"
+                "  callgraph export --static --static-graph <file> [<options>]\n"
                 "\n");
         print_offline_export_options(out);
         print_general_options(out);
@@ -485,8 +485,8 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
     switch (mode) {
     case ExportMode::Otel:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-export --otel --input TRACE [options]\n"
+                "usage:\n"
+                "  callgraph export --otel --input <trace> [<options>]\n"
                 "\n");
         fprintf(out, "OTel export options (--otel):\n");
         print_export_input_options(out);
@@ -498,8 +498,8 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
         break;
     case ExportMode::Flame:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-export --flame --input TRACE [options]\n"
+                "usage:\n"
+                "  callgraph export --flame --input <trace> [<options>]\n"
                 "\n");
         fprintf(out, "Flame export options (--flame):\n");
         print_export_input_options(out);
@@ -510,8 +510,8 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
         break;
     case ExportMode::Static:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-export --static --static-graph FILE [options]\n"
+                "usage:\n"
+                "  callgraph export --static --static-graph <file> [<options>]\n"
                 "\n");
         fprintf(out, "Static export options (--static):\n");
         print_static_option_group(out);
@@ -528,8 +528,8 @@ void usage(FILE* out)
     switch (g_mode) {
     case ProgramMode::Run:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-run [options] -- program [args...]\n"
+                "usage:\n"
+                "  callgraph run [<options>] -- <program> [<args>...]\n"
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
@@ -539,8 +539,8 @@ void usage(FILE* out)
         break;
     case ProgramMode::Attach:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-attach [options] -p PID\n"
+                "usage:\n"
+                "  callgraph attach [<options>] -p <pid>\n"
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
@@ -559,25 +559,25 @@ void usage_brief(FILE* out)
     switch (g_mode) {
     case ProgramMode::Run:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-run [options] -- program [args...]\n"
+                "usage:\n"
+                "  callgraph run [<options>] -- <program> [<args>...]\n"
                 "\n"
-                "Run 'callgraph-run --help' for all options.\n");
+                "Run 'callgraph run --help' for all options.\n");
         break;
     case ProgramMode::Attach:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-attach [options] -p PID\n"
+                "usage:\n"
+                "  callgraph attach [<options>] -p <pid>\n"
                 "\n"
-                "Run 'callgraph-attach --help' for all options.\n");
+                "Run 'callgraph attach --help' for all options.\n");
         break;
     case ProgramMode::Export:
         fprintf(out,
-                "Usage:\n"
-                "  callgraph-export --otel|--flame --input TRACE [options]\n"
-                "  callgraph-export --static --static-graph FILE [options]\n"
+                "usage:\n"
+                "  callgraph export --otel|--flame --input <trace> [<options>]\n"
+                "  callgraph export --static --static-graph <file> [<options>]\n"
                 "\n"
-                "Run 'callgraph-export --help' for all options.\n");
+                "Run 'callgraph export --help' for all options.\n");
         break;
     }
 }

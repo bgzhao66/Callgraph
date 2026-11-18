@@ -21,7 +21,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
-# callgraph.sh - orchestration wrapper.
+# callgraph - orchestration wrapper.
 #
 # This script contains no analysis logic.  It decides whether the tracer needs
 # static call-graph facts, asks callgraph-disasm for them, and passes the
@@ -76,29 +76,30 @@ callgraph_disasm=${CALLGRAPH_DISASM:-"$self_dir/callgraph-disasm"}
 
 usage() {
     cat <<'EOF'
-Usage:
-  callgraph.sh run    [tracer options] -- PROGRAM [ARGS...]
-  callgraph.sh attach [tracer options] -p PID
-  callgraph.sh export --static [options] MODULE
-  callgraph.sh export --otel|--flame [options]
-  callgraph.sh disasm [callgraph-disasm options] MODULE
+usage: callgraph <command> [<args>]
 
-Facts are generated automatically for:
-  run/attach --trace-depth N (N >= 0) or --return-mode=ret
-  export --static
+These are the available commands:
 
-Pass --static-graph FILE to reuse facts produced by callgraph-disasm; the
-wrapper then generates nothing.  Generated facts are temporary and removed
-when the wrapper exits.
+   run       trace a program launched by callgraph
+   attach    trace a running process
+   export    convert a trace or render a static call graph
+   disasm    emit static facts for an ELF module
 
---all-modules is forwarded to callgraph-disasm as well as to the tracer, so
+Facts are generated for run/attach --trace-depth <n> (n >= 0) or
+--return-mode=ret, and for export --static.  Pass --static-graph <file> to
+reuse facts produced by callgraph disasm; the wrapper then generates nothing.
+Generated facts are temporary and removed when callgraph exits.
+
+--all-modules is forwarded to callgraph disasm as well as to the tracer, so
 the facts cover the target's static DT_NEEDED closure.  Modules opened with
 dlopen have no facts and degrade with a tracer warning.
+
+Run 'callgraph <command> --help' for details.
 EOF
 }
 
 die() {
-    printf 'callgraph.sh: %s\n' "$*" >&2
+    printf 'callgraph: %s\n' "$*" >&2
     exit 1
 }
 

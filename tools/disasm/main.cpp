@@ -25,21 +25,20 @@ const char* kProgram = "callgraph-disasm";
 void usage(FILE* out)
 {
     fprintf(out,
-            "Usage:\n"
-            "  %s [options] MODULE\n"
+            "usage: callgraph disasm [<options>] <module>\n"
             "\n"
             "Emit static call-graph facts for an ELF executable or shared\n"
-            "object.  MODULE must retain its symbol table and be x86-64.\n"
+            "object.  <module> must retain its symbol table and be x86-64.\n"
             "\n"
             "Options:\n"
-            "  -o, --output FILE   write JSON facts to FILE (default: stdout)\n"
-            "      --all-modules   MODULE plus its transitive DT_NEEDED closure\n"
-            "  -h, --help          show this help\n"
-            "      --version       print version and libopcodes availability\n"
+            "  -o, --output <file>  write JSON facts to <file> (default: stdout)\n"
+            "      --all-modules    <module> plus its transitive DT_NEEDED closure\n"
+            "  -h, --help           show this help\n"
+            "      --version        print version and libopcodes availability\n"
             "\n"
             "The output is consumed by:\n"
-            "  callgraph --static-graph FILE run ...\n"
-            "  callgraph export --static --static-graph FILE\n",
+            "  callgraph run --static-graph <file> ...\n"
+            "  callgraph export --static --static-graph <file>\n",
             kProgram);
 }
 

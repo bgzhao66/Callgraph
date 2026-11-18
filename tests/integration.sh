@@ -11,7 +11,7 @@ ATTACH=$(readlink -f "$BIN_DIR/callgraph-attach")
 EXPORT=$(readlink -f "$BIN_DIR/callgraph-export")
 DISASM=$(readlink -f "$BIN_DIR/callgraph-disasm")
 DISASM_BIN=$DISASM
-WRAPPER="$ROOT/callgraph.sh"
+WRAPPER="$ROOT/callgraph"
 
 g++ -O0 -g -o "$TMP/simple" "$ROOT/examples/simple.cpp"
 g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
@@ -131,12 +131,12 @@ set +o pipefail
 ! "$RUN" --help | grep -q -- '--static-prune'
 ! "$RUN" --help | grep -q -- '--include-indirect'
 "$RUN" --help | grep -q -- '--trace-depth'
-"$RUN" --help | grep -q 'N > 0 prunes probes along direct calls'
+"$RUN" --help | grep -q '<n> > 0 prunes probes along direct calls'
 "$RUN" --help | grep -q '^Kernel event options (--kernel):'
-"$RUN" --help | grep -q '^              latency       sched, futex, io, net syscalls$'
-"$RUN" --help | grep -q '^              computation   sched, futex, direct reclaim, page faults$'
-"$RUN" --help | grep -q '^              full          sched, futex, io, net syscalls, direct reclaim,$'
-"$RUN" --help | grep -q '^              extended      sched, futex, io, block, net syscalls, direct reclaim,$'
+"$RUN" --help | grep -q '^              latency           sched, futex, io, net syscalls$'
+"$RUN" --help | grep -q '^              computation       sched, futex, direct reclaim, page faults$'
+"$RUN" --help | grep -q '^              full              sched, futex, io, net syscalls, direct reclaim,$'
+"$RUN" --help | grep -q '^              extended          sched, futex, io, block, net syscalls, direct reclaim,$'
 "$RUN" --help | grep -q '^Live export options (--exporter):'
 ! "$RUN" --help | grep -q '^Offline export options:'
 "$RUN" --help | grep -q '^General options:'
@@ -145,21 +145,21 @@ set +o pipefail
 "$RUN" --help | grep -q '^          --events'
 "$RUN" --help | grep -q '^          --endpoint'
 "$RUN" --help | grep -q '^          --complete-traces'
-"$RUN" --help | grep -q '^              --trace-buffer-bytes SIZE'
-"$RUN" --help | grep -q '^              --outlier-latency-quantile Q'
-"$RUN" --help | grep -q '^      --ingest-sample-rate R'
-"$RUN" --help | grep -q '^      --log-rate-limit N'
+"$RUN" --help | grep -q '^              --trace-buffer-bytes <size>'
+"$RUN" --help | grep -q '^              --outlier-latency-quantile <quantile>'
+"$RUN" --help | grep -q '^      --ingest-sample-rate <rate>'
+"$RUN" --help | grep -q '^      --log-rate-limit <n>'
 "$RUN" --help | grep -q 'limit stdout user and kernel event lines'
 "$EXPORT" --help | grep -q '^      --otel'
 "$EXPORT" --help | grep -q '^      --flame'
 "$EXPORT" --otel --help | grep -q '^          --endpoint'
 "$EXPORT" --otel --help | grep -q '^          --complete-traces'
-"$EXPORT" --otel --help | grep -q '^              --outlier-latency-quantile Q'
+"$EXPORT" --otel --help | grep -q '^              --outlier-latency-quantile <quantile>'
 "$EXPORT" --flame --help | grep -q '^      --flame'
 "$EXPORT" --static --help | grep -q '^      --static'
-"$EXPORT" --static --help | grep -q '^          --static-graph FILE'
-"$EXPORT" --static --help | grep -q '^          --root-scope GLOB'
-"$EXPORT" --static --help | grep -q 'callgraph-export --static --static-graph FILE'
+"$EXPORT" --static --help | grep -q '^          --static-graph <file>'
+"$EXPORT" --static --help | grep -q '^          --root-scope <glob>'
+"$EXPORT" --static --help | grep -q 'callgraph export --static --static-graph <file>'
 # Mode pages are narrowed: no options from the other modes.
 ! "$EXPORT" --static --help | grep -q -- '--otel'
 ! "$EXPORT" --static --help | grep -q -- '--endpoint'
@@ -172,15 +172,15 @@ set +o pipefail
 "$EXPORT" --help | grep -q '^      --static'
 "$EXPORT" --help | grep -q '^      --flame'
 # The run/attach page points at the exporter instead of duplicating it.
-"$RUN" --help | grep -q "Offline conversion: run 'callgraph-export --help'"
+"$RUN" --help | grep -q "Offline conversion: run 'callgraph export --help'"
 "$RUN" --help > "$TMP/help-run.txt"
 "$RUN" -h > "$TMP/help-run-short.txt"
 cmp "$TMP/help-run.txt" "$TMP/help-run-short.txt"
 "$ATTACH" --help > "$TMP/help-attach.txt"
 "$EXPORT" --help > "$TMP/help-export.txt"
-grep -q '^  callgraph-run \[options\] -- program' "$TMP/help-run.txt"
-grep -q '^  callgraph-attach \[options\] -p PID' "$TMP/help-attach.txt"
-grep -q '^  callgraph-export --otel|--flame' "$TMP/help-export.txt"
+grep -q '^  callgraph run \[<options>\] -- <program>' "$TMP/help-run.txt"
+grep -q '^  callgraph attach \[<options>\] -p <pid>' "$TMP/help-attach.txt"
+grep -q '^  callgraph export --otel|--flame --input <trace>' "$TMP/help-export.txt"
 ! grep -q -- '--kernel' "$TMP/help-export.txt"
 ! grep -q '^Offline export options:' "$TMP/help-run.txt"
 ! grep -q -- '--exporter' "$TMP/help-export.txt"
@@ -633,7 +633,7 @@ grep -q -- '--return-mode=ret requires --static-graph' "$TMP/ret.err"
 "$RUN" --return-mode=ret --static-graph "$TMP/simple.json" \
     --dry-run -- "$TMP/simple" >/dev/null 2>&1
 
-echo "== callgraph.sh =="
+echo "== callgraph =="
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" disasm "$TMP/simple" -o "$TMP/wrapper.json"
@@ -685,16 +685,16 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     --dry-run -- "$TMP/simple" >"$TMP/wrapper-dry2.txt" 2>/dev/null
 cmp "$TMP/wrapper-dry.txt" "$TMP/wrapper-dry2.txt"
 
-echo "== callgraph.sh: help and version are side-effect free =="
+echo "== callgraph: help and version are side-effect free =="
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" --help | grep -q 'callgraph.sh run'
+    "$WRAPPER" --help | grep -q '^usage: callgraph <command>'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --help | grep -q 'callgraph-run \[options\]'
+    "$WRAPPER" run --help | grep -q '^  callgraph run \[<options>\]'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" attach --help | grep -q 'callgraph-attach \[options\]'
+    "$WRAPPER" attach --help | grep -q '^  callgraph attach \[<options>\]'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --otel --help | grep -q -- '--endpoint'
@@ -705,7 +705,7 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --static --version | grep -q '^callgraph-export '
 
-echo "== callgraph.sh: temporary facts are cleaned up =="
+echo "== callgraph: temporary facts are cleaned up =="
 mkdir -p "$TMP/factstmp"
 assert_factstmp_empty() {
     if [ -n "$(ls -A "$TMP/factstmp")" ]; then
@@ -750,24 +750,24 @@ TMPDIR="$TMP/factstmp" CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
 [ "$status" -eq 2 ]
 assert_factstmp_empty
 
-echo "== callgraph.sh: resolves its real path =="
+echo "== callgraph: resolves its real path =="
 # A symlinked wrapper must find the binaries next to the real script, not
 # next to the link.
 mkdir -p "$TMP/install" "$TMP/link" "$TMP/broken"
-cp "$WRAPPER" "$TMP/install/callgraph.sh"
+cp "$WRAPPER" "$TMP/install/callgraph"
 ln -s "$RUN" "$TMP/install/callgraph-run"
 ln -s "$ATTACH" "$TMP/install/callgraph-attach"
 ln -s "$EXPORT" "$TMP/install/callgraph-export"
 ln -s "$DISASM_BIN" "$TMP/install/callgraph-disasm"
-ln -s ../install/callgraph.sh "$TMP/link/callgraph.sh"
+ln -s ../install/callgraph "$TMP/link/callgraph"
 
-"$TMP/link/callgraph.sh" disasm "$TMP/simple" -o "$TMP/self.json"
+"$TMP/link/callgraph" disasm "$TMP/simple" -o "$TMP/self.json"
 grep -q '"format":"callgraph-static-graph"' "$TMP/self.json"
 
 # The same through PATH, from an unrelated working directory.
 (
     cd "$TMP" || exit 1
-    PATH="$TMP/link:$PATH" callgraph.sh --version >"$TMP/self-version.txt"
+    PATH="$TMP/link:$PATH" callgraph --version >"$TMP/self-version.txt"
 )
 grep -q '^callgraph-run ' "$TMP/self-version.txt"
 grep -q '^callgraph-attach ' "$TMP/self-version.txt"
@@ -775,11 +775,11 @@ grep -q '^callgraph-export ' "$TMP/self-version.txt"
 grep -q '^callgraph-disasm ' "$TMP/self-version.txt"
 
 # A missing sibling is reported against the real directory.
-cp "$WRAPPER" "$TMP/broken/callgraph.sh"
+cp "$WRAPPER" "$TMP/broken/callgraph"
 ln -s "$RUN" "$TMP/broken/callgraph-run"
 ln -s "$ATTACH" "$TMP/broken/callgraph-attach"
 ln -s "$EXPORT" "$TMP/broken/callgraph-export"
-if "$TMP/broken/callgraph.sh" disasm "$TMP/simple" \
+if "$TMP/broken/callgraph" disasm "$TMP/simple" \
         >/dev/null 2>"$TMP/broken.err"; then
     echo "expected a missing callgraph-disasm to fail" >&2
     exit 1

@@ -8,7 +8,7 @@ The repository produces five artifacts with three different licenses.
 | `callgraph-attach` | `src/main_attach.cpp` + shared core/trace | AGPL-3.0-only, or a commercial license |
 | `callgraph-export` | `src/main_export.cpp` + shared core | AGPL-3.0-only, or a commercial license |
 | `callgraph-disasm` | `tools/disasm/`, `src/static_disasm.cpp` | GPL-3.0-only |
-| `callgraph.sh` | `callgraph.sh` | MIT |
+| `callgraph` | `callgraph` (shell script) | MIT |
 
 ## `callgraph-run`, `callgraph-attach`, `callgraph-export` — dual license
 
@@ -43,7 +43,7 @@ into a shared library or a single combined executable, and do not make
 `callgraph-run`/`callgraph-attach`/`callgraph-export` link it: that would
 extend the GPL to the tracers.
 
-## `callgraph.sh` — MIT
+## `callgraph` wrapper — MIT
 
 The wrapper contains no analysis logic, links nothing, and embeds no GPL code.
 It parses arguments, runs `callgraph-disasm`, and `exec`s the matching tracer
@@ -57,7 +57,7 @@ alongside either edition.
 | `src/*.cpp`, `include/callgraph/*.h` | AGPL-3.0-only (unless listed below) |
 | `bpf/*.bpf.c`, `bpf/**/*.bpf.h` | AGPL-3.0-only (the `"GPL"` in `SEC("license")` is a kernel-verifier requirement, not the distribution license) |
 | `src/static_disasm.cpp`, `tools/disasm/main.cpp` | GPL-3.0-only |
-| `callgraph.sh` | MIT |
+| `callgraph` | MIT |
 | `tests/`, `docs/`, `cmake/`, `tools/install-deps.sh` | AGPL-3.0-only |
 | `examples/` | AGPL-3.0-only |
 | `third_party/libbpf` (submodule) | LGPL-2.1 OR BSD-2-Clause |
@@ -86,7 +86,7 @@ release, add:
 
 - `COPYING` — the GNU Affero General Public License, version 3
 - `COPYING.GPL-3.0` — the GNU General Public License, version 3
-- `LICENSE.MIT` — the MIT license, matching the header in `callgraph.sh`
+- `LICENSE.MIT` — the MIT license, matching the header in `callgraph`
 - `CLA.md` — the contributor license agreement
 - `THIRD_PARTY_NOTICES` — the table above, with full texts
 

@@ -61,7 +61,7 @@ ExportOptions parse_export_args(int argc, char** argv)
 {
     if (argc >= 2 && std::string(argv[1]) == "otel") {
         usage_error("the 'otel' token was removed; use "
-                    "'callgraph-export --otel --input TRACE'");
+                    "'callgraph export --otel --input <trace>'");
     }
 
     ExportOptions options;
@@ -108,7 +108,7 @@ ExportOptions parse_export_args(int argc, char** argv)
             options.mode_set = true;
         } else if (arg == "--all-modules") {
             usage_error("--all-modules is not valid with export; "
-                        "callgraph-disasm --all-modules records the whole "
+                        "callgraph disasm --all-modules records the whole "
                         "closure in the facts file");
         } else if (arg == "--static-graph") {
             options.static_graph.push_back(value());
@@ -227,11 +227,11 @@ ExportOptions parse_export_args(int argc, char** argv)
             usage_error("--input is not valid with --static; pass the facts "
                         "file with --static-graph");
         if (!positionals.empty())
-            usage_error("export --static takes facts from --static-graph FILE; "
-                        "run callgraph-disasm on the MODULE instead");
+            usage_error("export --static takes facts from --static-graph <file>; "
+                        "run callgraph disasm <module> instead");
         if (options.static_graph.empty())
-            usage_error("export --static requires --static-graph FILE (produce "
-                        "it with callgraph-disasm)");
+            usage_error("export --static requires --static-graph <file> (produce "
+                        "it with callgraph disasm)");
         return options;
     }
 

@@ -163,7 +163,7 @@ public:
             if (!have_facts || !facts.has_returns) {
                 if (primary || required) {
                     fail("--return-mode=ret has no call-graph facts for %s; "
-                         "regenerate with callgraph-disasm (add --all-modules "
+                         "regenerate with callgraph disasm (add --all-modules "
                          "to cover dependencies)",
                          path.c_str());
                 }
@@ -409,7 +409,7 @@ void check_ret_facts(const StaticGraphDocument& graph,
         find_static_graph_module(graph, {}, path);
     if (!module) {
         fail("--static-graph has no facts for %s; regenerate with "
-             "callgraph-disasm (add --all-modules to cover dependencies)",
+             "callgraph disasm (add --all-modules to cover dependencies)",
              path.c_str());
     }
     for (const auto& function : module->functions) {
@@ -450,7 +450,7 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
         std::string arg = argv[i];
 
         if (arg == "--" && mode != ProgramMode::Run)
-            usage_error("attach takes -p PID, not a program");
+            usage_error("attach takes -p <pid>, not a program");
 
         if (options.command == "run" && arg == "--") {
             for (++i; i < argc; ++i)
@@ -675,7 +675,7 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
             options.verbose = true;
         } else if (arg == "-p" || arg == "--pid") {
             if (mode != ProgramMode::Attach)
-                usage_error("-p/--pid is only valid for callgraph-attach");
+                usage_error("-p/--pid is only valid for callgraph attach");
             options.pid = static_cast<pid_t>(parse_long(value(), arg));
         } else if (arg == "-h" || arg == "--help") {
             options.help = true;
@@ -698,7 +698,7 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
     if (mode == ProgramMode::Run && options.program.empty())
         usage_error("a program is required (use -- before it)");
     if (mode == ProgramMode::Attach && options.pid <= 0)
-        usage_error("attach requires -p PID");
+        usage_error("attach requires -p <pid>");
 
     if (!options.kernel && !kernel_option_used.empty())
         usage_error("%s requires --kernel", kernel_option_used.c_str());
@@ -834,8 +834,8 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
          options.trace_metadata == options.export_file))
         usage_error("--trace-metadata must not share a path with output");
     if (options.return_mode == "ret" && options.static_graph.empty())
-        usage_error("--return-mode=ret requires --static-graph FILE (produce "
-                    "it with callgraph-disasm)");
+        usage_error("--return-mode=ret requires --static-graph <file> (produce "
+                    "it with callgraph disasm)");
     if (options.return_mode != "ret" && options.trace_depth < 0 &&
         !options.static_graph.empty()) {
         log_warn("--static-graph is only used by --trace-depth and "
