@@ -12,6 +12,7 @@
 
 #include "callgraph/common.h"
 #include "callgraph/function_info.h"
+#include "callgraph/pmu.h"
 #include "callgraph/static_graph_json.h"
 
 namespace callgraph {
@@ -75,6 +76,11 @@ struct Options {
     bool require_kernel_events = false;
     uint64_t kernel_merge_window_ns = 1000000;
     std::string kernel_preset;
+    // PMU is opt-in and independent of the tracepoint families.
+    bool pmu = false;
+    bool pmu_sampling = false;
+    uint64_t pmu_sampling_period = 0;
+    std::vector<PmuCounter> pmu_counters;
     size_t probe_batch_size = 1000;
     size_t ringbuf_size = 16ull << 20;
     bool dry_run = false;

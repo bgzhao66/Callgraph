@@ -41,6 +41,7 @@
 #include "callgraph/otlp_json.h"
 #include "callgraph/otlp_proto.h"
 #include "callgraph/output.h"
+#include "callgraph/perf_collector.h"
 #include "callgraph/process_controller.h"
 #include "callgraph/probe_manager.h"
 #include "callgraph/span_generator.h"
@@ -496,6 +497,8 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
             } else if (name == "mm" || name == "memory") {
                 options.memory = true;
                 options.page_faults = true;
+            } else if (name == "pmu") {
+                options.pmu = true;
             } else if (name == "all") {
                 options.sched = true;
                 options.futex = true;
@@ -505,6 +508,7 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
                 options.tcp = true;
                 options.memory = true;
                 options.page_faults = true;
+                options.pmu = true;
             } else {
                 usage_error("unknown kernel event family '%s'", name.c_str());
             }
@@ -570,6 +574,12 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
             note_kernel_option("--memory");
             options.memory = true;
             options.page_faults = true;
+        } else if (arg == "--pmu") {
+            note_kernel_option("--pmu");
+            options.pmu = true;
+            std::string error;
+            if (!parse_pmu_counters(value(), &options.pmu_counters, &error))
+                usage_error("%s", error.c_str());
         } else if (arg == "--events") {
             note_kernel_option("--events");
             const std::string list = value();
@@ -704,10 +714,10 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
         usage_error("%s requires --kernel", kernel_option_used.c_str());
 
     // --kernel on its own selects the default latency preset; an explicit
-    // family or preset overrides it.
+    // family, PMU request, or preset overrides it.
     if (options.kernel && options.kernel_preset.empty() && !options.sched &&
         !options.futex && !options.io && !options.block && !options.memory &&
-        !options.network) {
+        !options.network && !options.pmu) {
         options.kernel_preset = "latency";
     }
 
@@ -761,11 +771,13 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
     const bool kernel_any = options.sched || options.futex || options.io ||
                             options.block || options.memory ||
                             options.network || options.page_faults ||
-                            options.tcp;
+                            options.tcp || options.pmu;
     if (options.require_kernel_events && !kernel_any)
         usage_error("--require-events requires a kernel event family");
     if (options.kernel_merge_window_ns == 0)
         usage_error("--merge-window must be > 0");
+    if (options.pmu && options.pmu_counters.empty())
+        options.pmu_counters = default_pmu_counters();
 
     if (options.max_depth < -1)
         usage_error("--max-depth must be >= -1");
@@ -945,6 +957,13 @@ int trace_program(int argc, char** argv, ProgramMode mode)
             if (registry.modules().empty())
                 fail("no functions matched in the selected module(s)");
 
+            if (options.pmu) {
+                const std::string plan = format_pmu_plan(
+                    options.pmu_counters, options.pmu_sampling,
+                    options.pmu_sampling_period, read_perf_event_paranoid());
+                fprintf(stderr, "%s: %s\n", program_name(), plan.c_str());
+            }
+
             for (const auto& module : registry.modules()) {
                 for (const auto& function : module.functions) {
                     printf("%6" PRIu64 "  0x%08" PRIx64 "  %s\n",
@@ -987,8 +1006,13 @@ int trace_program(int argc, char** argv, ProgramMode mode)
 
         std::unique_ptr<KernelProbeManager> kernel_probes;
         std::unique_ptr<KernelTimeline> kernel_timeline;
+        std::unique_ptr<PerfCollector> pmu_collector;
+
+        std::vector<uint32_t> tids;
+        if (kernel_selection.any() || options.pmu)
+            tids = target_tids(target);
+
         if (kernel_selection.any()) {
-            const std::vector<uint32_t> tids = target_tids(target);
             kernel_probes = std::make_unique<KernelProbeManager>(
                 options.ringbuf_size, options.verbose);
             kernel_probes->load();
@@ -1009,6 +1033,11 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                          kernel_probes->attached_events()),
                      static_cast<unsigned long long>(
                          kernel_probes->missing_events()));
+        }
+        if (options.pmu) {
+            pmu_collector = std::make_unique<PerfCollector>(
+                target, options.pmu_counters, false, 0,
+                options.require_kernel_events, options.verbose);
         }
 
         ModuleRegistry registry(options, filter, &probes, ret_mode,
@@ -1136,6 +1165,10 @@ int trace_program(int argc, char** argv, ProgramMode mode)
             ProcessController::detach(target);
             child_guard.release();
         }
+        // Perf events are opened disabled and enabled only after the ptrace
+        // stop window, so enabled_ns does not include it.
+        if (pmu_collector)
+            pmu_collector->start();
 
         auto refresh_modules = [&]() {
             if (!options.all_modules && options.modules.empty())
@@ -1161,10 +1194,15 @@ int trace_program(int argc, char** argv, ProgramMode mode)
         auto collector_tick = [&]() {
             refresh_modules();
             const uint64_t now = ClockConverter::now_monotonic_ns();
-            if (kernel_probes && now - last_target_refresh_ns >= 250000000ULL) {
+            if ((kernel_probes || pmu_collector) &&
+                now - last_target_refresh_ns >= 250000000ULL) {
                 const std::vector<uint32_t> tids = target_tids(target);
-                kernel_probes->set_target_tids(tids);
-                kernel_timeline->set_target_tids(tids);
+                if (kernel_probes)
+                    kernel_probes->set_target_tids(tids);
+                if (kernel_timeline)
+                    kernel_timeline->set_target_tids(tids);
+                if (pmu_collector)
+                    pmu_collector->refresh_tids();
                 last_target_refresh_ns = now;
             }
             if (log_rate_limit_enabled &&
@@ -1194,8 +1232,13 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                     kernel_probes->add_target_tid(tid);
                 if (kernel_timeline)
                     kernel_timeline->add_target_tid(tid);
+                if (pmu_collector)
+                    pmu_collector->add_target_tid(tid);
             });
         collector.run(target, is_child ? target : -1, collector_tick);
+
+        if (pmu_collector)
+            pmu_collector->stop();
 
         std::string report;
         if (kernel_timeline) {
@@ -1209,6 +1252,14 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                                 : nullptr;
             report = format_histogram_report(stack.stats(), registry.names(),
                                              kernel_histograms);
+        }
+        if (pmu_collector) {
+            const std::string counts = pmu_collector->format_counts();
+            if (!counts.empty()) {
+                if (!report.empty() && report.back() != '\n')
+                    report += '\n';
+                report += counts;
+            }
         }
 
         if (span_generator)
@@ -1291,6 +1342,14 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                     kernel_events, collector.kernel_events_seen(), kernel_lost,
                     output.dropped_kernel(),
                     kernel_probes->attached_events());
+        }
+        if (pmu_collector && !pmu_collector->unavailable()) {
+            fprintf(stderr,
+                    "callgraph: PMU %zu counter(s), %zu thread(s), "
+                    "%" PRIu64 " sample(s), %" PRIu64 " lost\n",
+                    pmu_collector->counter_count(),
+                    pmu_collector->thread_count(), pmu_collector->samples(),
+                    pmu_collector->lost());
         }
         if (registry.instrumentation_incomplete()) {
             log_warn("user-function instrumentation is incomplete; see the "

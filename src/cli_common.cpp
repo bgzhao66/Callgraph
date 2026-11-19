@@ -158,7 +158,12 @@ void print_kernel_options(FILE* out)
         {"--block", "trace block request events (global)", 1},
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
-        {"--events <events>", "comma-separated: sched,futex,io,block,net,mm", 1},
+        {"--pmu <counters>",
+         "hardware counters, comma-separated (repeatable); PMU is\n"
+         "opt-in and presets do not enable it",
+         1},
+        {"--events <events>",
+         "comma-separated: sched,futex,io,block,net,mm,pmu,all", 1},
         {"--preset <preset>",
          "latency (default), proxy, storage, computation, full, or extended", 1},
         {"latency", "sched, futex, io, net syscalls", 2},
@@ -176,7 +181,7 @@ void print_kernel_options(FILE* out)
         {"--merge-window <duration>",
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
         {"--require-events",
-         "fail if a requested tracepoint is unavailable", 1},
+         "fail if a requested event or counter is unavailable", 1},
     });
 }
 
@@ -370,10 +375,13 @@ void print_live_examples(FILE* out, bool attach)
                 "    sudo callgraph run --kernel --preset proxy -- ./proxy\n"
                 "    sudo callgraph run --kernel --preset storage -- ./db\n"
                 "    sudo callgraph run --kernel --sched --futex -- ./demo\n"
+                "    sudo callgraph run --kernel --pmu cycles,instructions -- ./demo\n"
+                "    sudo callgraph run --kernel --events pmu --histogram -- ./demo\n"
                 "    sudo callgraph run --kernel --memory --network -- ./demo\n");
     } else {
         fprintf(out,
                 "    sudo callgraph attach -p 12345 --kernel\n"
+                "    sudo callgraph attach -p 12345 --kernel --pmu cycles\n"
                 "    sudo callgraph attach -p 12345 --kernel --block --io --network\n");
     }
     fprintf(out,

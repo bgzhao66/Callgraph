@@ -32,6 +32,10 @@ recompiling them or adding instrumentation.
   was running; global block requests and TCP retransmits are emitted as
   text-only records. With `--histogram`, each user frame also gets a kernel
   latency block.
+- **Count hardware events in context.** `--kernel --pmu cycles,instructions`
+  collects per-thread hardware counters and appends raw totals with enabled and
+  running times plus multiplexing notes. PMU is opt-in and independent of the
+  tracepoint families.
 - **Export to Jaeger and OTLP.** Native OTLP/gRPC, OTLP/HTTP protobuf, and
   OTLP/JSON output; spans carry source file/line, module/build-id, thread name,
   optional `--show-args` arguments, and kernel attributes. `callgraph-export`
@@ -208,6 +212,12 @@ sudo ./build/callgraph-run --kernel --events sched,futex,io,block,net,mm \
 # Page faults, direct reclaim, socket syscalls, and TCP retransmits
 sudo ./build/callgraph-run --kernel --memory --network -- ./my_app
 
+# Per-thread hardware counters (PMU is opt-in)
+sudo ./build/callgraph-run --kernel --pmu cycles,instructions -- ./my_app
+
+# Default PMU counter set
+sudo ./build/callgraph-run --kernel --events pmu --histogram -- ./my_app
+
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
 sudo ./build/callgraph-run -T --exporter otlp -- ./my_app
 
@@ -284,7 +294,9 @@ Kernel event options (--kernel):
           --block               trace block request events (global)
           --network             trace socket syscalls and TCP retransmits
           --memory              trace page faults and direct reclaim
-          --events <events>     comma-separated: sched,futex,io,block,net,mm
+          --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
+                                opt-in and presets do not enable it
+          --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
               proxy             sched, futex, io, net syscalls, TCP retransmits
@@ -296,7 +308,7 @@ Kernel event options (--kernel):
                                 page faults, TCP retransmits
           --merge-window <duration>
                                 reorder window, ns/us/ms/s (default: 1ms)
-          --require-events      fail if a requested tracepoint is unavailable
+          --require-events      fail if a requested event or counter is unavailable
 
 Live export options (--exporter):
       --exporter <mode>         stdout (default), otlp, otlp-http, or otlp-json
@@ -400,7 +412,9 @@ Kernel event options (--kernel):
           --block               trace block request events (global)
           --network             trace socket syscalls and TCP retransmits
           --memory              trace page faults and direct reclaim
-          --events <events>     comma-separated: sched,futex,io,block,net,mm
+          --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
+                                opt-in and presets do not enable it
+          --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
               proxy             sched, futex, io, net syscalls, TCP retransmits
@@ -412,7 +426,7 @@ Kernel event options (--kernel):
                                 page faults, TCP retransmits
           --merge-window <duration>
                                 reorder window, ns/us/ms/s (default: 1ms)
-          --require-events      fail if a requested tracepoint is unavailable
+          --require-events      fail if a requested event or counter is unavailable
 
 Live export options (--exporter):
       --exporter <mode>         stdout (default), otlp, otlp-http, or otlp-json
@@ -865,7 +879,12 @@ Limitations of the kernel support:
   Direct socket syscalls are attributed to the target TID.
 - Page-fault tracepoints are point events, not intervals. Their error code is
   reported raw and is not used to label a fault major or minor.
-- PMU counters, interrupts, and workqueues are not implemented.
+- PMU is opt-in; presets do not enable it. Counting needs
+  `perf_event_open()` permission (`kernel.perf_event_paranoid` or
+  `CAP_PERFMON`); with `perf_event_paranoid=2` only user-space counts are
+  collected and the report is marked `user-only`. Counts are raw and are
+  marked `multiplexed` when the kernel timeshares a counter. PMU sampling,
+  interrupts, and workqueues are not implemented.
 - Kernel lines are not yet replayed by `export --otel`; the offline parser
   ignores them.
 - Kernel tracing needs root (or the BPF/perf capabilities) and tracefs.

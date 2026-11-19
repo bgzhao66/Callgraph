@@ -11,6 +11,8 @@
 
 #include <unistd.h>
 
+#include <linux/perf_event.h>
+
 #include "callgraph/call_stack.h"
 #include "callgraph/common.h"
 #include "callgraph/event.h"
@@ -23,6 +25,8 @@
 #include "callgraph/otlp_json.h"
 #include "callgraph/otlp_proto.h"
 #include "callgraph/output.h"
+#include "callgraph/perf_collector.h"
+#include "callgraph/pmu.h"
 #include "callgraph/span_generator.h"
 #include "callgraph/static_graph_export.h"
 #include "callgraph/static_graph_join.h"
@@ -3805,6 +3809,153 @@ void test_kernel_global_text()
 
 }  // namespace
 
+void test_pmu_counter_parsing()
+{
+    std::vector<PmuCounter> counters;
+    std::string error;
+
+    CHECK(parse_pmu_counters("cycles,instructions", &counters, &error));
+    CHECK(counters.size() == 2);
+    CHECK(counters[0].name == "cycles");
+    CHECK(counters[0].type == PERF_TYPE_HARDWARE);
+    CHECK(counters[0].config == PERF_COUNT_HW_CPU_CYCLES);
+    CHECK(counters[1].name == "instructions");
+    CHECK(counters[1].config == PERF_COUNT_HW_INSTRUCTIONS);
+
+    counters.clear();
+    CHECK(parse_pmu_counters("cpu-cycles,branches", &counters, &error));
+    CHECK(counters.size() == 2);
+    CHECK(counters[0].name == "cycles");
+    CHECK(counters[1].name == "branch-instructions");
+
+    counters.clear();
+    CHECK(parse_pmu_counters("r3c", &counters, &error));
+    CHECK(counters.size() == 1);
+    CHECK(counters[0].type == PERF_TYPE_RAW);
+    CHECK(counters[0].config == 0x3c);
+
+    counters.clear();
+    CHECK(parse_pmu_counters("L1-dcache-load-misses", &counters, &error));
+    CHECK(counters.size() == 1);
+    CHECK(counters[0].type == PERF_TYPE_HW_CACHE);
+
+    counters.clear();
+    CHECK(!parse_pmu_counters("no-such-counter", &counters, &error));
+    CHECK(error.find("no-such-counter") != std::string::npos);
+    CHECK(error.find("cycles") != std::string::npos);
+
+    counters.clear();
+    CHECK(!parse_pmu_counters("", &counters, &error));
+
+    const auto defaults = default_pmu_counters();
+    CHECK(defaults.size() == 4);
+    CHECK(defaults[0].name == "cycles");
+    CHECK(defaults[3].name == "branch-misses");
+}
+
+void test_pmu_count_format()
+{
+    const auto counters = default_pmu_counters();
+    std::vector<PmuThreadCounts> threads(1);
+    threads[0].tid = 1234;
+    threads[0].values.resize(counters.size());
+    threads[0].values[0] = {1000, 1000000000, 1000000000, true};
+    threads[0].values[1] = {2000, 1000000000, 500000000, true};
+    threads[0].values[2] = {0, 0, 0, false};
+    threads[0].values[3] = {0, 100, 0, true};
+
+    const std::string text = format_pmu_counts(counters, threads);
+    CHECK(text.find("PMU counters (raw, not scaled):") != std::string::npos);
+    CHECK(text.find("tid 1234") != std::string::npos);
+    CHECK(text.find("cycles") != std::string::npos);
+    CHECK(text.find("enabled=1.000000000s") != std::string::npos);
+    CHECK(text.find("multiplexed scaled=4000") != std::string::npos);
+    CHECK(text.find("[unavailable]") != std::string::npos);
+    CHECK(text.find("[not running]") != std::string::npos);
+
+    threads[0].user_only = true;
+    CHECK(format_pmu_counts(counters, threads).find("user-only") !=
+          std::string::npos);
+
+    CHECK(format_pmu_counts(counters, {}).empty());
+}
+
+void test_pmu_plan()
+{
+    const auto counters = default_pmu_counters();
+    const std::string plan = format_pmu_plan(counters, true, 100000, 2);
+    CHECK(plan.find("PMU counting: cycles") != std::string::npos);
+    CHECK(plan.find("sampling every 100000 events") != std::string::npos);
+    CHECK(plan.find("perf_event_paranoid=2 (user-only)") !=
+          std::string::npos);
+
+    const std::string denied = format_pmu_plan(counters, false, 0, 3);
+    CHECK(denied.find("denied") != std::string::npos);
+}
+
+void test_perf_record_parsing()
+{
+    struct SampleRecord {
+        perf_event_header header;
+        uint64_t ip;
+        uint32_t pid;
+        uint32_t tid;
+        uint64_t time;
+        uint32_t cpu;
+        uint32_t res;
+        uint64_t period;
+    };
+    static_assert(sizeof(SampleRecord) == 48, "unexpected perf sample layout");
+
+    SampleRecord record = {};
+    record.header.type = PERF_RECORD_SAMPLE;
+    record.header.size = sizeof(record);
+    record.ip = 0x7f0000000000ull;
+    record.pid = 100;
+    record.tid = 101;
+    record.time = 2222;
+    record.cpu = 3;
+    record.period = 100000;
+
+    PmuSample sample;
+    CHECK(parse_perf_sample(reinterpret_cast<const char*>(&record),
+                            sizeof(record), 2, 999, &sample));
+    CHECK(sample.ip == record.ip);
+    CHECK(sample.tid == 101);
+    CHECK(sample.ts == 2222);
+    CHECK(sample.cpu == 3);
+    CHECK(sample.period == 100000);
+    CHECK(sample.event_index == 2);
+    CHECK(!sample.timestamp_from_receipt);
+
+    record.time = 0;
+    CHECK(parse_perf_sample(reinterpret_cast<const char*>(&record),
+                            sizeof(record), 0, 999, &sample));
+    CHECK(sample.ts == 999);
+    CHECK(sample.timestamp_from_receipt);
+
+    record.header.type = PERF_RECORD_SAMPLE;
+    CHECK(!parse_perf_lost(reinterpret_cast<const char*>(&record),
+                           sizeof(record), nullptr));
+
+    struct LostRecord {
+        perf_event_header header;
+        uint64_t id;
+        uint64_t lost;
+    };
+    static_assert(sizeof(LostRecord) == 24, "unexpected perf lost layout");
+
+    LostRecord lost = {};
+    lost.header.type = PERF_RECORD_LOST;
+    lost.header.size = sizeof(lost);
+    lost.id = 7;
+    lost.lost = 42;
+    uint64_t count = 0;
+    CHECK(parse_perf_lost(reinterpret_cast<const char*>(&lost), sizeof(lost),
+                          &count));
+    CHECK(count == 42);
+}
+
 int main()
 {
     test_demangle();
@@ -3841,6 +3992,10 @@ int main()
     test_kernel_span_depth_clamp();
     test_kernel_global_text();
     test_kernel_output_global();
+    test_pmu_counter_parsing();
+    test_pmu_count_format();
+    test_pmu_plan();
+    test_perf_record_parsing();
     test_basic_stack();
     test_desync();
     test_sp_unwind_on_enter();

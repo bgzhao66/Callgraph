@@ -199,6 +199,7 @@ add_library(callgraph_core STATIC
   src/trace_duration_histogram.cpp
   src/output.cpp
   src/clock_converter.cpp
+  src/pmu.cpp
   src/span_context.cpp
   src/span_generator.cpp
   src/otlp_json.cpp
@@ -245,6 +246,7 @@ add_library(callgraph_trace STATIC
   src/kernel_probe_manager.cpp
   src/process_controller.cpp
   src/event_collector.cpp
+  src/perf_collector.cpp
   src/kernel_timeline.cpp
   src/trace_session.cpp
   ${BPF_BLOB}
@@ -333,6 +335,8 @@ if(BUILD_TESTING)
     src/call_stack.cpp
     src/kernel_event.cpp
     src/kernel_timeline.cpp
+    src/pmu.cpp
+    src/perf_collector.cpp
     src/latency_stats.cpp
     src/histogram_report.cpp
     src/trace_duration_histogram.cpp

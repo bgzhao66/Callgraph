@@ -1,14 +1,14 @@
 # Kernel event tracing design
 
-Status: **P0 and P1 implemented; P2 and PMU are proposals.** Implemented today:
-scheduler, futex, I/O syscalls, block records, memory (page faults and direct
-reclaim), and network (socket syscalls and global TCP retransmits), with a
-userspace `KernelTimeline` that renders per-frame kernel histograms. TID-specific
-kernel interval and point spans are exported to OTel when `--kernel` is
-combined with an OTel exporter. PMU, IRQ/workqueue, global OTel kernel spans,
-and offline kernel-line replay are not implemented.
-Sections below describe the full target design; Section 16 records the
-implementation deviations.
+Status: **P0, P1, and PMU counting implemented; P2 and PMU sampling are
+proposals.** Implemented today: scheduler, futex, I/O syscalls, block records,
+memory (page faults and direct reclaim), network (socket syscalls and global
+TCP retransmits), and per-thread PMU counting, with a userspace
+`KernelTimeline` that renders per-frame kernel histograms. TID-specific kernel
+interval and point spans are exported to OTel when `--kernel` is combined with
+an OTel exporter. PMU sampling, IRQ/workqueue, global OTel kernel spans, and
+offline kernel-line replay are not implemented. Sections below describe the
+full target design; Section 16 records the implementation deviations.
 
 ## 1. Summary
 
@@ -833,6 +833,21 @@ target threads and read it at shutdown. This gives per-thread totals. It does
 not give per-function attribution. It is cheap and useful for "how much work
 did this thread do", not "which function caused the cache misses".
 
+**Implementation (counting).** `--pmu <counters>` opens one disabled group per
+target thread and enables it after `ProcessController::detach()`. Threads
+discovered later by polling `/proc/<pid>/task` get their own group. At
+shutdown the tracer appends:
+
+```text
+PMU counters (raw, not scaled):
+  tid 1234
+    cycles        12345678  enabled=1.000000000s running=1.000000000s
+```
+
+`multiplexed scaled=...` appears when `running < enabled`, and `user-only`
+appears when the `exclude_kernel` fallback was used. PMU is opt-in:
+`computation`, `full`, and `extended` do not enable it.
+
 **Mode B: sampling.** Open a sampling event with
 `PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU |
 PERF_SAMPLE_PERIOD`, mmap a per-CPU or per-thread ring, and parse
@@ -1018,12 +1033,20 @@ small P0 set.
 
 ### 7.5 PMU collector
 
-`PerfCollector` is separate from the BPF object. It opens perf events for the
-target threads (or per CPU under `--system-wide`), drains its ring buffers,
-and feeds samples into the merger with `Source::Pmu`. It sets
+`PerfCollector` is separate from the BPF object. Counting opens one
+`PERF_FORMAT_GROUP` group per target thread and reads it at shutdown; it does
+not feed the event merger, because counts are aggregate values rather than
+ordered events. The collector scans `/proc/<pid>/task` at start and when the
+collector refreshes target TIDs, so new threads get their own group. Events
+are opened disabled and enabled only after `ProcessController::detach()` so
+`enabled_ns` excludes the ptrace stop window.
+
+Sampling (future) will open one event per counter per thread, drain its ring
+buffers, and feed samples into the merger with `Source::Pmu`. It will set
 `use_clockid=1` and `clockid=CLOCK_MONOTONIC` so `PERF_SAMPLE_TIME` matches
 `bpf_ktime_get_ns()`; if that is unsupported, samples are timestamped at
-userspace receipt and marked `approximate=true`.
+userspace receipt and marked `approximate=true`. Per-CPU `--system-wide`
+events are not implemented.
 
 ## 8. Command-line interface
 
@@ -1058,6 +1081,10 @@ callgraph-attach -p 4242 --kernel --preset storage
 callgraph-attach -p 4242 --kernel --preset computation
 callgraph-attach -p 4242 --kernel --preset full
 callgraph-attach -p 4242 --kernel --preset extended
+
+# PMU counting is opt-in; no preset enables it
+callgraph-run --kernel --pmu cycles,instructions -- ./app
+callgraph-run --kernel --events pmu -- ./app
 
 # Explicit family list
 callgraph-attach -p 4242 \
@@ -1136,6 +1163,10 @@ means network syscalls + TCP retransmits.
 | `full` | everything except block | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
 | `extended` | everything including block | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
+PMU is not shown in the table because it is not a tracepoint family and no
+preset enables it. Use `--pmu <counters>` or `--events pmu`; `--events all`
+includes the default counter set.
+
 Rationale:
 
 - `latency` covers the common direct wait scopes: runqueue/off-CPU, lock
@@ -1150,11 +1181,11 @@ Rationale:
 - `storage` keeps io, sched, futex, and reclaim. It drops network, block, and
   page-fault points; add `--block` for the block layer.
 - `computation` keeps sched, futex, reclaim, and page faults. It drops syscall
-  I/O, block, and network. PMU counters will join this preset when implemented.
+  I/O, block, and network. PMU is opt-in and is not enabled here.
 - `full` enables every implemented scope except block, including page faults
   and global TCP retransmits.
-- `extended` adds block to `full`; it is the complete event set. Future PMU,
-  IRQ, and workqueue scopes join here.
+- `extended` adds block to `full`; it is the complete tracepoint set. Future
+  IRQ and workqueue scopes join here.
 
 Presets are additive with explicit family flags and `--events`: explicit
 `--memory` adds faults even under `latency`, and explicit `--network` adds TCP
@@ -1366,8 +1397,11 @@ Lost events are reported as `kernel_lost[category]`, never silently ignored.
 - Kernel tracing needs root or `CAP_BPF` + `CAP_PERFMON` (`CAP_SYS_ADMIN` is
   commonly required for tracefs/perf on older kernels). `--system-wide` and
   PMU sampling have the strictest requirements.
-- `perf_event_paranoid` is checked before opening PMU events. A denied PMU
-  does not disable sched/futex/I/O.
+- `perf_event_paranoid` is checked before opening PMU events. Values 0/1 allow
+  kernel+user measurement; 2 allows user-only and the collector retries with
+  `exclude_kernel=1`; 3 denies access. A denied PMU does not disable
+  sched/futex/I/O. Without `--require-events` it warns and continues; with
+  `--require-events` it is fatal.
 - `kernel.perf_event_paranoid`, tracefs permissions, and kernel lockdown can
   each prevent part of the design. Errors are explicit and per-family.
 - Never print raw kernel pointers. User addresses (futex `uaddr`, buffers)
@@ -1509,9 +1543,13 @@ waits are direct; TCP retransmits are global and clearly labeled.
 
 ### Phase 5: PMU
 
-- Add `PerfCollector` counting and sampling.
-- Map sample IPs to functions through the ELF resolver.
-- Add `--pmu`, `--pmu-sampling`, permissions diagnostics.
+- Counting (implemented): per-thread `PERF_FORMAT_GROUP` groups, `--pmu`,
+  `--events pmu`, `--events all`, a shutdown count trailer, and `user-only`
+  diagnostics when `perf_event_paranoid=2`.
+- Sampling (pending): per-counter sampling rings, `@PMU sample` text lines,
+  per-frame `pmu:` histograms, and zero-duration OTel point spans.
+- Map sample IPs to functions through the ELF resolver (pending).
+- Add `--pmu-sampling` and full permissions diagnostics (pending).
 
 Acceptance: counts match `perf stat` within tolerance; samples are labeled
 approximate; denied access does not break other families.
@@ -1633,13 +1671,23 @@ The first implementation deliberately narrows the full design:
   futex/network/I/O when classifying a blocking reason, and page faults are
   recorded as zero-duration points in the owning frame's kernel histogram.
 - **CLI.** Implemented: `--kernel` plus the secondary `--sched`, `--futex`,
-  `--io`, `--block`, `--network`, `--memory`, `--events`, `--preset`,
+  `--io`, `--block`, `--network`, `--memory`, `--pmu`, `--events`, `--preset`,
   `--merge-window`, and `--require-events` options.
   `--preset` accepts `latency` (default), `proxy`, `storage`,
   `computation`, `full`, and `extended`; presets expand to the fine-grained
-  scopes in Section 8 and stay additive with explicit family flags.
-  `--ringbuf-size` sizes both the function and kernel ring buffers.
-  `--children`, `--tid`, and `--system-wide` are not implemented yet.
-- **Deferred.** PMU, IRQ/workqueue, global OTel kernel
+  scopes in Section 8 and stay additive with explicit family flags. Presets do
+  not enable PMU. `--ringbuf-size` sizes both the function and kernel ring
+  buffers. `--children`, `--tid`, and `--system-wide` are not implemented yet.
+- **PMU counting.** `PerfCollector` opens one disabled
+  `PERF_FORMAT_GROUP` group per target thread and enables it after
+  `ProcessController::detach()`. `--pmu` is opt-in; presets do not enable it.
+  `--events pmu` and `--events all` use
+  `cycles,instructions,cache-misses,branch-misses`. Counts are appended to the
+  trace trailer with `enabled`/`running`; `multiplexed` and `scaled=` appear
+  when the kernel timeshares a counter, and `user-only` marks the
+  `exclude_kernel` fallback. PMU-only mode skips `KernelProbeManager` and does
+  not load the kernel BPF object. There is no per-CPU/system-wide mode, no
+  sample-IP symbolization, and no offline replay.
+- **Deferred.** PMU sampling, IRQ/workqueue, global OTel kernel
   spans, and offline kernel-line replay. The text parser currently ignores
   `@CATEGORY` lines, so function-only export remains correct.

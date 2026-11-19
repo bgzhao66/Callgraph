@@ -18,6 +18,7 @@ g++ -O0 -g -o "$TMP/recursive" "$ROOT/examples/recursive.cpp"
 g++ -O0 -g -pthread -o "$TMP/multithread" "$ROOT/examples/multithread.cpp"
 g++ -O0 -g -pthread -o "$TMP/tworoots" "$ROOT/examples/tworoots.cpp"
 g++ -O0 -g -pthread -o "$TMP/kernel" "$ROOT/examples/kernel.cpp"
+g++ -O0 -g -o "$TMP/pmu" "$ROOT/examples/pmu.cpp"
 g++ -O0 -g -o "$TMP/exceptions" "$ROOT/examples/exceptions.cpp"
 g++ -O0 -g -o "$TMP/longjmp" "$ROOT/examples/longjmp.cpp"
 g++ -O0 -g -o "$TMP/ucontext" "$ROOT/examples/ucontext.cpp"
@@ -99,6 +100,32 @@ if "$RUN" --kernel-events sched --dry-run -- "$TMP/simple" \
     echo "expected the old --kernel-events name to fail" >&2
     exit 1
 fi
+
+echo "== PMU CLI gating =="
+for opt in "--pmu cycles" "--events pmu"; do
+    # shellcheck disable=SC2086
+    if "$RUN" $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
+        echo "expected '$opt' without --kernel to fail" >&2
+        exit 1
+    fi
+done
+if "$RUN" --kernel --pmu no-such-counter --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected an unknown PMU counter to fail" >&2
+    exit 1
+fi
+if "$RUN" --kernel --preset computation --dry-run -- "$TMP/simple" \
+    2>&1 | grep -q 'PMU counting'; then
+    echo "expected a preset not to enable PMU" >&2
+    exit 1
+fi
+"$RUN" --kernel --pmu cycles,instructions --dry-run -- "$TMP/simple" \
+    2>&1 | grep -q 'PMU counting: cycles,instructions'
+"$RUN" --kernel --events pmu --dry-run -- "$TMP/simple" \
+    2>&1 | grep -q 'PMU counting: cycles,instructions,cache-misses,branch-misses'
+"$RUN" --kernel --events all --dry-run -- "$TMP/simple" \
+    2>&1 | grep -q 'PMU counting: cycles'
+"$RUN" --help | grep -q -- '--pmu <counters>'
 
 echo "== complete traces CLI gating =="
 if "$RUN" --complete-traces --dry-run -- "$TMP/simple" \
@@ -1010,6 +1037,22 @@ grep -q '@IO fsync_begin' "$TMP/preset-combined.trace"
 grep -q '@NET socket_begin' "$TMP/preset-combined.trace"
 ! grep -q '@SCHED' "$TMP/preset-combined.trace"
 ! grep -q '@MM' "$TMP/preset-combined.trace"
+
+echo "== PMU counting =="
+"$RUN" --kernel --events pmu -o "$TMP/pmu.trace" --regex \
+    --root-scope '^main$' -- "$TMP/pmu" >/dev/null 2>"$TMP/pmu.err"
+if grep -q 'PMU unavailable' "$TMP/pmu.err"; then
+    echo "PMU unavailable; skipping PMU counting checks"
+else
+    grep -q '^PMU counters (raw, not scaled):$' "$TMP/pmu.trace"
+    grep -Eq '^  tid [0-9][0-9]*' "$TMP/pmu.trace"
+    grep -Eq '^    cycles +[0-9]+  enabled=' "$TMP/pmu.trace"
+    grep -Eq '^    instructions +[0-9]+  enabled=' "$TMP/pmu.trace"
+    grep -q 'PMU 4 counter(s)' "$TMP/pmu.err"
+    # PMU-only mode must not load or attach the kernel tracepoint object.
+    ! grep -q 'kernel events:' "$TMP/pmu.err"
+    ! grep -q 'kernel tracepoints' "$TMP/pmu.err"
+fi
 
 echo "== OTLP native file export =="
 "$RUN" -T --exporter otlp-json --export-file "$TMP/live.json" --regex \

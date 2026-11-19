@@ -359,8 +359,10 @@ the tracer never does.
 implemented as a separate BPF object and ring buffer, with userspace
 `KernelTimeline` accounting: scheduler switch/wakeup, futex syscalls,
 read/write/fsync-style syscalls, and block request records. Target TIDs are
-taken from `/proc` and learned from uprobe events. Network, memory, PMU,
-interrupts, and offline kernel-line replay remain future work.
+taken from `/proc` and learned from uprobe events. Network, memory, and PMU
+counting are implemented; `PerfCollector` owns per-thread perf groups
+independently of the BPF object. PMU sampling, interrupts, and offline
+kernel-line replay remain future work.
 
 The function event format and `CallStack` remain the source of truth for call
 trees; kernel lines use a separate `@CATEGORY` format and never change depth.
