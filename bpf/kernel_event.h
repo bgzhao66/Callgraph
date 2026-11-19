@@ -79,6 +79,8 @@ enum cg_kernel_kind {
     CG_KEV_NET_POLL_ENTER,
     CG_KEV_NET_POLL_EXIT,
     CG_KEV_TCP_RETRANSMIT,
+
+    CG_KEV_PMU_SAMPLE,
 };
 
 #define CG_KF_BEGIN      0x01

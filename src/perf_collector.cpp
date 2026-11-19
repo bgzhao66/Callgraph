@@ -38,6 +38,16 @@ void copy_ring_data(const char* data, size_t data_size, size_t offset,
         memcpy(static_cast<char*>(out) + first, data, size - first);
 }
 
+std::string perf_open_error(const PmuCounter& counter, int error)
+{
+    if (error == ENOENT || error == EOPNOTSUPP) {
+        return "perf_event_open(" + counter.name +
+               ") failed: hardware counter not supported by this CPU/kernel";
+    }
+    return "perf_event_open(" + counter.name + ") failed: " +
+           errno_string(error);
+}
+
 }  // namespace
 
 PerfCollector::PerfCollector(pid_t target, std::vector<PmuCounter> counters,
@@ -90,8 +100,10 @@ void PerfCollector::start()
 
     std::vector<uint32_t> tids;
     scan_tids(&tids);
+    initial_scan_ = true;
     for (uint32_t tid : tids)
         add_target_tid(tid);
+    initial_scan_ = false;
 
     if (threads_.empty()) {
         unavailable_ = true;
@@ -99,9 +111,13 @@ void PerfCollector::start()
             error_ = "no target threads found";
         if (require_)
             fail("PMU unavailable: %s", error_.c_str());
-        log_warn("PMU unavailable: %s; set kernel.perf_event_paranoid <= 1 or "
-                 "grant CAP_PERFMON",
-                 error_.c_str());
+        if (last_errno_ == EACCES || last_errno_ == EPERM) {
+            log_warn("PMU unavailable: %s; set kernel.perf_event_paranoid <= 1 "
+                     "or grant CAP_PERFMON",
+                     error_.c_str());
+        } else {
+            log_warn("PMU unavailable: %s", error_.c_str());
+        }
     }
 }
 
@@ -240,9 +256,9 @@ int PerfCollector::open_event(uint32_t tid, const PmuCounter& counter,
 
     if (fd < 0) {
         if (error) {
-            *error = "perf_event_open(" + counter.name + ") failed: " +
-                     errno_string(errno);
+            *error = perf_open_error(counter, errno);
         }
+        last_errno_ = errno;
         return -1;
     }
     return fd;
@@ -264,7 +280,7 @@ bool PerfCollector::open_counting_group(ThreadEvents& events)
         if (fd < 0) {
             if (error_.empty())
                 error_ = error;
-            if (require_)
+            if (require_ && initial_scan_)
                 fail("PMU unavailable: %s", error.c_str());
             if (verbose_)
                 log_verbose("PMU %s unavailable for tid %u: %s",
@@ -305,7 +321,7 @@ bool PerfCollector::open_sampling_events(ThreadEvents& events)
         if (fd < 0) {
             if (error_.empty())
                 error_ = error;
-            if (require_)
+            if (require_ && initial_scan_)
                 fail("PMU unavailable: %s", error.c_str());
             if (verbose_)
                 log_verbose("PMU %s unavailable for tid %u: %s",
@@ -321,7 +337,7 @@ bool PerfCollector::open_sampling_events(ThreadEvents& events)
             close(fd);
             if (error_.empty())
                 error_ = error;
-            if (require_)
+            if (require_ && initial_scan_)
                 fail("PMU unavailable: %s", error.c_str());
             if (verbose_)
                 log_verbose("PMU %s ring unavailable for tid %u: %s",

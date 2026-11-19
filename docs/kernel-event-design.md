@@ -1,14 +1,15 @@
 # Kernel event tracing design
 
-Status: **P0, P1, and PMU counting implemented; P2 and PMU sampling are
-proposals.** Implemented today: scheduler, futex, I/O syscalls, block records,
-memory (page faults and direct reclaim), network (socket syscalls and global
-TCP retransmits), and per-thread PMU counting, with a userspace
+Status: **P0, P1, and PMU counting/sampling implemented; P2 is a proposal.**
+Implemented today: scheduler, futex, I/O syscalls, block records, memory (page
+faults and direct reclaim), network (socket syscalls and global TCP
+retransmits), and per-thread PMU counting and sampling, with a userspace
 `KernelTimeline` that renders per-frame kernel histograms. TID-specific kernel
-interval and point spans are exported to OTel when `--kernel` is combined with
-an OTel exporter. PMU sampling, IRQ/workqueue, global OTel kernel spans, and
-offline kernel-line replay are not implemented. Sections below describe the
-full target design; Section 16 records the implementation deviations.
+interval and point spans, including `pmu.<counter>` samples, are exported to
+OTel when `--kernel` is combined with an OTel exporter. IRQ/workqueue, global
+OTel kernel spans, and offline kernel-line replay are not implemented. Sections
+below describe the full target design; Section 16 records the implementation
+deviations.
 
 ## 1. Summary
 
@@ -630,7 +631,7 @@ Priorities follow the proposal: P0 first, P1 next, P2 optional.
 | Block layer | P0 | 3 | causal, global by default |
 | Memory | P1 | 4 | page fault/reclaim in target TID |
 | Network | P1 | 4 | syscalls direct; tracepoints global |
-| PMU | P1/P2 | 5 | sampled IP/counts |
+| PMU | P1/P2 (implemented) | 5 | counts per thread; samples per active frame |
 | IRQ, workqueue, other | P2 | 6 | global, unless target context |
 
 ### 6.1 Scheduler (P0)
@@ -851,9 +852,33 @@ appears when the `exclude_kernel` fallback was used. PMU is opt-in:
 **Mode B: sampling.** Open a sampling event with
 `PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU |
 PERF_SAMPLE_PERIOD`, mmap a per-CPU or per-thread ring, and parse
-`PERF_RECORD_SAMPLE`. Map the sampled IP to a function through the existing
-ELF resolver. Samples are approximate (skid); a cache miss is not a latency
-and must not be printed as a duration.
+`PERF_RECORD_SAMPLE`. Samples are approximate (skid); a cache miss is not a
+latency and must not be printed as a duration. The implementation attributes
+each sample to the innermost active traced frame and prints the raw IP;
+mapping the IP to a function through the ELF resolver is future work.
+
+**Implementation (sampling).** `--pmu-sampling <n>` opens one event per counter
+per thread, sets `use_clockid=1` and `clockid=CLOCK_MONOTONIC`, and mmaps a
+small ring per event. The event collector adds the perf fds to an `epoll` set
+alongside the function and kernel rings, drains samples non-blockingly, and
+enqueues them into the same timestamp merger as function and kernel events.
+Each sample emits:
+
+```text
+1.234567890 1234 : 1 @PMU sample event=cycles period=100000 ip=0x7f... cpu=3 approximate=1
+```
+
+With `--histogram`, each owning call path gets a count block:
+
+```text
+   pmu:
+     cycles  samples=123  events=12300000
+```
+
+`events` is the sum of sample periods, not a duration, so no latency bar is
+drawn. With an OTel exporter, each sample is a zero-duration `pmu.<counter>`
+point span with `callgraph.pmu.event`, `.period`, `.ip`, `.cpu`, and
+`.approximate` attributes.
 
 The MVP uses the kernel's perf ring buffer, not a BPF perf-event program.
 Perf already provides sampling, CPU/TID fields, and loss records; adding a
@@ -1041,12 +1066,12 @@ collector refreshes target TIDs, so new threads get their own group. Events
 are opened disabled and enabled only after `ProcessController::detach()` so
 `enabled_ns` excludes the ptrace stop window.
 
-Sampling (future) will open one event per counter per thread, drain its ring
-buffers, and feed samples into the merger with `Source::Pmu`. It will set
-`use_clockid=1` and `clockid=CLOCK_MONOTONIC` so `PERF_SAMPLE_TIME` matches
-`bpf_ktime_get_ns()`; if that is unsupported, samples are timestamped at
-userspace receipt and marked `approximate=true`. Per-CPU `--system-wide`
-events are not implemented.
+Sampling opens one event per counter per thread, drains its ring buffers
+through the event collector's `epoll` set, and feeds samples into the merger
+with `Source::Pmu`. It sets `use_clockid=1` and `clockid=CLOCK_MONOTONIC` so
+`PERF_SAMPLE_TIME` matches `bpf_ktime_get_ns()`; if that is unsupported,
+samples are timestamped at userspace receipt and marked `approximate=true`.
+Per-CPU `--system-wide` events are not implemented.
 
 ## 8. Command-line interface
 
@@ -1085,6 +1110,7 @@ callgraph-attach -p 4242 --kernel --preset extended
 # PMU counting is opt-in; no preset enables it
 callgraph-run --kernel --pmu cycles,instructions -- ./app
 callgraph-run --kernel --events pmu -- ./app
+callgraph-run --kernel --pmu cycles --pmu-sampling 100000 -- ./app
 
 # Explicit family list
 callgraph-attach -p 4242 \
@@ -1234,6 +1260,18 @@ flowing and attribute to the deepest retained user frame.
 `--indent` applies to the depth column just as it does for function names,
 using spaces before the `@CATEGORY` token.
 
+PMU sampling emits `@PMU sample` lines at the depth of the innermost active
+traced frame:
+
+```text
+1.234567890 1234 : 1 @PMU sample event=cycles period=100000 ip=0x7f... cpu=3 approximate=1
+```
+
+The raw IP is shown; samples are always labeled approximate. Samples with no
+active traced frame are printed at depth `-` and do not enter histograms or
+spans. Counting-only runs append a `PMU counters (raw, not scaled):` trailer
+after the event stream and histogram report.
+
 ### 9.2 Kernel histograms
 
 `--histogram` with a kernel family enabled nests a `kernel:` block under each
@@ -1279,6 +1317,18 @@ Units are chosen per value from `choose_unit()`, as the tree report already
 does. Global block requests and TCP retransmits have no user stack and remain
 text-only `*` depth records.
 
+When PMU sampling is active, a `pmu:` block follows the `kernel:` block under
+the owning frame:
+
+```text
+   pmu:
+     cycles  samples=123  events=12300000
+     instructions  samples=123  events=12300000
+```
+
+`samples` is the number of records and `events` is the sum of sample periods.
+No latency bar is drawn because these are counts, not durations.
+
 ### 9.3 OTel and Jaeger
 
 TID-specific kernel events become child spans automatically when `--kernel` is
@@ -1310,6 +1360,10 @@ Included point spans:
 - User and kernel page faults.
 - `sched.wakeup`, `sched.waking`, `sched.wakeup_new`.
 - `sched.migrate`, `proc.fork`, `proc.exit`.
+- PMU samples, named `pmu.<counter>`, with `callgraph.pmu.event`,
+  `callgraph.pmu.period`, `callgraph.pmu.ip`, `callgraph.pmu.cpu`, and
+  `callgraph.pmu.approximate`. They are attached to the innermost active user
+  frame and are zero duration like other point spans.
 
 Point spans are zero duration and carry `callgraph.kernel.point=true`. The
 page-fault tracepoint has no exit event, so fabricating a handling duration
@@ -1322,7 +1376,8 @@ Each span carries `thread.id`, `callgraph.depth`, and
 If no traced parent exists, the kernel span is dropped and counted.
 
 Global events are excluded: block requests and TCP retransmits remain
-text-only. Offline kernel replay remains unimplemented.
+text-only. Offline kernel replay remains unimplemented, so `callgraph-export`
+ignores `@PMU sample` lines and `pmu:` blocks.
 
 ### 9.4 Offline replay
 
@@ -1387,7 +1442,7 @@ Guidelines:
 | mm | low/medium | select with `--memory`; page faults can be high-volume |
 | net tracepoints | high | opt-in/global |
 | PMU counting | low | per-thread group |
-| PMU sampling | high | period; per-CPU or per-thread |
+| PMU sampling | high | period; per-thread; larger period or fewer counters |
 
 `--ringbuf-size` sizes both ring buffers and should be chosen for the workload.
 Lost events are reported as `kernel_lost[category]`, never silently ignored.
@@ -1402,6 +1457,10 @@ Lost events are reported as `kernel_lost[category]`, never silently ignored.
   `exclude_kernel=1`; 3 denies access. A denied PMU does not disable
   sched/futex/I/O. Without `--require-events` it warns and continues; with
   `--require-events` it is fatal.
+- PMU sampling opens one perf fd and one mmap ring per counter per thread, so
+  the process fd limit and `kernel.perf_event_mlock_kb` bound the number of
+  threads and counters. Rings start at 8 data pages and fall back to 1 page on
+  `ENOMEM`; `PERF_RECORD_LOST` is counted and reported.
 - `kernel.perf_event_paranoid`, tracefs permissions, and kernel lockdown can
   each prevent part of the design. Errors are explicit and per-family.
 - Never print raw kernel pointers. User addresses (futex `uaddr`, buffers)
@@ -1546,10 +1605,11 @@ waits are direct; TCP retransmits are global and clearly labeled.
 - Counting (implemented): per-thread `PERF_FORMAT_GROUP` groups, `--pmu`,
   `--events pmu`, `--events all`, a shutdown count trailer, and `user-only`
   diagnostics when `perf_event_paranoid=2`.
-- Sampling (pending): per-counter sampling rings, `@PMU sample` text lines,
-  per-frame `pmu:` histograms, and zero-duration OTel point spans.
+- Sampling (implemented): per-counter sampling rings, `@PMU sample` text lines,
+  per-frame `pmu:` histograms, and zero-duration OTel point spans, driven by
+  `--pmu-sampling`.
 - Map sample IPs to functions through the ELF resolver (pending).
-- Add `--pmu-sampling` and full permissions diagnostics (pending).
+- Add per-CPU/system-wide sampling (pending).
 
 Acceptance: counts match `perf stat` within tolerance; samples are labeled
 approximate; denied access does not break other families.
@@ -1621,8 +1681,8 @@ These need a decision before or during Phase 0/1:
    explicit `--block-devices` filter on busy systems?
 5. Does the brief fork over-capture window cause problems for `--children`
    off? If so, use userspace-only map updates and accept a thread blind spot.
-6. Should PMU sampling use the kernel perf ring (recommended) or a BPF
-   perf-event program with stack IDs in Phase 5?
+6. PMU sampling uses the kernel perf ring with IP-only samples. A BPF
+   perf-event program with stack IDs remains a future option.
 7. How should PID-namespace TIDs be rendered in text: host TIDs (matching
    BPF) or namespace TIDs (matching the user's `ps`)?
 8. Should `--system-wide` be allowed with `run`, or only with `attach`?
@@ -1678,16 +1738,23 @@ The first implementation deliberately narrows the full design:
   scopes in Section 8 and stay additive with explicit family flags. Presets do
   not enable PMU. `--ringbuf-size` sizes both the function and kernel ring
   buffers. `--children`, `--tid`, and `--system-wide` are not implemented yet.
-- **PMU counting.** `PerfCollector` opens one disabled
-  `PERF_FORMAT_GROUP` group per target thread and enables it after
+- **PMU.** `PerfCollector` opens one disabled `PERF_FORMAT_GROUP` group per
+  target thread for counting and enables it after
   `ProcessController::detach()`. `--pmu` is opt-in; presets do not enable it.
   `--events pmu` and `--events all` use
   `cycles,instructions,cache-misses,branch-misses`. Counts are appended to the
   trace trailer with `enabled`/`running`; `multiplexed` and `scaled=` appear
   when the kernel timeshares a counter, and `user-only` marks the
-  `exclude_kernel` fallback. PMU-only mode skips `KernelProbeManager` and does
-  not load the kernel BPF object. There is no per-CPU/system-wide mode, no
-  sample-IP symbolization, and no offline replay.
-- **Deferred.** PMU sampling, IRQ/workqueue, global OTel kernel
-  spans, and offline kernel-line replay. The text parser currently ignores
-  `@CATEGORY` lines, so function-only export remains correct.
+  `exclude_kernel` fallback. With `--pmu-sampling <n>`, the collector opens one
+  sampling event per counter per thread, mmaps a small ring, and
+  `EventCollector` drains it through `epoll` alongside the BPF rings. Samples
+  enter the timestamp merger as `Pending::Source::Pmu`, are attributed to the
+  innermost active traced frame, print `@PMU sample` with the raw IP, and feed
+  the per-frame `pmu:` histogram block and `pmu.<counter>` point spans.
+  PMU-only mode skips `KernelProbeManager` and does not load the kernel BPF
+  object. There is no per-CPU/system-wide mode, no sample-IP symbolization, and
+  no offline replay.
+- **Deferred.** IRQ/workqueue, global OTel kernel spans, sample-IP
+  symbolization, per-CPU/system-wide PMU sampling, and offline kernel-line
+  replay. The text parser currently ignores `@CATEGORY` and `@PMU` lines, so
+  function-only export remains correct.

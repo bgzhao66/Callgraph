@@ -20,6 +20,7 @@ namespace callgraph {
 std::string format_histogram_report(
     const LatencyStats& stats, const std::vector<std::string>& names,
     const std::unordered_map<uint32_t, KernelEventHistograms>*
-        kernel_histograms = nullptr);
+        kernel_histograms = nullptr,
+    const ThreadPmuHistograms* pmu_histograms = nullptr);
 
 }  // namespace callgraph

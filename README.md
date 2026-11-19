@@ -32,10 +32,13 @@ recompiling them or adding instrumentation.
   was running; global block requests and TCP retransmits are emitted as
   text-only records. With `--histogram`, each user frame also gets a kernel
   latency block.
-- **Count hardware events in context.** `--kernel --pmu cycles,instructions`
-  collects per-thread hardware counters and appends raw totals with enabled and
-  running times plus multiplexing notes. PMU is opt-in and independent of the
-  tracepoint families.
+- **Count and sample hardware events in context.** `--kernel --pmu
+  cycles,instructions` collects per-thread hardware counters and appends raw
+  totals with enabled and running times plus multiplexing notes.
+  `--pmu-sampling <n>` samples the same counters, attributes each sample to the
+  innermost active traced frame, and adds `@PMU sample` lines plus per-frame
+  `pmu:` histogram blocks. PMU is opt-in and independent of the tracepoint
+  families.
 - **Export to Jaeger and OTLP.** Native OTLP/gRPC, OTLP/HTTP protobuf, and
   OTLP/JSON output; spans carry source file/line, module/build-id, thread name,
   optional `--show-args` arguments, and kernel attributes. `callgraph-export`
@@ -93,6 +96,9 @@ The current implementation includes:
   `--return-mode=ret`, and `callgraph-export --static`
 - correlated kernel event tracing (`--kernel`) with OTel child spans for
   TID-specific syscall, reclaim, scheduler, and page-fault activity
+- opt-in per-thread PMU counting (`--pmu`) and sampling (`--pmu-sampling`)
+  with a count trailer, `@PMU sample` lines, per-frame `pmu:` histograms, and
+  OTel point spans
 - ingest and baseline root-trace sampling, latency-outlier tail sampling,
   stdout user/kernel log rate limiting with periodic drop reports, source
   file/line attributes, and best-effort thread names
@@ -114,6 +120,7 @@ child-process (`fork`) following.
 | x86-64 | `--show-args` live value capture (SysV ABI); offline suffix replay is architecture-independent |
 | `binutils-dev` (libopcodes) | `callgraph-disasm` only; the tracer never links it |
 | root or `CAP_BPF`+`CAP_PERFMON`+`CAP_SYS_ADMIN` | uprobes |
+| `perf_event_open()` permission | `--pmu` counting/sampling (`kernel.perf_event_paranoid` or `CAP_PERFMON`) |
 | ptrace permission | attach mode |
 
 The target must still have its `.symtab` (do not `strip` it), or a separate
@@ -218,6 +225,10 @@ sudo ./build/callgraph-run --kernel --pmu cycles,instructions -- ./my_app
 # Default PMU counter set
 sudo ./build/callgraph-run --kernel --events pmu --histogram -- ./my_app
 
+# Sample cycles every 100000 events and attribute samples to call frames
+sudo ./build/callgraph-run --kernel --pmu cycles --pmu-sampling 100000 \
+    --histogram -- ./my_app
+
 # Export to a Jaeger OTLP receiver over gRPC (default localhost:4317)
 sudo ./build/callgraph-run -T --exporter otlp -- ./my_app
 
@@ -296,6 +307,7 @@ Kernel event options (--kernel):
           --memory              trace page faults and direct reclaim
           --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
                                 opt-in and presets do not enable it
+          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
           --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
@@ -414,6 +426,7 @@ Kernel event options (--kernel):
           --memory              trace page faults and direct reclaim
           --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
                                 opt-in and presets do not enable it
+          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
           --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
@@ -883,8 +896,14 @@ Limitations of the kernel support:
   `perf_event_open()` permission (`kernel.perf_event_paranoid` or
   `CAP_PERFMON`); with `perf_event_paranoid=2` only user-space counts are
   collected and the report is marked `user-only`. Counts are raw and are
-  marked `multiplexed` when the kernel timeshares a counter. PMU sampling,
-  interrupts, and workqueues are not implemented.
+  marked `multiplexed` when the kernel timeshares a counter.
+- PMU sampling is approximate (skid), attributes each sample to the innermost
+  active traced frame, and shows the raw IP without symbolization. It opens one
+  event ring per counter per thread, so `perf_event_mlock_kb` and the fd limit
+  bound the number of threads. PMU lines are not replayed by
+  `callgraph-export`. Interrupts and workqueues are not implemented.
+  `--require-events` turns a denied or unsupported PMU request into a fatal
+  error.
 - Kernel lines are not yet replayed by `export --otel`; the offline parser
   ignores them.
 - Kernel tracing needs root (or the BPF/perf capabilities) and tracefs.

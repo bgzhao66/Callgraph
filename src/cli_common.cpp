@@ -162,6 +162,8 @@ void print_kernel_options(FILE* out)
          "hardware counters, comma-separated (repeatable); PMU is\n"
          "opt-in and presets do not enable it",
          1},
+        {"--pmu-sampling <n>",
+         "sample every <n> events; requires --pmu or --events pmu", 1},
         {"--events <events>",
          "comma-separated: sched,futex,io,block,net,mm,pmu,all", 1},
         {"--preset <preset>",
@@ -376,6 +378,7 @@ void print_live_examples(FILE* out, bool attach)
                 "    sudo callgraph run --kernel --preset storage -- ./db\n"
                 "    sudo callgraph run --kernel --sched --futex -- ./demo\n"
                 "    sudo callgraph run --kernel --pmu cycles,instructions -- ./demo\n"
+                "    sudo callgraph run --kernel --pmu cycles --pmu-sampling 100000 -- ./demo\n"
                 "    sudo callgraph run --kernel --events pmu --histogram -- ./demo\n"
                 "    sudo callgraph run --kernel --memory --network -- ./demo\n");
     } else {

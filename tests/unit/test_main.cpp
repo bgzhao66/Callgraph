@@ -3956,6 +3956,173 @@ void test_perf_record_parsing()
     CHECK(count == 42);
 }
 
+void test_pmu_timeline_and_histogram()
+{
+    CHECK(std::string(kernel_kind_name(CG_KEV_PMU_SAMPLE)) == "sample");
+    const auto names = make_names();
+    const std::string path = temp_path();
+    std::string report;
+
+    {
+        Output output(path);
+        CallStack stack(names, output, -1, false, true);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({10});
+        timeline.set_collect_histograms(true);
+        timeline.set_pmu_event_names({"cycles", "instructions"});
+
+        TraceEvent main_enter = make_event(0, 10, kEventEnter, 0);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        TraceEvent a_enter = make_event(1, 10, kEventEnter, 100);
+        timeline.on_function_event(a_enter, stack);
+        stack.on_event(a_enter);
+
+        PmuSample cycles;
+        cycles.ts = 150;
+        cycles.tid = 10;
+        cycles.cpu = 2;
+        cycles.ip = 0x1234;
+        cycles.period = 1000;
+        cycles.event_index = 0;
+        timeline.on_pmu_sample(cycles, stack);
+
+        PmuSample instructions;
+        instructions.ts = 160;
+        instructions.tid = 10;
+        instructions.cpu = 2;
+        instructions.ip = 0x5678;
+        instructions.period = 2000;
+        instructions.event_index = 1;
+        timeline.on_pmu_sample(instructions, stack);
+
+        // A sample from a non-target TID must be ignored.
+        PmuSample other = cycles;
+        other.tid = 11;
+        timeline.on_pmu_sample(other, stack);
+
+        TraceEvent a_exit = make_event(1, 10, kEventExit, 300);
+        timeline.on_function_event(a_exit, stack);
+        stack.on_event(a_exit);
+
+        TraceEvent main_exit = make_event(0, 10, kEventExit, 400);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+
+        timeline.finish(400, stack);
+        stack.finish_statistics();
+
+        report = format_histogram_report(stack.stats(), names, nullptr,
+                                         &timeline.pmu_histograms());
+        output.stop();
+
+        CHECK(timeline.pmu_samples() == 2);
+    }
+
+    std::ifstream trace(path);
+    const std::string text((std::istreambuf_iterator<char>(trace)),
+                           std::istreambuf_iterator<char>());
+    trace.close();
+    unlink(path.c_str());
+
+    CHECK(text.find("@PMU sample event=cycles period=1000 ip=0x1234 cpu=2 "
+                    "approximate=1") != std::string::npos);
+    CHECK(text.find("@PMU sample event=instructions period=2000 ip=0x5678") !=
+          std::string::npos);
+    CHECK(report.find("1. A(int)") != std::string::npos);
+    CHECK(report.find("   pmu:\n") != std::string::npos);
+    CHECK(report.find("     cycles  samples=1  events=1000") !=
+          std::string::npos);
+    CHECK(report.find("     instructions  samples=1  events=2000") !=
+          std::string::npos);
+}
+
+void test_pmu_span_export()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.seed_hi = 31;
+    config.seed_lo = 32;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+
+    std::vector<SpanRecord> spans;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        spans.push_back(std::move(span));
+    });
+
+    const std::string path = temp_path();
+    {
+        CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                        &generator);
+        Output output(path);
+        KernelTimeline timeline(output, -1, false);
+        timeline.set_target_tids({7});
+        timeline.set_kernel_span_sink(&generator);
+        timeline.set_pmu_event_names({"cycles"});
+
+        TraceEvent main_enter = make_event(0, 7, kEventEnter, 100);
+        timeline.on_function_event(main_enter, stack);
+        stack.on_event(main_enter);
+
+        TraceEvent a_enter = make_event(1, 7, kEventEnter, 150);
+        timeline.on_function_event(a_enter, stack);
+        stack.on_event(a_enter);
+
+        PmuSample sample;
+        sample.ts = 200;
+        sample.tid = 7;
+        sample.cpu = 2;
+        sample.ip = 0x1234;
+        sample.period = 1000;
+        sample.event_index = 0;
+        timeline.on_pmu_sample(sample, stack);
+
+        TraceEvent a_exit = make_event(1, 7, kEventExit, 300);
+        timeline.on_function_event(a_exit, stack);
+        stack.on_event(a_exit);
+
+        TraceEvent main_exit = make_event(0, 7, kEventExit, 400);
+        timeline.on_function_event(main_exit, stack);
+        stack.on_event(main_exit);
+
+        timeline.finish(500, stack);
+        output.stop();
+    }
+    unlink(path.c_str());
+
+    const SpanRecord* span = find_span(spans, "pmu.cycles");
+    CHECK(span != nullptr);
+    if (span) {
+        CHECK(span->kernel);
+        CHECK(span->tid == 7);
+        CHECK(span->depth == 2);
+        CHECK(span->start_unix_ns == 200);
+        CHECK(span->end_unix_ns == 200);
+        const SpanAttribute* event =
+            find_span_attr(*span, "callgraph.pmu.event");
+        const SpanAttribute* period =
+            find_span_attr(*span, "callgraph.pmu.period");
+        const SpanAttribute* ip = find_span_attr(*span, "callgraph.pmu.ip");
+        const SpanAttribute* cpu = find_span_attr(*span, "callgraph.pmu.cpu");
+        const SpanAttribute* approximate =
+            find_span_attr(*span, "callgraph.pmu.approximate");
+        CHECK(event != nullptr && event->string_value == "cycles");
+        CHECK(period != nullptr && period->int_value == 1000);
+        CHECK(ip != nullptr && ip->string_value == "0x1234");
+        CHECK(cpu != nullptr && cpu->int_value == 2);
+        CHECK(approximate != nullptr && approximate->bool_value);
+    }
+}
+
 int main()
 {
     test_demangle();
@@ -3996,6 +4163,8 @@ int main()
     test_pmu_count_format();
     test_pmu_plan();
     test_perf_record_parsing();
+    test_pmu_timeline_and_histogram();
+    test_pmu_span_export();
     test_basic_stack();
     test_desync();
     test_sp_unwind_on_enter();

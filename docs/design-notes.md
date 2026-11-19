@@ -360,9 +360,11 @@ implemented as a separate BPF object and ring buffer, with userspace
 `KernelTimeline` accounting: scheduler switch/wakeup, futex syscalls,
 read/write/fsync-style syscalls, and block request records. Target TIDs are
 taken from `/proc` and learned from uprobe events. Network, memory, and PMU
-counting are implemented; `PerfCollector` owns per-thread perf groups
-independently of the BPF object. PMU sampling, interrupts, and offline
-kernel-line replay remain future work.
+counting and sampling are implemented; `PerfCollector` owns per-thread perf
+groups and sampling rings independently of the BPF object. PMU samples are
+attributed to the innermost active traced frame, appear as `@PMU sample` lines
+and `pmu:` histogram blocks, and can be exported as zero-duration point spans.
+Interrupts and offline kernel-line replay remain future work.
 
 The function event format and `CallStack` remain the source of truth for call
 trees; kernel lines use a separate `@CATEGORY` format and never change depth.

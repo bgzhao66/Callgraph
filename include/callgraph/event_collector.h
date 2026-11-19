@@ -8,6 +8,7 @@
 
 #include "callgraph/event.h"
 #include "callgraph/kernel_event.h"
+#include "callgraph/pmu.h"
 
 struct ring_buffer;
 
@@ -15,6 +16,7 @@ namespace callgraph {
 
 class CallStack;
 class KernelTimeline;
+class PerfCollector;
 
 class EventCollector {
 public:
@@ -22,7 +24,8 @@ public:
                    int kernel_events_fd = -1,
                    KernelTimeline* timeline = nullptr,
                    uint64_t merge_window_ns = 1000000,
-                   std::function<void(uint32_t)> new_target_tid = {});
+                   std::function<void(uint32_t)> new_target_tid = {},
+                   PerfCollector* perf = nullptr);
     ~EventCollector();
 
     EventCollector(const EventCollector&) = delete;
@@ -40,10 +43,11 @@ public:
 
 private:
     struct Pending {
-        enum class Source { Function, Kernel };
+        enum class Source { Function, Kernel, Pmu };
         Source source;
         TraceEvent function = {};
         struct cg_kernel_event kernel = {};
+        PmuSample pmu = {};
     };
 
     static int on_event(void* ctx, void* data, size_t size);
@@ -53,6 +57,7 @@ private:
     void process(Pending& pending);
     void process_function(const TraceEvent& event);
     void process_kernel(const struct cg_kernel_event& event);
+    void process_pmu(const PmuSample& sample);
 
     int events_fd_;
     int kernel_events_fd_;
@@ -60,6 +65,7 @@ private:
     KernelTimeline* timeline_;
     uint64_t merge_window_ns_;
     std::function<void(uint32_t)> new_target_tid_;
+    PerfCollector* perf_;
     ring_buffer* rb_ = nullptr;
     std::multimap<uint64_t, Pending> pending_;
     uint64_t max_ts_ = 0;

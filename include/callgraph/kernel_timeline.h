@@ -10,6 +10,7 @@
 #include "callgraph/kernel_event.h"
 #include "callgraph/kernel_histogram.h"
 #include "callgraph/kernel_span.h"
+#include "callgraph/pmu.h"
 
 namespace callgraph {
 
@@ -47,6 +48,16 @@ public:
     {
         return kernel_histograms_;
     }
+    const ThreadPmuHistograms& pmu_histograms() const
+    {
+        return pmu_histograms_;
+    }
+
+    // Names are indexed by PmuSample::event_index.  Set once before samples
+    // arrive.
+    void set_pmu_event_names(std::vector<std::string> names);
+    void on_pmu_sample(const PmuSample& sample, const CallStack& stack);
+    uint64_t pmu_samples() const { return pmu_samples_; }
 
     // Must be called before CallStack applies the event: the interval that
     // ends at event.ts belongs to the old top frame.
@@ -131,6 +142,8 @@ private:
     void record_kernel_histogram(uint32_t tid, const CallStack& stack,
                                  const std::string& event, uint64_t ns,
                                  bool incomplete = false);
+    void record_pmu_histogram(uint32_t tid, const CallStack& stack,
+                              const std::string& event, uint64_t period);
     void record_open_intervals(uint32_t tid, uint64_t ts,
                                const CallStack& stack);
     uint64_t function_span_token(const CallStack& stack, uint32_t tid) const;
@@ -172,6 +185,9 @@ private:
     std::unordered_map<uint32_t, ThreadRuntime> threads_;
     std::unordered_map<BlockKey, BlockPending, BlockKeyHash> block_pending_;
     std::unordered_map<uint32_t, KernelEventHistograms> kernel_histograms_;
+    std::vector<std::string> pmu_event_names_;
+    ThreadPmuHistograms pmu_histograms_;
+    uint64_t pmu_samples_ = 0;
 };
 
 }  // namespace callgraph

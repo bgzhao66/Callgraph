@@ -102,13 +102,18 @@ if "$RUN" --kernel-events sched --dry-run -- "$TMP/simple" \
 fi
 
 echo "== PMU CLI gating =="
-for opt in "--pmu cycles" "--events pmu"; do
+for opt in "--pmu cycles" "--events pmu" "--pmu-sampling 100000"; do
     # shellcheck disable=SC2086
     if "$RUN" $opt --dry-run -- "$TMP/simple" >/dev/null 2>&1; then
         echo "expected '$opt' without --kernel to fail" >&2
         exit 1
     fi
 done
+if "$RUN" --kernel --pmu-sampling 100000 --dry-run -- "$TMP/simple" \
+    >/dev/null 2>&1; then
+    echo "expected --pmu-sampling without --pmu to fail" >&2
+    exit 1
+fi
 if "$RUN" --kernel --pmu no-such-counter --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected an unknown PMU counter to fail" >&2
@@ -121,11 +126,14 @@ if "$RUN" --kernel --preset computation --dry-run -- "$TMP/simple" \
 fi
 "$RUN" --kernel --pmu cycles,instructions --dry-run -- "$TMP/simple" \
     2>&1 | grep -q 'PMU counting: cycles,instructions'
+"$RUN" --kernel --pmu cycles --pmu-sampling 100000 --dry-run \
+    -- "$TMP/simple" 2>&1 | grep -q 'sampling every 100000 events'
 "$RUN" --kernel --events pmu --dry-run -- "$TMP/simple" \
     2>&1 | grep -q 'PMU counting: cycles,instructions,cache-misses,branch-misses'
 "$RUN" --kernel --events all --dry-run -- "$TMP/simple" \
     2>&1 | grep -q 'PMU counting: cycles'
 "$RUN" --help | grep -q -- '--pmu <counters>'
+"$RUN" --help | grep -q -- '--pmu-sampling <n>'
 
 echo "== complete traces CLI gating =="
 if "$RUN" --complete-traces --dry-run -- "$TMP/simple" \
@@ -1052,6 +1060,20 @@ else
     # PMU-only mode must not load or attach the kernel tracepoint object.
     ! grep -q 'kernel events:' "$TMP/pmu.err"
     ! grep -q 'kernel tracepoints' "$TMP/pmu.err"
+fi
+
+echo "== PMU sampling =="
+"$RUN" --kernel --pmu cycles --pmu-sampling 10000 --histogram \
+    -o "$TMP/pmu-sampling.trace" --regex --root-scope '^main$' \
+    -- "$TMP/pmu" >/dev/null 2>"$TMP/pmu-sampling.err"
+if grep -q 'PMU unavailable' "$TMP/pmu-sampling.err"; then
+    echo "PMU unavailable; skipping PMU sampling checks"
+else
+    grep -q '@PMU sample event=cycles' "$TMP/pmu-sampling.trace"
+    grep -q '^   pmu:$' "$TMP/pmu-sampling.trace"
+    grep -Eq '^     cycles  samples=[1-9][0-9]*  events=[1-9][0-9]*' \
+        "$TMP/pmu-sampling.trace"
+    grep -q 'PMU 1 counter(s)' "$TMP/pmu-sampling.err"
 fi
 
 echo "== OTLP native file export =="

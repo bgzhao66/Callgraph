@@ -206,7 +206,7 @@ function. They omit `code.*`, module, and argument attributes and use:
 
 | Attribute | Value |
 |---|---|
-| `callgraph.kernel.category` | `FUTEX`, `IO`, `NET`, `MM`, or `SCHED` |
+| `callgraph.kernel.category` | `FUTEX`, `IO`, `NET`, `MM`, `SCHED`, or `PMU` |
 | `callgraph.kernel.event` | `futex`, `read`, `page_fault`, `off_cpu`, ... |
 | `callgraph.kernel.id` | Pairing ID where available |
 | `callgraph.kernel.user_depth` | Depth of the traced user frame at the event |
@@ -227,6 +227,13 @@ appropriate. Page faults add `space`, `address`, `ip`, and `error`.
 
 Global block requests and TCP retransmits are not exported as spans; they
 remain in the text kernel stream and report.
+
+PMU samples are exported as zero-duration point spans named `pmu.<counter>`
+when `--pmu-sampling` is active. They are attached to the innermost active user
+frame and carry `callgraph.pmu.event`, `callgraph.pmu.period`,
+`callgraph.pmu.ip`, `callgraph.pmu.cpu`, and `callgraph.pmu.approximate` in
+addition to the generic kernel point attributes. The sampled IP is raw; it is
+not symbolized to a function.
 
 With `--histogram`, the same TID-attributed kernel events are also aggregated
 into per-user-frame kernel latency histograms. They use the same `@<syscall>`,

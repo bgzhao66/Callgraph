@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -23,5 +24,18 @@ struct KernelHistogram {
 using KernelEventHistograms =
     std::unordered_map<CallPath, std::map<std::string, KernelHistogram>,
                        CallPathHash>;
+
+// PMU samples are counts, not durations.  One entry per owning user call path
+// and counter name.
+struct PmuHistogram {
+    uint64_t samples = 0;
+    uint64_t events = 0;
+};
+
+using PmuHistograms =
+    std::unordered_map<CallPath, std::map<std::string, PmuHistogram>,
+                       CallPathHash>;
+
+using ThreadPmuHistograms = std::unordered_map<uint32_t, PmuHistograms>;
 
 }  // namespace callgraph

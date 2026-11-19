@@ -309,6 +309,7 @@ struct HistogramEntry {
     std::string name;
     LatencyHistogram histogram;
     std::map<std::string, KernelHistogram> kernel;
+    std::map<std::string, PmuHistogram> pmu;
     bool has_histogram = false;
     bool recursive = false;
     bool incomplete = false;
@@ -319,7 +320,8 @@ struct HistogramEntry {
 std::string format_histogram_report(
     const LatencyStats& stats, const std::vector<std::string>& names,
     const std::unordered_map<uint32_t, KernelEventHistograms>*
-        kernel_histograms)
+        kernel_histograms,
+    const ThreadPmuHistograms* pmu_histograms)
 {
     const auto& threads = stats.threads();
     if (threads.empty())
@@ -350,6 +352,13 @@ std::string format_histogram_report(
             const auto kernel_it = kernel_histograms->find(tid);
             if (kernel_it != kernel_histograms->end())
                 thread_kernel = &kernel_it->second;
+        }
+
+        const PmuHistograms* thread_pmu = nullptr;
+        if (pmu_histograms) {
+            const auto pmu_it = pmu_histograms->find(tid);
+            if (pmu_it != pmu_histograms->end())
+                thread_pmu = &pmu_it->second;
         }
 
         // Completed call paths: parent path -> child paths.  Keying by the
@@ -432,6 +441,17 @@ std::string format_histogram_report(
                                                kernel_hist);
                 }
             }
+
+            if (thread_pmu) {
+                const auto path_it = thread_pmu->find(path);
+                if (path_it != thread_pmu->end()) {
+                    for (const auto& [event, pmu_hist] : path_it->second) {
+                        PmuHistogram& merged = entry.pmu[event];
+                        merged.samples += pmu_hist.samples;
+                        merged.events += pmu_hist.events;
+                    }
+                }
+            }
         };
 
         auto render_histograms = [&]() {
@@ -481,6 +501,21 @@ std::string format_histogram_report(
                                                   kernel_total_ns);
                         else
                             out += "       calls=0  [incomplete]\n";
+                    }
+                }
+
+                if (!entry.pmu.empty()) {
+                    // PMU samples are counts, not durations, so there is no
+                    // bar and no latency body.
+                    out += "   pmu:\n";
+                    for (const auto& [event, pmu_hist] : entry.pmu) {
+                        out += "     ";
+                        out += event;
+                        out += "  samples=";
+                        out += std::to_string(pmu_hist.samples);
+                        out += "  events=";
+                        out += std::to_string(pmu_hist.events);
+                        out += '\n';
                     }
                 }
             }

@@ -580,6 +580,12 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
             std::string error;
             if (!parse_pmu_counters(value(), &options.pmu_counters, &error))
                 usage_error("%s", error.c_str());
+        } else if (arg == "--pmu-sampling") {
+            note_kernel_option("--pmu-sampling");
+            options.pmu_sampling = true;
+            options.pmu_sampling_period = parse_size(value(), arg);
+            if (options.pmu_sampling_period == 0)
+                usage_error("--pmu-sampling must be >= 1");
         } else if (arg == "--events") {
             note_kernel_option("--events");
             const std::string list = value();
@@ -778,6 +784,8 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
         usage_error("--merge-window must be > 0");
     if (options.pmu && options.pmu_counters.empty())
         options.pmu_counters = default_pmu_counters();
+    if (options.pmu_sampling && !options.pmu)
+        usage_error("--pmu-sampling requires --pmu or --events pmu");
 
     if (options.max_depth < -1)
         usage_error("--max-depth must be >= -1");
@@ -1008,6 +1016,7 @@ int trace_program(int argc, char** argv, ProgramMode mode)
         std::unique_ptr<KernelTimeline> kernel_timeline;
         std::unique_ptr<PerfCollector> pmu_collector;
 
+        const bool pmu_sampling = options.pmu && options.pmu_sampling;
         std::vector<uint32_t> tids;
         if (kernel_selection.any() || options.pmu)
             tids = target_tids(target);
@@ -1020,10 +1029,6 @@ int trace_program(int argc, char** argv, ProgramMode mode)
             kernel_probes->set_target_tids(tids);
             kernel_probes->attach(kernel_selection,
                                  options.require_kernel_events);
-            kernel_timeline = std::make_unique<KernelTimeline>(
-                output, options.max_depth, options.verbose);
-            kernel_timeline->set_target_tids(tids);
-            kernel_timeline->set_collect_histograms(options.histogram);
             if (options.block)
                 log_warn("block tracepoints are global; unrelated device "
                          "traffic may be included");
@@ -1034,10 +1039,24 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                      static_cast<unsigned long long>(
                          kernel_probes->missing_events()));
         }
+        if (kernel_selection.any() || pmu_sampling) {
+            kernel_timeline = std::make_unique<KernelTimeline>(
+                output, options.max_depth, options.verbose);
+            kernel_timeline->set_target_tids(tids);
+            kernel_timeline->set_collect_histograms(options.histogram);
+            if (pmu_sampling) {
+                std::vector<std::string> names;
+                names.reserve(options.pmu_counters.size());
+                for (const PmuCounter& counter : options.pmu_counters)
+                    names.push_back(counter.name);
+                kernel_timeline->set_pmu_event_names(std::move(names));
+            }
+        }
         if (options.pmu) {
             pmu_collector = std::make_unique<PerfCollector>(
-                target, options.pmu_counters, false, 0,
-                options.require_kernel_events, options.verbose);
+                target, options.pmu_counters, pmu_sampling,
+                options.pmu_sampling_period, options.require_kernel_events,
+                options.verbose);
         }
 
         ModuleRegistry registry(options, filter, &probes, ret_mode,
@@ -1161,14 +1180,16 @@ int trace_program(int argc, char** argv, ProgramMode mode)
         stack.set_trace_roots(&registry.root_ids(), filter.has_root_scope());
         stack.set_ingest_sample_rate(options.ingest_sample_rate);
 
-        if (is_child) {
+        if (is_child)
             ProcessController::detach(target);
-            child_guard.release();
-        }
         // Perf events are opened disabled and enabled only after the ptrace
-        // stop window, so enabled_ns does not include it.
+        // stop window, so enabled_ns does not include it.  Keep the child
+        // guard armed until start() returns so a fatal --require-events
+        // failure still tears the child down.
         if (pmu_collector)
             pmu_collector->start();
+        if (is_child)
+            child_guard.release();
 
         auto refresh_modules = [&]() {
             if (!options.all_modules && options.modules.empty())
@@ -1234,7 +1255,8 @@ int trace_program(int argc, char** argv, ProgramMode mode)
                     kernel_timeline->add_target_tid(tid);
                 if (pmu_collector)
                     pmu_collector->add_target_tid(tid);
-            });
+            },
+            pmu_collector.get());
         collector.run(target, is_child ? target : -1, collector_tick);
 
         if (pmu_collector)
@@ -1250,8 +1272,11 @@ int trace_program(int argc, char** argv, ProgramMode mode)
             const auto* kernel_histograms =
                 kernel_timeline ? &kernel_timeline->kernel_histograms()
                                 : nullptr;
+            const auto* pmu_histograms =
+                kernel_timeline ? &kernel_timeline->pmu_histograms() : nullptr;
             report = format_histogram_report(stack.stats(), registry.names(),
-                                             kernel_histograms);
+                                             kernel_histograms,
+                                             pmu_histograms);
         }
         if (pmu_collector) {
             const std::string counts = pmu_collector->format_counts();

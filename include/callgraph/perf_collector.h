@@ -91,7 +91,9 @@ private:
     bool require_;
     bool verbose_;
     bool started_ = false;
+    bool initial_scan_ = false;
     bool unavailable_ = false;
+    int last_errno_ = 0;
     std::string error_;
     std::unordered_map<uint32_t, ThreadEvents> threads_;
     std::vector<int> fds_;

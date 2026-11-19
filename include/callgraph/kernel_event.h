@@ -29,6 +29,7 @@ constexpr uint16_t kKernelPageFaultKernel = CG_KEV_PAGE_FAULT_KERNEL;
 constexpr uint16_t kKernelDirectReclaimBegin = CG_KEV_DIRECT_RECLAIM_BEGIN;
 constexpr uint16_t kKernelDirectReclaimEnd = CG_KEV_DIRECT_RECLAIM_END;
 constexpr uint16_t kKernelTcpRetransmit = CG_KEV_TCP_RETRANSMIT;
+constexpr uint16_t kKernelPmuSample = CG_KEV_PMU_SAMPLE;
 
 constexpr int kKernelDepthNone = -1;
 constexpr int kKernelDepthGlobal = -2;

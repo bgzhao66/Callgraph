@@ -67,6 +67,8 @@ const char* kernel_kind_name(uint16_t kind)
         return "direct_reclaim_end";
     case CG_KEV_TCP_RETRANSMIT:
         return "tcp_retransmit";
+    case CG_KEV_PMU_SAMPLE:
+        return "sample";
     default:
         if (kind >= CG_KEV_NET_SOCKET_ENTER &&
             kind <= CG_KEV_NET_POLL_EXIT)

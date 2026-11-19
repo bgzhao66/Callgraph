@@ -409,6 +409,85 @@ void KernelTimeline::record_kernel_histogram(uint32_t tid,
     entry.incomplete = entry.incomplete || incomplete;
 }
 
+void KernelTimeline::set_pmu_event_names(std::vector<std::string> names)
+{
+    pmu_event_names_ = std::move(names);
+}
+
+void KernelTimeline::record_pmu_histogram(uint32_t tid, const CallStack& stack,
+                                          const std::string& event,
+                                          uint64_t period)
+{
+    if (!collect_histograms_)
+        return;
+
+    const auto frames = stack.traced_frames_for(tid);
+    if (frames.empty())
+        return;
+
+    CallPath path;
+    path.reserve(frames.size());
+    for (const CallFrame& frame : frames)
+        path.push_back(frame.function_id);
+
+    PmuHistogram& entry = pmu_histograms_[tid][std::move(path)][event];
+    entry.samples += 1;
+    entry.events += period;
+}
+
+void KernelTimeline::on_pmu_sample(const PmuSample& sample,
+                                   const CallStack& stack)
+{
+    if (exited_.count(sample.tid) != 0 || !is_target(sample.tid))
+        return;
+
+    ++pmu_samples_;
+
+    const std::string name =
+        sample.event_index < pmu_event_names_.size()
+            ? pmu_event_names_[sample.event_index]
+            : "event" + std::to_string(sample.event_index);
+
+    std::string attrs;
+    append_text_attr(attrs, "event", name);
+    append_attr(attrs, "period", sample.period);
+    append_hex_attr(attrs, "ip", sample.ip);
+    append_attr(attrs, "cpu", sample.cpu);
+    append_attr(attrs, "approximate", 1);
+    if (sample.timestamp_from_receipt)
+        append_attr(attrs, "receipt_time", 1);
+
+    KernelEvent event = {};
+    event.ts = sample.ts;
+    event.tid = sample.tid;
+    event.category = CG_KCAT_PMU;
+    event.kind = CG_KEV_PMU_SAMPLE;
+    emit_event(event, depth_of(stack, sample.tid),
+               kernel_kind_name(event.kind), attrs);
+
+    if (collect_histograms_)
+        record_pmu_histogram(sample.tid, stack, name, sample.period);
+
+    const auto frames = stack.traced_frames_for(sample.tid);
+    if (span_sink_ && !frames.empty()) {
+        const uint32_t user_depth =
+            static_cast<uint32_t>(frames.size() - 1);
+        char ip[32];
+        snprintf(ip, sizeof(ip), "0x%" PRIx64, sample.ip);
+        std::vector<SpanAttribute> span_attrs;
+        span_attrs.push_back(make_span_string("callgraph.pmu.event", name));
+        span_attrs.push_back(make_span_int(
+            "callgraph.pmu.period", static_cast<int64_t>(sample.period)));
+        span_attrs.push_back(make_span_string("callgraph.pmu.ip", ip));
+        span_attrs.push_back(
+            make_span_int("callgraph.pmu.cpu", sample.cpu));
+        span_attrs.push_back(
+            make_span_bool("callgraph.pmu.approximate", true));
+        emit_point(stack, sample.tid, user_depth, CG_KCAT_PMU,
+                   "pmu." + name, sample.ts, std::move(span_attrs));
+    }
+}
+
 void KernelTimeline::record_open_intervals(uint32_t tid, uint64_t ts,
                                            const CallStack& stack)
 {
