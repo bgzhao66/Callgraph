@@ -832,6 +832,10 @@ Events:
 Aliases accepted by the parser: `cpu-cycles`, `branches`,
 `branch-instruction`, `cache-miss`, `cache-reference`, `branch`.
 
+The `--pmu` help page lists only the common latency counters (`cycles`,
+`instructions`, `cache-misses`, `branch-misses`). The full set above remains
+accepted.
+
 **Mode A: counting.** Open a per-thread group (`PERF_FORMAT_GROUP |
 PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING`) for the
 target threads and read it at shutdown. This gives per-thread totals. It does

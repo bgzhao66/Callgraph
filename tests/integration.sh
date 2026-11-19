@@ -141,11 +141,11 @@ fi
     2>&1 | grep -q 'PMU counting: cycles'
 "$RUN" --help | grep -q -- '--pmu <counters>'
 "$RUN" --help | grep -q -- '--pmu-sampling <n>'
-"$RUN" --help | grep -q 'stalled-cycles-backend'
-"$RUN" --help | grep -q 'L1-icache-load-misses'
-"$RUN" --help | grep -q 'dTLB-load-misses'
+"$RUN" --help | grep -q 'Common: cycles, instructions, cache-misses'
+"$RUN" --help | grep -q 'Other counters and aliases are accepted'
 "$RUN" --help | grep -q 'r<hex>'
-"$RUN" --help | grep -q 'Aliases: cpu-cycles'
+"$RUN" --kernel --pmu stalled-cycles-backend --dry-run -- "$TMP/simple" \
+    2>&1 | grep -q 'PMU counting: stalled-cycles-backend'
 
 echo "== complete traces CLI gating =="
 if "$RUN" --complete-traces --dry-run -- "$TMP/simple" \

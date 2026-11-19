@@ -320,14 +320,10 @@ Opt-in kernel events (--kernel):
           --block               trace block request events (global)
           --pmu <counters>      hardware counters, comma-separated (repeatable);
                                 presets do not enable PMU.
-                                Hardware: cycles, instructions, cache-references, cache-misses,
-                                branch-instructions, branch-misses, bus-cycles, ref-cycles,
-                                stalled-cycles-frontend, stalled-cycles-backend.
-                                Cache/TLB: L1-dcache-load-misses, L1-icache-load-misses,
-                                LLC-load-misses, dTLB-load-misses, iTLB-load-misses.
-                                Raw: r<hex>.
-                                Aliases: cpu-cycles, branches, branch-instruction, cache-miss,
-                                cache-reference, branch.
+                                Common: cycles, instructions, cache-misses,
+                                branch-misses.
+                                Other counters and aliases are accepted; raw
+                                events use r<hex>.
           --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
 
 Live export options (--exporter):
@@ -447,14 +443,10 @@ Opt-in kernel events (--kernel):
           --block               trace block request events (global)
           --pmu <counters>      hardware counters, comma-separated (repeatable);
                                 presets do not enable PMU.
-                                Hardware: cycles, instructions, cache-references, cache-misses,
-                                branch-instructions, branch-misses, bus-cycles, ref-cycles,
-                                stalled-cycles-frontend, stalled-cycles-backend.
-                                Cache/TLB: L1-dcache-load-misses, L1-icache-load-misses,
-                                LLC-load-misses, dTLB-load-misses, iTLB-load-misses.
-                                Raw: r<hex>.
-                                Aliases: cpu-cycles, branches, branch-instruction, cache-miss,
-                                cache-reference, branch.
+                                Common: cycles, instructions, cache-misses,
+                                branch-misses.
+                                Other counters and aliases are accepted; raw
+                                events use r<hex>.
           --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
 
 Live export options (--exporter):
