@@ -761,17 +761,11 @@ Options parse_trace_args(int argc, char** argv, ProgramMode mode)
             options.network = true;
             options.tcp = true;
         } else if (options.kernel_preset == "extended") {
-            options.sched = true;
-            options.futex = true;
-            options.io = true;
-            options.block = true;
-            options.memory = true;
-            options.page_faults = true;
-            options.network = true;
-            options.tcp = true;
+            usage_error("--preset extended has been removed; use "
+                        "--preset full --block");
         } else {
             usage_error("--preset must be 'latency', 'proxy', 'storage', "
-                        "'computation', 'full', or 'extended'");
+                        "'computation', or 'full'");
         }
     }
     const bool kernel_any = options.sched || options.futex || options.io ||

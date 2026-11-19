@@ -88,13 +88,20 @@ done
 "$RUN" --kernel --events sched --preset storage \
     --merge-window 1ms --require-events --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1
-for preset in database cpu; do
+for preset in database cpu extended; do
     if "$RUN" --kernel --preset "$preset" --dry-run -- "$TMP/simple" \
         >/dev/null 2>&1; then
         echo "expected removed preset '$preset' to fail" >&2
         exit 1
     fi
 done
+extended_error=$("$RUN" --kernel --preset extended --dry-run \
+    -- "$TMP/simple" 2>&1 || true)
+if ! printf '%s' "$extended_error" \
+    | grep -q -- '--preset full --block'; then
+    echo "expected --preset extended to mention --preset full --block" >&2
+    exit 1
+fi
 if "$RUN" --kernel-events sched --dry-run -- "$TMP/simple" \
     >/dev/null 2>&1; then
     echo "expected the old --kernel-events name to fail" >&2
@@ -175,13 +182,17 @@ set +o pipefail
 "$RUN" --help | grep -q '^Kernel event options (--kernel):'
 "$RUN" --help | grep -q '^Opt-in kernel events (--kernel):'
 ! "$RUN" --help | sed -n '/^Kernel event options/,/^Opt-in kernel events/p' \
+    | grep -q '^          --block '
+"$RUN" --help | sed -n '/^Opt-in kernel events/,/^Live export/p' \
+    | grep -q '^          --block '
+! "$RUN" --help | sed -n '/^Kernel event options/,/^Opt-in kernel events/p' \
     | grep -q -- '--pmu <counters>'
 "$RUN" --help | sed -n '/^Opt-in kernel events/,/^Live export/p' \
     | grep -q -- '--pmu <counters>'
 "$RUN" --help | grep -q '^              latency           sched, futex, io, net syscalls$'
 "$RUN" --help | grep -q '^              computation       sched, futex, direct reclaim, page faults$'
 "$RUN" --help | grep -q '^              full              sched, futex, io, net syscalls, direct reclaim,$'
-"$RUN" --help | grep -q '^              extended          sched, futex, io, block, net syscalls, direct reclaim,$'
+! "$RUN" --help | grep -q '^              extended '
 "$RUN" --help | grep -q '^Live export options (--exporter):'
 ! "$RUN" --help | grep -q '^Offline export options:'
 "$RUN" --help | grep -q '^General options:'
@@ -1030,7 +1041,7 @@ grep -q '@NET socket_begin' "$TMP/preset-full.trace"
 ! grep -q '@BLOCK' "$TMP/preset-full.trace"
 ! grep -q 'block tracepoints are global' "$TMP/preset-full.err"
 
-"$RUN" --kernel --preset extended -o "$TMP/preset-extended.trace" \
+"$RUN" --kernel --preset full --block -o "$TMP/preset-extended.trace" \
     --regex --root-scope "$preset_include" -- "$TMP/kernel" \
     >/dev/null 2>"$TMP/preset-extended.err"
 grep -q '@MM page_fault' "$TMP/preset-extended.trace"

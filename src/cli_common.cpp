@@ -155,23 +155,18 @@ void print_kernel_options(FILE* out)
         {"--sched", "trace scheduler switch/wakeup events", 1},
         {"--futex", "trace futex syscall begin/end events", 1},
         {"--io", "trace read/write/fsync syscall events", 1},
-        {"--block", "trace block request events (global)", 1},
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
         {"--events <events>",
          "comma-separated: sched,futex,io,block,net,mm,pmu,all", 1},
         {"--preset <preset>",
-         "latency (default), proxy, storage, computation, full, or extended", 1},
+         "latency (default), proxy, storage, computation, or full", 1},
         {"latency", "sched, futex, io, net syscalls", 2},
         {"proxy", "sched, futex, io, net syscalls, TCP retransmits", 2},
         {"storage", "sched, futex, io, direct reclaim", 2},
         {"computation", "sched, futex, direct reclaim, page faults", 2},
         {"full",
          "sched, futex, io, net syscalls, direct reclaim,\n"
-         "page faults, TCP retransmits",
-         2},
-        {"extended",
-         "sched, futex, io, block, net syscalls, direct reclaim,\n"
          "page faults, TCP retransmits",
          2},
         {"--merge-window <duration>",
@@ -181,9 +176,10 @@ void print_kernel_options(FILE* out)
     });
 }
 
-void print_pmu_options(FILE* out)
+void print_optin_kernel_options(FILE* out)
 {
     print_help_section(out, "Opt-in kernel events (--kernel)", {
+        {"--block", "trace block request events (global)", 1},
         {"--pmu <counters>",
          "hardware counters, comma-separated (repeatable);\n"
          "presets do not enable PMU.\n"
@@ -577,7 +573,7 @@ void usage(FILE* out)
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
-        print_pmu_options(out);
+        print_optin_kernel_options(out);
         print_live_export_options(out);
         print_general_options(out);
         print_live_examples(out, false);
@@ -589,7 +585,7 @@ void usage(FILE* out)
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
-        print_pmu_options(out);
+        print_optin_kernel_options(out);
         print_live_export_options(out);
         print_general_options(out);
         print_live_examples(out, true);
