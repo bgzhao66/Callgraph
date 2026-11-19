@@ -161,6 +161,7 @@ set +o pipefail
 "$EXPORT" --static --help | grep -q '^          --root-scope <glob>'
 "$EXPORT" --static --help | grep -q 'callgraph-export --static --static-graph <file>'
 "$EXPORT" --static --help | grep -q 'required when callgraph-export --static is run directly'
+"$EXPORT" --static --help | grep -q 'callgraph export --static --all-modules ./app'
 "$DISASM_BIN" --help | grep -q '^usage: callgraph-disasm \[<options>\] <module>'
 "$DISASM_BIN" --help | grep -q 'The callgraph wrapper runs callgraph-disasm automatically'
 # Mode pages are narrowed: no options from the other modes.
@@ -174,6 +175,7 @@ set +o pipefail
 "$EXPORT" --help | grep -q '^      --otel'
 "$EXPORT" --help | grep -q '^      --static'
 "$EXPORT" --help | grep -q '^      --flame'
+"$EXPORT" --help | grep -q 'callgraph export --static --all-modules ./app'
 # The run/attach page points at the exporter instead of duplicating it.
 "$RUN" --help | grep -q "Offline conversion: run 'callgraph export --help'"
 "$RUN" --help > "$TMP/help-run.txt"

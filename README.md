@@ -552,6 +552,10 @@ Examples:
   callgraph disasm --all-modules ./app -o facts.json
   callgraph export --static --static-graph facts.json \
       --regex --root-scope '^main$'
+
+  # Wrapper: generate facts for ./app and its DT_NEEDED closure
+  callgraph export --static --all-modules ./app \
+      --regex --root-scope '^main$'
 ```
 
 `callgraph disasm --help` covers the facts generator, and `callgraph --help`

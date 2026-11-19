@@ -426,6 +426,11 @@ void print_export_static_examples(FILE* out)
             "  callgraph export --static --static-graph facts.json\n"
             "  callgraph disasm --all-modules ./app -o facts.json\n"
             "  callgraph export --static --static-graph facts.json \\\n"
+            "      --regex --root-scope '^main$'\n"
+            "\n"
+            "  # Wrapper: generate facts for ./app and its DT_NEEDED closure\n"
+            "  callgraph export --static ./app\n"
+            "  callgraph export --static --all-modules ./app \\\n"
             "      --regex --root-scope '^main$'\n");
 }
 
@@ -454,6 +459,11 @@ void print_export_examples(FILE* out)
             "  callgraph export --static --static-graph facts.json\n"
             "  callgraph disasm --all-modules ./app -o facts.json\n"
             "  callgraph export --static --static-graph facts.json \\\n"
+            "      --regex --root-scope '^main$'\n"
+            "\n"
+            "  # Wrapper: generate facts for ./app and its DT_NEEDED closure\n"
+            "  callgraph export --static ./app\n"
+            "  callgraph export --static --all-modules ./app \\\n"
             "      --regex --root-scope '^main$'\n");
 }
 
