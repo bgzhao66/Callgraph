@@ -186,7 +186,15 @@ void print_pmu_options(FILE* out)
     print_help_section(out, "Opt-in kernel events (--kernel)", {
         {"--pmu <counters>",
          "hardware counters, comma-separated (repeatable);\n"
-         "presets do not enable PMU",
+         "presets do not enable PMU.\n"
+         "Hardware: cycles, instructions, cache-references, cache-misses,\n"
+         "branch-instructions, branch-misses, bus-cycles, ref-cycles,\n"
+         "stalled-cycles-frontend, stalled-cycles-backend.\n"
+         "Cache/TLB: L1-dcache-load-misses, L1-icache-load-misses,\n"
+         "LLC-load-misses, dTLB-load-misses, iTLB-load-misses.\n"
+         "Raw: r<hex>.\n"
+         "Aliases: cpu-cycles, branches, branch-instruction, cache-miss,\n"
+         "cache-reference, branch.",
          1},
         {"--pmu-sampling <n>",
          "sample every <n> events; requires --pmu or --events pmu", 1},

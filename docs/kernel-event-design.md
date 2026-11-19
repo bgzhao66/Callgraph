@@ -824,9 +824,13 @@ by a separate `PerfCollector` using `perf_event_open()`.
 Events:
 
 `cycles`, `instructions`, `cache-references`, `cache-misses`,
-`branch-instructions`, `branch-misses`, `L1-dcache-load-misses`,
-`LLC-load-misses`, `dTLB-load-misses`, `iTLB-load-misses`,
-`stalled-cycles-frontend`, `stalled-cycles-backend` (when supported).
+`branch-instructions`, `branch-misses`, `bus-cycles`, `ref-cycles`,
+`stalled-cycles-frontend`, `stalled-cycles-backend`,
+`L1-dcache-load-misses`, `L1-icache-load-misses`, `LLC-load-misses`,
+`dTLB-load-misses`, `iTLB-load-misses`, or `r<hex>` (when supported).
+
+Aliases accepted by the parser: `cpu-cycles`, `branches`,
+`branch-instruction`, `cache-miss`, `cache-reference`, `branch`.
 
 **Mode A: counting.** Open a per-thread group (`PERF_FORMAT_GROUP |
 PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING`) for the
