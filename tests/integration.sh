@@ -168,6 +168,11 @@ set +o pipefail
 "$RUN" --help | grep -q -- '--trace-depth'
 "$RUN" --help | grep -q '<n> > 0 prunes probes along direct calls'
 "$RUN" --help | grep -q '^Kernel event options (--kernel):'
+"$RUN" --help | grep -q '^Opt-in kernel events (--kernel):'
+! "$RUN" --help | sed -n '/^Kernel event options/,/^Opt-in kernel events/p' \
+    | grep -q -- '--pmu <counters>'
+"$RUN" --help | sed -n '/^Opt-in kernel events/,/^Live export/p' \
+    | grep -q -- '--pmu <counters>'
 "$RUN" --help | grep -q '^              latency           sched, futex, io, net syscalls$'
 "$RUN" --help | grep -q '^              computation       sched, futex, direct reclaim, page faults$'
 "$RUN" --help | grep -q '^              full              sched, futex, io, net syscalls, direct reclaim,$'

@@ -305,9 +305,6 @@ Kernel event options (--kernel):
           --block               trace block request events (global)
           --network             trace socket syscalls and TCP retransmits
           --memory              trace page faults and direct reclaim
-          --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
-                                opt-in and presets do not enable it
-          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
           --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
@@ -321,6 +318,11 @@ Kernel event options (--kernel):
           --merge-window <duration>
                                 reorder window, ns/us/ms/s (default: 1ms)
           --require-events      fail if a requested event or counter is unavailable
+
+Opt-in kernel events (--kernel):
+          --pmu <counters>      hardware counters, comma-separated (repeatable);
+                                presets do not enable PMU
+          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
 
 Live export options (--exporter):
       --exporter <mode>         stdout (default), otlp, otlp-http, or otlp-json
@@ -424,9 +426,6 @@ Kernel event options (--kernel):
           --block               trace block request events (global)
           --network             trace socket syscalls and TCP retransmits
           --memory              trace page faults and direct reclaim
-          --pmu <counters>      hardware counters, comma-separated (repeatable); PMU is
-                                opt-in and presets do not enable it
-          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
           --events <events>     comma-separated: sched,futex,io,block,net,mm,pmu,all
           --preset <preset>     latency (default), proxy, storage, computation, full, or extended
               latency           sched, futex, io, net syscalls
@@ -440,6 +439,11 @@ Kernel event options (--kernel):
           --merge-window <duration>
                                 reorder window, ns/us/ms/s (default: 1ms)
           --require-events      fail if a requested event or counter is unavailable
+
+Opt-in kernel events (--kernel):
+          --pmu <counters>      hardware counters, comma-separated (repeatable);
+                                presets do not enable PMU
+          --pmu-sampling <n>    sample every <n> events; requires --pmu or --events pmu
 
 Live export options (--exporter):
       --exporter <mode>         stdout (default), otlp, otlp-http, or otlp-json

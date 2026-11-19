@@ -1080,7 +1080,8 @@ kernel option is secondary to it. Without `--kernel`, the CLI and output are
 unchanged. `--kernel` alone selects the `latency` preset. In the
 `callgraph run`/`callgraph attach` `--help` page, `--kernel` appears under the
 Kernel event options section and its family shortcuts and modifiers are
-indented beneath it.
+indented beneath it. PMU is listed separately in the following Opt-in kernel
+events section because presets do not enable it.
 
 ```text
 # Default scopes (latency preset: sched, futex, io, net syscalls, direct

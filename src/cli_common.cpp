@@ -158,12 +158,6 @@ void print_kernel_options(FILE* out)
         {"--block", "trace block request events (global)", 1},
         {"--network", "trace socket syscalls and TCP retransmits", 1},
         {"--memory", "trace page faults and direct reclaim", 1},
-        {"--pmu <counters>",
-         "hardware counters, comma-separated (repeatable); PMU is\n"
-         "opt-in and presets do not enable it",
-         1},
-        {"--pmu-sampling <n>",
-         "sample every <n> events; requires --pmu or --events pmu", 1},
         {"--events <events>",
          "comma-separated: sched,futex,io,block,net,mm,pmu,all", 1},
         {"--preset <preset>",
@@ -184,6 +178,18 @@ void print_kernel_options(FILE* out)
          "reorder window, ns/us/ms/s (default: 1ms)", 1},
         {"--require-events",
          "fail if a requested event or counter is unavailable", 1},
+    });
+}
+
+void print_pmu_options(FILE* out)
+{
+    print_help_section(out, "Opt-in kernel events (--kernel)", {
+        {"--pmu <counters>",
+         "hardware counters, comma-separated (repeatable);\n"
+         "presets do not enable PMU",
+         1},
+        {"--pmu-sampling <n>",
+         "sample every <n> events; requires --pmu or --events pmu", 1},
     });
 }
 
@@ -563,6 +569,7 @@ void usage(FILE* out)
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
+        print_pmu_options(out);
         print_live_export_options(out);
         print_general_options(out);
         print_live_examples(out, false);
@@ -574,6 +581,7 @@ void usage(FILE* out)
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
+        print_pmu_options(out);
         print_live_export_options(out);
         print_general_options(out);
         print_live_examples(out, true);
