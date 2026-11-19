@@ -116,8 +116,11 @@ void print_tracing_options(FILE* out)
         {"--all-modules", "trace every mapped ELF module"},
         {"--module <glob>", "also trace mapped modules matching <glob>"},
         {"--static-graph <file>",
-         "call-graph facts from callgraph disasm (repeatable);\n"
-         "enables --trace-depth pruning and --return-mode=ret"},
+         "call-graph facts from callgraph-disasm (repeatable);\n"
+         "used by --trace-depth and required by --return-mode=ret.\n"
+         "The callgraph wrapper runs callgraph-disasm and passes\n"
+         "generated JSON facts automatically; with the wrapper,\n"
+         "pass this only to reuse existing facts"},
         {"-T, --wall-clock",
          "wall-clock timestamps (default: seconds since boot)"},
         {"--max-depth <n>", "print events with depth <= <n> (default: unlimited)"},
@@ -270,7 +273,11 @@ void print_static_option_group(FILE* out)
     print_help_options(out, {
         {"--static", "render a direct-call graph from facts"},
         {"--static-graph <file>",
-         "facts produced by callgraph disasm (repeatable)", 1},
+         "facts produced by callgraph-disasm (repeatable);\n"
+         "required when callgraph-export --static is run directly.\n"
+         "The callgraph wrapper runs callgraph-disasm on <module>\n"
+         "and passes generated JSON facts automatically; with the\n"
+         "wrapper, pass this only to reuse existing facts", 1},
         {"--root-scope <glob>",
          "with --static, functions that start a tree (repeatable)", 1},
         {"--regex",
@@ -298,9 +305,10 @@ void print_static_notes(FILE* out)
 {
     fprintf(out,
             "\n"
-            "  --static renders facts written by callgraph disasm; generate\n"
-            "  them with 'callgraph disasm --all-modules <module> -o facts.json'.\n"
-            "  The tracer never links a disassembler.\n");
+            "  --static renders facts written by callgraph-disasm.  The\n"
+            "  callgraph wrapper generates them automatically from <module>;\n"
+            "  pass --static-graph <file> only to reuse existing facts.\n"
+            "  callgraph-export never links a disassembler.\n");
 }
 
 void print_offline_export_options(FILE* out)
@@ -309,7 +317,7 @@ void print_offline_export_options(FILE* out)
             "Offline export options:\n"
             "  Convert an existing text trace.  --otel emits an OTLP/JSON\n"
             "  request body; --flame emits folded stacks; --static renders a\n"
-            "  direct-call graph from callgraph disasm facts.\n");
+            "  direct-call graph from callgraph-disasm facts.\n");
     print_export_input_options(out);
     print_otel_option_group(out);
     print_static_option_group(out);
@@ -320,9 +328,10 @@ void print_offline_export_options(FILE* out)
             "  --output and --endpoint are alternatives; --otel requires one.\n"
             "  --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP\n"
             "  protobuf use --exporter otlp or --exporter otlp-http.\n"
-            "  --static renders facts written by callgraph disasm; generate\n"
-            "  them with 'callgraph disasm --all-modules <module> -o facts.json'.\n"
-            "  The tracer never links a disassembler.\n"
+            "  --static renders facts written by callgraph-disasm.  The\n"
+            "  callgraph wrapper generates them automatically from <module>;\n"
+            "  pass --static-graph <file> only to reuse existing facts.\n"
+            "  callgraph-export never links a disassembler.\n"
             "\n");
 }
 
@@ -473,8 +482,8 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
     if (!mode_set) {
         fprintf(out,
                 "usage:\n"
-                "  callgraph export --otel|--flame --input <trace> [<options>]\n"
-                "  callgraph export --static --static-graph <file> [<options>]\n"
+                "  callgraph-export --otel|--flame --input <trace> [<options>]\n"
+                "  callgraph-export --static --static-graph <file> [<options>]\n"
                 "\n");
         print_offline_export_options(out);
         print_general_options(out);
@@ -486,7 +495,7 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
     case ExportMode::Otel:
         fprintf(out,
                 "usage:\n"
-                "  callgraph export --otel --input <trace> [<options>]\n"
+                "  callgraph-export --otel --input <trace> [<options>]\n"
                 "\n");
         fprintf(out, "OTel export options (--otel):\n");
         print_export_input_options(out);
@@ -499,7 +508,7 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
     case ExportMode::Flame:
         fprintf(out,
                 "usage:\n"
-                "  callgraph export --flame --input <trace> [<options>]\n"
+                "  callgraph-export --flame --input <trace> [<options>]\n"
                 "\n");
         fprintf(out, "Flame export options (--flame):\n");
         print_export_input_options(out);
@@ -511,7 +520,7 @@ void usage_export(FILE* out, ExportMode mode, bool mode_set)
     case ExportMode::Static:
         fprintf(out,
                 "usage:\n"
-                "  callgraph export --static --static-graph <file> [<options>]\n"
+                "  callgraph-export --static --static-graph <file> [<options>]\n"
                 "\n");
         fprintf(out, "Static export options (--static):\n");
         print_static_option_group(out);
@@ -529,7 +538,7 @@ void usage(FILE* out)
     case ProgramMode::Run:
         fprintf(out,
                 "usage:\n"
-                "  callgraph run [<options>] -- <program> [<args>...]\n"
+                "  callgraph-run [<options>] -- <program> [<args>...]\n"
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
@@ -540,7 +549,7 @@ void usage(FILE* out)
     case ProgramMode::Attach:
         fprintf(out,
                 "usage:\n"
-                "  callgraph attach [<options>] -p <pid>\n"
+                "  callgraph-attach [<options>] -p <pid>\n"
                 "\n");
         print_tracing_options(out);
         print_kernel_options(out);
@@ -560,24 +569,24 @@ void usage_brief(FILE* out)
     case ProgramMode::Run:
         fprintf(out,
                 "usage:\n"
-                "  callgraph run [<options>] -- <program> [<args>...]\n"
+                "  callgraph-run [<options>] -- <program> [<args>...]\n"
                 "\n"
-                "Run 'callgraph run --help' for all options.\n");
+                "Run 'callgraph-run --help' for all options.\n");
         break;
     case ProgramMode::Attach:
         fprintf(out,
                 "usage:\n"
-                "  callgraph attach [<options>] -p <pid>\n"
+                "  callgraph-attach [<options>] -p <pid>\n"
                 "\n"
-                "Run 'callgraph attach --help' for all options.\n");
+                "Run 'callgraph-attach --help' for all options.\n");
         break;
     case ProgramMode::Export:
         fprintf(out,
                 "usage:\n"
-                "  callgraph export --otel|--flame --input <trace> [<options>]\n"
-                "  callgraph export --static --static-graph <file> [<options>]\n"
+                "  callgraph-export --otel|--flame --input <trace> [<options>]\n"
+                "  callgraph-export --static --static-graph <file> [<options>]\n"
                 "\n"
-                "Run 'callgraph export --help' for all options.\n");
+                "Run 'callgraph-export --help' for all options.\n");
         break;
     }
 }

@@ -25,9 +25,9 @@ const char* kProgram = "callgraph-disasm";
 void usage(FILE* out)
 {
     fprintf(out,
-            "usage: callgraph disasm [<options>] <module>\n"
+            "usage: callgraph-disasm [<options>] <module>\n"
             "\n"
-            "Emit static call-graph facts for an ELF executable or shared\n"
+            "Emit static call-graph JSON facts for an ELF executable or shared\n"
             "object.  <module> must retain its symbol table and be x86-64.\n"
             "\n"
             "Options:\n"
@@ -38,8 +38,11 @@ void usage(FILE* out)
             "\n"
             "The output is consumed by:\n"
             "  callgraph run --static-graph <file> ...\n"
-            "  callgraph export --static --static-graph <file>\n",
-            kProgram);
+            "  callgraph export --static --static-graph <file>\n"
+            "\n"
+            "The callgraph wrapper runs callgraph-disasm automatically when\n"
+            "facts are needed; pass --static-graph <file> to reuse existing\n"
+            "JSON facts.\n");
 }
 
 int usage_error(const std::string& message)

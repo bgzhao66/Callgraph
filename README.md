@@ -240,7 +240,7 @@ indented four spaces further, and descriptions share one column.
 
 ```text
 usage:
-  callgraph run [<options>] -- <program> [<args>...]
+  callgraph-run [<options>] -- <program> [<args>...]
 
 Tracing options:
   -o, --output <file>           write events to <file> (default: stdout)
@@ -253,8 +253,11 @@ Tracing options:
                                 disables longjmp/siglongjmp depth repair
       --all-modules             trace every mapped ELF module
       --module <glob>           also trace mapped modules matching <glob>
-      --static-graph <file>     call-graph facts from callgraph disasm (repeatable);
-                                enables --trace-depth pruning and --return-mode=ret
+      --static-graph <file>     call-graph facts from callgraph-disasm (repeatable);
+                                used by --trace-depth and required by --return-mode=ret.
+                                The callgraph wrapper runs callgraph-disasm and passes
+                                generated JSON facts automatically; with the wrapper,
+                                pass this only to reuse existing facts
   -T, --wall-clock              wall-clock timestamps (default: seconds since boot)
       --max-depth <n>           print events with depth <= <n> (default: unlimited)
       --trace-depth <n>         trace user frames <n> levels below the root
@@ -353,7 +356,7 @@ Examples:
 
 ```text
 usage:
-  callgraph attach [<options>] -p <pid>
+  callgraph-attach [<options>] -p <pid>
 
 Tracing options:
   -o, --output <file>           write events to <file> (default: stdout)
@@ -366,8 +369,11 @@ Tracing options:
                                 disables longjmp/siglongjmp depth repair
       --all-modules             trace every mapped ELF module
       --module <glob>           also trace mapped modules matching <glob>
-      --static-graph <file>     call-graph facts from callgraph disasm (repeatable);
-                                enables --trace-depth pruning and --return-mode=ret
+      --static-graph <file>     call-graph facts from callgraph-disasm (repeatable);
+                                used by --trace-depth and required by --return-mode=ret.
+                                The callgraph wrapper runs callgraph-disasm and passes
+                                generated JSON facts automatically; with the wrapper,
+                                pass this only to reuse existing facts
   -T, --wall-clock              wall-clock timestamps (default: seconds since boot)
       --max-depth <n>           print events with depth <= <n> (default: unlimited)
       --trace-depth <n>         trace user frames <n> levels below the root
@@ -461,13 +467,13 @@ Examples:
 
 ```text
 usage:
-  callgraph export --otel|--flame --input <trace> [<options>]
-  callgraph export --static --static-graph <file> [<options>]
+  callgraph-export --otel|--flame --input <trace> [<options>]
+  callgraph-export --static --static-graph <file> [<options>]
 
 Offline export options:
   Convert an existing text trace.  --otel emits an OTLP/JSON
   request body; --flame emits folded stacks; --static renders a
-  direct-call graph from callgraph disasm facts.
+  direct-call graph from callgraph-disasm facts.
       --input <file>            callgraph text trace to convert (--otel/--flame)
       --otel                    convert a text trace to OpenTelemetry OTLP/JSON spans
           --endpoint <url>      POST the OTLP/JSON body to <url>
@@ -500,7 +506,11 @@ Offline export options:
           --fail-on-export-error
                                 exit non-zero if export fails
       --static                  render a direct-call graph from facts
-          --static-graph <file> facts produced by callgraph disasm (repeatable)
+          --static-graph <file> facts produced by callgraph-disasm (repeatable);
+                                required when callgraph-export --static is run directly.
+                                The callgraph wrapper runs callgraph-disasm on <module>
+                                and passes generated JSON facts automatically; with the
+                                wrapper, pass this only to reuse existing facts
           --root-scope <glob>   with --static, functions that start a tree (repeatable)
           --regex               with --static, treat --root-scope as extended regex
       --flame                   convert a text trace to folded stacks for flame graphs
@@ -509,9 +519,10 @@ Offline export options:
   --output and --endpoint are alternatives; --otel requires one.
   --otel emits OTLP/JSON only; for live OTLP/gRPC or OTLP/HTTP
   protobuf use --exporter otlp or --exporter otlp-http.
-  --static renders facts written by callgraph disasm; generate
-  them with 'callgraph disasm --all-modules <module> -o facts.json'.
-  The tracer never links a disassembler.
+  --static renders facts written by callgraph-disasm.  The
+  callgraph wrapper generates them automatically from <module>;
+  pass --static-graph <file> only to reuse existing facts.
+  callgraph-export never links a disassembler.
 
 General options:
   -v, --verbose                 verbose diagnostics

@@ -85,12 +85,13 @@ These are the available commands:
    export    convert a trace or render a static call graph
    disasm    emit static facts for an ELF module
 
-Facts are generated for run/attach --trace-depth <n> (n >= 0) or
---return-mode=ret, and for export --static.  Pass --static-graph <file> to
-reuse facts produced by callgraph disasm; the wrapper then generates nothing.
-Generated facts are temporary and removed when callgraph exits.
+Facts are generated automatically by callgraph-disasm for run/attach
+--trace-depth <n> (n >= 0) or --return-mode=ret, and for export --static.
+Pass --static-graph <file> to reuse existing JSON facts instead; callgraph
+then generates nothing.  Generated facts are temporary and removed when
+callgraph exits.
 
---all-modules is forwarded to callgraph disasm as well as to the tracer, so
+--all-modules is forwarded to callgraph-disasm as well as to the tracer, so
 the facts cover the target's static DT_NEEDED closure.  Modules opened with
 dlopen have no facts and degrade with a tracer warning.
 

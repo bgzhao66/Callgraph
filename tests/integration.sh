@@ -159,7 +159,10 @@ set +o pipefail
 "$EXPORT" --static --help | grep -q '^      --static'
 "$EXPORT" --static --help | grep -q '^          --static-graph <file>'
 "$EXPORT" --static --help | grep -q '^          --root-scope <glob>'
-"$EXPORT" --static --help | grep -q 'callgraph export --static --static-graph <file>'
+"$EXPORT" --static --help | grep -q 'callgraph-export --static --static-graph <file>'
+"$EXPORT" --static --help | grep -q 'required when callgraph-export --static is run directly'
+"$DISASM_BIN" --help | grep -q '^usage: callgraph-disasm \[<options>\] <module>'
+"$DISASM_BIN" --help | grep -q 'The callgraph wrapper runs callgraph-disasm automatically'
 # Mode pages are narrowed: no options from the other modes.
 ! "$EXPORT" --static --help | grep -q -- '--otel'
 ! "$EXPORT" --static --help | grep -q -- '--endpoint'
@@ -178,9 +181,11 @@ set +o pipefail
 cmp "$TMP/help-run.txt" "$TMP/help-run-short.txt"
 "$ATTACH" --help > "$TMP/help-attach.txt"
 "$EXPORT" --help > "$TMP/help-export.txt"
-grep -q '^  callgraph run \[<options>\] -- <program>' "$TMP/help-run.txt"
-grep -q '^  callgraph attach \[<options>\] -p <pid>' "$TMP/help-attach.txt"
-grep -q '^  callgraph export --otel|--flame --input <trace>' "$TMP/help-export.txt"
+grep -q '^  callgraph-run \[<options>\] -- <program>' "$TMP/help-run.txt"
+grep -q '^  callgraph-attach \[<options>\] -p <pid>' "$TMP/help-attach.txt"
+grep -q '^  callgraph-export --otel|--flame --input <trace>' "$TMP/help-export.txt"
+grep -q 'The callgraph wrapper runs callgraph-disasm' "$TMP/help-run.txt"
+grep -q 'generated JSON facts automatically' "$TMP/help-run.txt"
 ! grep -q -- '--kernel' "$TMP/help-export.txt"
 ! grep -q '^Offline export options:' "$TMP/help-run.txt"
 ! grep -q -- '--exporter' "$TMP/help-export.txt"
@@ -718,10 +723,10 @@ CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     "$WRAPPER" --help | grep -q '^usage: callgraph <command>'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" run --help | grep -q '^  callgraph run \[<options>\]'
+    "$WRAPPER" run --help | grep -q '^  callgraph-run \[<options>\]'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
-    "$WRAPPER" attach --help | grep -q '^  callgraph attach \[<options>\]'
+    "$WRAPPER" attach --help | grep -q '^  callgraph-attach \[<options>\]'
 CALLGRAPH_RUN="$RUN" CALLGRAPH_ATTACH="$ATTACH" \
     CALLGRAPH_EXPORT="$EXPORT" CALLGRAPH_DISASM="$DISASM_BIN" \
     "$WRAPPER" export --otel --help | grep -q -- '--endpoint'
