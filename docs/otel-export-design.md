@@ -362,11 +362,12 @@ would have dropped it. Non-outlier traces still follow `--sample-rate`.
 
 Every exported root span carries `callgraph.quantile` (double), the empirical
 quantile of its duration, while outlier mode is active; this includes warm-up
-and baseline-sampled traces. Intentional outlier filtering is counted as
-`traces_outlier_filtered`/`spans_outlier_filtered`, not as an exporter drop
-reason. Overflowed traces still contribute their root duration to the
-histogram. The distribution describes whole traces, so it is most meaningful
-with `--trace-scope root`.
+and baseline-sampled traces. Traces above the quantile are counted as
+`traces_outlier_reported`/`spans_outlier_reported`; traces exported by neither
+the baseline sample nor the outlier rule are not an exporter drop reason.
+Overflowed traces still contribute their root duration to the histogram. The
+distribution describes whole traces, so it is most meaningful with
+`--trace-scope root`.
 
 ## 9. Incomplete traces and errors
 

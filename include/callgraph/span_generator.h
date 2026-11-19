@@ -83,14 +83,18 @@ public:
 
     uint64_t spans_closed() const { return spans_closed_; }
     uint64_t spans_sampled_out() const { return spans_sampled_out_; }
+    uint64_t traces_completed() const { return traces_completed_; }
     uint64_t traces_flushed() const { return traces_flushed_; }
     uint64_t traces_overflowed() const { return traces_overflowed_; }
     uint64_t traces_orphaned() const { return traces_orphaned_; }
-    uint64_t traces_outlier_filtered() const
+    uint64_t traces_outlier_reported() const
     {
-        return traces_outlier_filtered_;
+        return traces_outlier_reported_;
     }
-    uint64_t spans_outlier_filtered() const { return spans_outlier_filtered_; }
+    uint64_t spans_outlier_reported() const
+    {
+        return spans_outlier_reported_;
+    }
     uint64_t outlier_traces_seen() const { return outlier_hist_.count(); }
     uint64_t outlier_threshold_ns() const { return outlier_threshold_ns_; }
     bool outlier_enabled() const { return config_.outlier_quantile > 0.0; }
@@ -171,7 +175,8 @@ private:
         return config_.complete_traces || outlier_enabled();
     }
     uint64_t trace_duration(const TraceBuffer& buffer) const;
-    bool outlier_keep(TraceBuffer& buffer);
+    bool outlier_warmup() const;
+    bool outlier_keep(TraceBuffer& buffer, bool* reported);
     void record_outlier_duration(const TraceBuffer& buffer);
     std::string thread_name(uint32_t tid);
     uint64_t to_unix(uint64_t ts) const;
@@ -195,6 +200,7 @@ private:
     bool process_trace_initialized_ = false;
     uint64_t spans_closed_ = 0;
     uint64_t spans_sampled_out_ = 0;
+    uint64_t traces_completed_ = 0;
     uint64_t traces_flushed_ = 0;
     uint64_t traces_overflowed_ = 0;
     uint64_t traces_orphaned_ = 0;
@@ -202,9 +208,9 @@ private:
     size_t trace_buffer_total_bytes_ = 0;
     size_t trace_buffer_total_spans_ = 0;
     TraceDurationHistogram outlier_hist_;
-    uint64_t outlier_threshold_ns_ = 0;
-    uint64_t traces_outlier_filtered_ = 0;
-    uint64_t spans_outlier_filtered_ = 0;
+    uint64_t outlier_threshold_ns_ = UINT64_MAX;
+    uint64_t traces_outlier_reported_ = 0;
+    uint64_t spans_outlier_reported_ = 0;
     uint64_t kernel_spans_closed_ = 0;
     uint64_t kernel_spans_point_ = 0;
     uint64_t kernel_spans_unparented_ = 0;

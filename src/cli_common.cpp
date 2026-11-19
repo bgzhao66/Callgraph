@@ -738,10 +738,12 @@ void print_otel_drop_stats(const OtelExporter& exporter)
 void print_trace_buffer_stats(const SpanGenerator& generator)
 {
     fprintf(stderr,
-            "callgraph: trace buffer: %" PRIu64 " completed, %zu active, "
-            "%" PRIu64 " overflowed, %" PRIu64 " orphaned\n",
-            generator.traces_flushed(), generator.active_trace_buffers(),
-            generator.traces_overflowed(), generator.traces_orphaned());
+            "callgraph: trace buffer: %" PRIu64 " completed, %" PRIu64
+            " exported, %zu active, %" PRIu64 " overflowed, %" PRIu64
+            " orphaned\n",
+            generator.traces_completed(), generator.traces_flushed(),
+            generator.active_trace_buffers(), generator.traces_overflowed(),
+            generator.traces_orphaned());
     if (generator.spans_trace_buffer_dropped() != 0) {
         fprintf(stderr,
                 "callgraph: trace buffer dropped %" PRIu64 " span(s)\n",
@@ -755,12 +757,16 @@ void print_outlier_stats(const SpanGenerator& generator)
         return;
     fprintf(stderr,
             "callgraph: outlier sampling: %" PRIu64 " trace(s) seen, "
-            "%" PRIu64 " trace(s) filtered, %" PRIu64 " span(s) filtered, "
-            "threshold %" PRIu64 " ns\n",
+            "%" PRIu64 " trace(s) reported, %" PRIu64
+            " span(s) reported, ",
             generator.outlier_traces_seen(),
-            generator.traces_outlier_filtered(),
-            generator.spans_outlier_filtered(),
-            generator.outlier_threshold_ns());
+            generator.traces_outlier_reported(),
+            generator.spans_outlier_reported());
+    if (generator.outlier_threshold_ns() == UINT64_MAX)
+        fprintf(stderr, "threshold pending\n");
+    else
+        fprintf(stderr, "threshold %" PRIu64 " ns\n",
+                generator.outlier_threshold_ns());
 }
 
 void print_kernel_span_stats(const SpanGenerator& generator)

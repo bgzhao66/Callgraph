@@ -215,6 +215,31 @@ fi
     --outlier-latency-quantile 0.99 2>"$TMP/outlier.err"
 grep -q 'outlier sampling' "$TMP/outlier.err"
 grep -q 'callgraph.quantile' "$TMP/outlier.json"
+: >"$TMP/warmup.trace"
+for i in $(seq 0 99); do
+    tid=$((100 + i))
+    base=$((i * 1000000))
+    printf '2026-11-12T10:00:00.%09d+00:00 %d : 0 -> main\n' \
+        "$base" "$tid" >>"$TMP/warmup.trace"
+    printf '2026-11-12T10:00:00.%09d+00:00 %d : 1 -> A(int)\n' \
+        "$((base + 200))" "$tid" >>"$TMP/warmup.trace"
+    printf '2026-11-12T10:00:00.%09d+00:00 %d : 1 <- A(int)\n' \
+        "$((base + 400))" "$tid" >>"$TMP/warmup.trace"
+    printf '2026-11-12T10:00:00.%09d+00:00 %d : 0 <- main\n' \
+        "$((base + 1000))" "$tid" >>"$TMP/warmup.trace"
+done
+"$EXPORT" --otel --input "$TMP/warmup.trace" \
+    --output "$TMP/warmup.json" --complete-traces \
+    --outlier-latency-quantile 0.9 --sample-rate 0 2>"$TMP/warmup.err"
+grep -q 'trace buffer: 100 completed, 0 exported' "$TMP/warmup.err"
+grep -q '100 trace(s) seen' "$TMP/warmup.err"
+grep -q '0 trace(s) reported' "$TMP/warmup.err"
+grep -q '0 span(s) reported' "$TMP/warmup.err"
+grep -q 'threshold pending' "$TMP/warmup.err"
+if grep -q 'filtered' "$TMP/warmup.err"; then
+    echo "outlier sampling must report selected traces, not filtered ones" >&2
+    exit 1
+fi
 grep -q '"resourceSpans"' "$TMP/otel.json"
 grep -q '"service.name","value":{"stringValue":"demo"}' "$TMP/otel.json"
 grep -q '"name":"C(int)"' "$TMP/otel.json"

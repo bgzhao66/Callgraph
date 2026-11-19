@@ -487,11 +487,17 @@ uint64_t SpanGenerator::trace_duration(const TraceBuffer& buffer) const
                : 0;
 }
 
-bool SpanGenerator::outlier_keep(TraceBuffer& buffer)
+bool SpanGenerator::outlier_warmup() const
 {
+    return outlier_hist_.count() < config_.outlier_warmup_traces;
+}
+
+bool SpanGenerator::outlier_keep(TraceBuffer& buffer, bool* reported)
+{
+    *reported = false;
     // Until the histogram has seen enough traces there is no meaningful
     // threshold, so warm-up traces follow the baseline sample only.
-    if (outlier_hist_.count() < config_.outlier_warmup_traces)
+    if (outlier_warmup())
         return buffer.baseline_sampled;
 
     outlier_threshold_ns_ = outlier_hist_.quantile(config_.outlier_quantile);
@@ -499,8 +505,10 @@ bool SpanGenerator::outlier_keep(TraceBuffer& buffer)
     // lower bound.  A uniform workload otherwise puts every trace in the same
     // bucket as the threshold and classifies all of them as outliers.
     if (outlier_hist_.cdf(trace_duration(buffer)) >
-        config_.outlier_quantile)
+        config_.outlier_quantile) {
+        *reported = true;
         return true;
+    }
     return buffer.baseline_sampled;
 }
 
@@ -512,17 +520,21 @@ void SpanGenerator::record_outlier_duration(const TraceBuffer& buffer)
 void SpanGenerator::flush_trace(TraceId trace_id, TraceBuffer& buffer)
 {
     (void)trace_id;
+    ++traces_completed_;
     trace_buffer_total_spans_ -= buffer.spans.size();
     trace_buffer_total_bytes_ -= buffer.bytes;
 
     double quantile = -1.0;
     if (outlier_enabled()) {
-        const bool keep = outlier_keep(buffer);
+        bool reported = false;
+        const bool keep = outlier_keep(buffer, &reported);
+        if (reported) {
+            ++traces_outlier_reported_;
+            spans_outlier_reported_ += buffer.spans.size();
+        }
         record_outlier_duration(buffer);
         quantile = outlier_hist_.cdf(trace_duration(buffer));
         if (!keep) {
-            ++traces_outlier_filtered_;
-            spans_outlier_filtered_ += buffer.spans.size();
             buffer.spans.clear();
             buffer.bytes = 0;
             return;

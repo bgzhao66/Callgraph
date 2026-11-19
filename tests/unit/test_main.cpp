@@ -2259,10 +2259,11 @@ void test_outlier_sampling()
     trace(99, 100000);
 
     CHECK(generator.outlier_traces_seen() == 24);
-    CHECK(generator.traces_outlier_filtered() == 23);
-    CHECK(generator.spans_outlier_filtered() == 46);
+    CHECK(generator.traces_completed() == 24);
+    CHECK(generator.traces_outlier_reported() == 1);
+    CHECK(generator.spans_outlier_reported() == 2);
     CHECK(generator.traces_flushed() == 1);
-    CHECK(generator.outlier_threshold_ns() > 0);
+    CHECK(generator.outlier_threshold_ns() != UINT64_MAX);
     CHECK(exported.size() == 2);
 
     const SpanRecord* root = nullptr;
@@ -2322,6 +2323,64 @@ void test_outlier_overflow_keeps_duration()
     CHECK(generator.traces_overflowed() == 2);
     CHECK(generator.outlier_traces_seen() == 2);
     CHECK(exported.empty());
+}
+
+void test_outlier_warmup_stats()
+{
+    const std::vector<std::string> names = {"main", "A(int)"};
+    std::vector<FunctionMetadata> functions;
+    for (const auto& name : names) {
+        FunctionMetadata metadata;
+        metadata.name = name;
+        functions.push_back(metadata);
+    }
+
+    SpanGeneratorConfig config;
+    config.timestamps_are_unix = true;
+    config.functions = &functions;
+    config.sample_rate = 0.0;
+    config.complete_traces = true;
+    config.outlier_quantile = 0.9;
+
+    std::vector<SpanRecord> exported;
+    SpanGenerator generator(config, [&](SpanRecord&& span) {
+        exported.push_back(std::move(span));
+    });
+    CallStack stack(names, static_cast<Output*>(nullptr), -1, false, false,
+                    &generator);
+
+    uint64_t ts = 0;
+    auto trace = [&](uint32_t tid, uint64_t duration) {
+        stack.on_event(make_event(0, tid, kEventEnter, ts));
+        stack.on_event(make_event(1, tid, kEventEnter, ts + 10));
+        stack.on_event(make_event(1, tid, kEventExit, ts + 20));
+        stack.on_event(make_event(0, tid, kEventExit, ts + duration));
+        ts += duration + 1000;
+    };
+
+    // The whole warm-up is dropped by the zero baseline sample, but those
+    // drops are not outlier filtering and the traces still completed.
+    for (int i = 0; i < 100; ++i)
+        trace(50 + static_cast<uint32_t>(i), 1000);
+
+    CHECK(generator.outlier_traces_seen() == 100);
+    CHECK(generator.traces_completed() == 100);
+    CHECK(generator.traces_flushed() == 0);
+    CHECK(generator.traces_outlier_reported() == 0);
+    CHECK(generator.spans_outlier_reported() == 0);
+    CHECK(generator.outlier_threshold_ns() == UINT64_MAX);
+    CHECK(exported.empty());
+
+    // The first post-warm-up trace establishes the threshold and, being the
+    // longest trace, is reported by the outlier rule despite the baseline.
+    trace(999, 1000000);
+
+    CHECK(generator.traces_completed() == 101);
+    CHECK(generator.traces_flushed() == 1);
+    CHECK(generator.traces_outlier_reported() == 1);
+    CHECK(generator.spans_outlier_reported() == 2);
+    CHECK(generator.outlier_threshold_ns() != UINT64_MAX);
+    CHECK(exported.size() == 2);
 }
 
 void test_flame_graph_sink()
@@ -3804,6 +3863,7 @@ int main()
     test_ingest_sampling_and_log_rate_limit();
     test_outlier_sampling();
     test_outlier_overflow_keeps_duration();
+    test_outlier_warmup_stats();
     test_otlp_encoding();
     test_otlp_kernel_span_encoding();
     test_otel_drop_stats();
