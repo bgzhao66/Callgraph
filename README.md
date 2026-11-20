@@ -1453,6 +1453,7 @@ tools/install-deps.sh           distro-aware build dependency installer
 tools/legacy/                   earlier bpftrace generator (Python)
 third_party/libbpf/             vendored libbpf v1.5.0
 third_party/opentelemetry-proto/ vendored OTLP protobuf definitions
+docs/high-level-design.md       top-down architecture and design tradeoffs
 docs/design-notes.md            design decisions and phase plan
 docs/otel-export-design.md      OTEL/Jaeger export design
 docs/kernel-event-design.md     kernel event tracing design (P0 implemented)
